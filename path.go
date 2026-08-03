@@ -1,0 +1,93 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+func cmdBasename(args []string) int {
+	multiple := false
+	suffix := ""
+	suffixSet := false
+	var operands []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--":
+			operands = append(operands, args[i+1:]...)
+			i = len(args)
+		case arg == "-a" || arg == "--multiple":
+			multiple = true
+		case arg == "-s" || arg == "--suffix":
+			i++
+			if i >= len(args) {
+				fatalf("basename", "option requires an argument -- 's'")
+				return 1
+			}
+			suffix, suffixSet, multiple = args[i], true, true
+		case strings.HasPrefix(arg, "--suffix="):
+			suffix, suffixSet, multiple = strings.TrimPrefix(arg, "--suffix="), true, true
+		case len(arg) > 1 && arg[0] == '-':
+			fatalf("basename", "invalid option %q", arg)
+			return 1
+		default:
+			operands = append(operands, arg)
+		}
+	}
+	if len(operands) == 0 {
+		fatalf("basename", "missing operand")
+		return 1
+	}
+	if !multiple && len(operands) > 2 {
+		fatalf("basename", "extra operand %q", operands[2])
+		return 1
+	}
+	if !multiple && len(operands) == 2 {
+		suffix = operands[1]
+		suffixSet = true
+		operands = operands[:1]
+	}
+	for _, name := range operands {
+		base := filepath.Base(name)
+		if name == "" {
+			base = ""
+		}
+		if suffixSet && suffix != base && strings.HasSuffix(base, suffix) {
+			base = strings.TrimSuffix(base, suffix)
+		}
+		if _, err := fmt.Fprintln(os.Stdout, base); err != nil {
+			fatalf("basename", "write error: %v", err)
+			return 1
+		}
+	}
+	return 0
+}
+
+func cmdDirname(args []string) int {
+	var names []string
+	parsing := true
+	for _, arg := range args {
+		if parsing && arg == "--" {
+			parsing = false
+			continue
+		}
+		if parsing && len(arg) > 1 && arg[0] == '-' {
+			fatalf("dirname", "invalid option %q", arg)
+			return 1
+		}
+		names = append(names, arg)
+	}
+	if len(names) == 0 {
+		fatalf("dirname", "missing operand")
+		return 1
+	}
+	for _, name := range names {
+		if _, err := fmt.Fprintln(os.Stdout, filepath.Dir(name)); err != nil {
+			fatalf("dirname", "write error: %v", err)
+			return 1
+		}
+	}
+	return 0
+}

@@ -1,1 +1,79 @@
 # ba6
+
+`ba6` is a dependency-free Linux/amd64 multicall binary containing a focused
+set of Unix utilities. Invoke an applet as `ba6 cat file`, or create a symlink
+whose basename is an applet name.
+
+Run `ba6 --list` to list applets, `ba6 help COMMAND` for command-specific help,
+or `ba6 COMMAND --help` for the same documentation.
+
+## Included applets
+
+The binary currently includes:
+
+```text
+[ basename cat chgrp chmod chown cp cut date dirname echo false grep head help
+ip ln ls mkdir mv pwd readlink realpath rm rmdir sleep sort stat tail tee test
+touch tr true uniq wc
+```
+
+The filesystem and scripting set includes hard and symbolic links, canonical
+path resolution, recursive octal permission and ownership changes, file
+metadata formatting, pipeline fan-out, path component extraction, conditional
+expressions, time display, and duration-based sleeping. `date` intentionally
+does not change the system clock.
+
+## Build and verify
+
+The supported release target is Linux/amd64. The canonical build is static and
+installs a seccomp filter at process startup.
+
+```sh
+make build
+make verify
+```
+
+`make verify` checks formatting, runs unit/regression tests, vet, the configured
+linters, and the static-build check.
+
+## Network configuration
+
+The built-in `ip` applet uses Linux rtnetlink directly; it does not execute the
+host's `ip` program.
+
+```sh
+ba6 ip addr show
+ba6 ip addr add 192.0.2.10/24 dev eth0
+ba6 ip addr del 192.0.2.10/24 dev eth0
+
+ba6 ip route show
+ba6 ip route add default via 192.0.2.1 dev eth0 metric 100
+ba6 ip route del default via 192.0.2.1 dev eth0 metric 100
+```
+
+Basic bond and VLAN lifecycle operations are also supported:
+
+```sh
+ba6 ip link add bond0 type bond mode active-backup miimon 100
+ba6 ip link set dev eth0 master bond0
+ba6 ip link set dev eth1 master bond0
+ba6 ip link set dev bond0 up
+
+ba6 ip link add link bond0 name bond0.100 type vlan id 100
+ba6 ip link set dev bond0.100 up
+ba6 ip link show
+
+ba6 ip link set dev eth0 nomaster
+ba6 ip link delete bond0.100
+ba6 ip link delete bond0
+```
+
+Showing addresses and routes normally needs no special capability. Changing
+them requires the same `CAP_NET_ADMIN` privilege as iproute2.
+
+## Scope
+
+The applets intentionally implement the options shown by each command's
+`--help`; unsupported options are rejected. They are not complete GNU
+coreutils or iproute2 replacements. Destructive commands include same-file,
+self-copy, and filesystem-root safeguards.

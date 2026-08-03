@@ -1,0 +1,47 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - errorlint
+    - gocritic
+    - gosec
+    - misspell
+    - nakedret
+    - prealloc
+    - revive
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - whitespace
+  settings:
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+    gocritic:
+      disabled-checks:
+        - ifElseChain
+    gosec:
+      # These applets are coreutils clones: they run with the invoking user's
+      # own privileges, and operating on user-supplied paths is their entire
+      # purpose. There is no privilege boundary or untrusted input channel, so
+      # the file-path "taint" rules do not model a real threat here.
+      #   G104 - unhandled errors: redundant with errcheck (configured above).
+      #   G304 - file inclusion via variable path.
+      #   G703 - path traversal via taint analysis.
+      excludes:
+        - G104
+        - G304
+        - G703
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - std-error-handling
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
