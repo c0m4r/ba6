@@ -8,6 +8,75 @@ import (
 )
 
 var appletHelp = map[string]string{ //nolint:gosec // G101: command help contains words such as "prefix", not credentials.
+	"base64": `Usage: base64 [-d] [-w COLS] [FILE]
+Encode or decode base64 data.`,
+	"blkid": `Usage: blkid [DEVICE]...
+Probe common filesystem signatures, labels, and UUIDs.`,
+	"cmp": `Usage: cmp [-s] FILE1 FILE2
+Compare two files byte by byte.`,
+	"curl": `Usage: curl [-sL] [-o FILE] [-X METHOD] [-d DATA] URL
+Transfer an HTTP or HTTPS resource.`,
+	"diff": `Usage: diff [-u] FILE1 FILE2
+Show a line-oriented difference.`,
+	"dmesg": `Usage: dmesg [-c]
+Read the kernel message buffer.`,
+	"env": `Usage: env [-i] [-u NAME] [NAME=VALUE]... [COMMAND [ARG]...]
+Display or modify the environment and optionally run a command.`,
+	"expr": `Usage: expr EXPRESSION
+Evaluate arithmetic, comparisons, and boolean expressions.`,
+	"halt": `Usage: halt [-nf]
+Halt the machine through the Linux reboot syscall. Requires CAP_SYS_BOOT.`,
+	"hexdump": `Usage: hexdump [-C] [FILE]
+Display input in hexadecimal and ASCII.`,
+	"mknod": `Usage: mknod [-m MODE] NAME TYPE [MAJOR MINOR]
+Create a FIFO, block device, or character device.`,
+	"mount": `Usage: mount [-t TYPE] [-o OPTIONS] DEVICE DIRECTORY
+Mount a filesystem, or list mounts with no operands.`,
+	"nano": `Usage: nano [FILE]
+Edit text in a small full-screen terminal editor. ^S saves and ^X exits.`,
+	"nc": `Usage: nc [-u] [-w SECONDS] HOST PORT
+       nc -l [-u] [-p PORT] [PORT]
+Copy data over a TCP or UDP connection.`,
+	"nslookup": `Usage: nslookup NAME [SERVER]
+Resolve a host name using DNS.`,
+	"od": `Usage: od [-c] [FILE]
+Display input in hexadecimal and ASCII.`,
+	"pgrep": `Usage: pgrep [-fxv] PATTERN
+Print PIDs whose process names match a regular expression.`,
+	"pidof": `Usage: pidof NAME...
+Print process IDs for program names.`,
+	"ping": `Usage: ping [-c COUNT] [-W SECONDS] [-i SECONDS] HOST
+Send IPv4 ICMP echo requests.`,
+	"pkill": `Usage: pkill [-SIGNAL] [-fxv] PATTERN
+Signal processes whose names match a regular expression.`,
+	"poweroff": `Usage: poweroff [-nf]
+Power off the machine through the Linux reboot syscall. Requires CAP_SYS_BOOT.`,
+	"printenv": `Usage: printenv [NAME]...
+Print environment variables.`,
+	"printf": `Usage: printf FORMAT [ARG]...
+Format and print arguments with standard escape sequences.`,
+	"reboot": `Usage: reboot [-nf]
+Restart the machine through the Linux reboot syscall. Requires CAP_SYS_BOOT.`,
+	"seq": `Usage: seq [-s STRING] [-f FORMAT] [FIRST [INCREMENT]] LAST
+Print a numeric sequence.`,
+	"sh": `Usage: sh [-c COMMAND | FILE]
+Run a small shell supporting quoting, expansion, pipelines, redirection, and basic builtins.`,
+	"ss": `Usage: ss [-atuxln]
+Display TCP, UDP, and Unix sockets from /proc.`,
+	"strings": `Usage: strings [-n LENGTH] [FILE]...
+Print runs of printable bytes.`,
+	"sync": `Usage: sync
+Flush filesystem buffers.`,
+	"umount": `Usage: umount [-lf] TARGET...
+Unmount filesystems.`,
+	"uptime": `Usage: uptime [-p]
+Display system uptime and load averages.`,
+	"wget": `Usage: wget [-q] [-O FILE] URL
+Download an HTTP or HTTPS resource.`,
+	"which": `Usage: which [-a] COMMAND...
+Print executable paths found through PATH.`,
+	"xargs": `Usage: xargs [-0r] [-n NUMBER] [-I REPLACE] [COMMAND [ARG]...]
+Build and execute commands from standard input.`,
 	"df": `Usage: df [OPTION]... [FILE]...
 Show filesystem space usage for FILEs, or all mounted filesystems.
 

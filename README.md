@@ -12,10 +12,12 @@ or `ba6 COMMAND --help` for the same documentation.
 The binary currently includes:
 
 ```text
-[ basename cat chgrp chmod chown cp cut date df dirname du echo false find free
-grep gunzip gzip head help hostname id ip iptables kill ln ls mkdir mv ps pwd readlink
-realpath rm rmdir sed sha256sum sleep sort stat tail tar tee test touch tr true
-uname uniq wc whoami
+[ base64 basename blkid cat chgrp chmod chown cmp cp curl cut date df diff dirname
+dmesg du echo env expr false find free grep gunzip gzip halt head help hexdump hostname id
+ip iptables kill ln ls mkdir mknod mount mv nano nc nslookup od pgrep pidof ping pkill
+poweroff printenv printf ps pwd readlink realpath reboot rm rmdir sed seq sh sha256sum sleep sort ss
+stat strings sync tail tar tee test touch tr true umount uname uniq uptime wc wget
+which whoami xargs
 ```
 
 The filesystem and scripting set includes hard and symbolic links, canonical
@@ -28,7 +30,16 @@ The extended recovery set also includes SHA-256 verification, filesystem and
 directory usage, recursive search, stream editing, protected tar extraction,
 gzip compression, system identity, `/proc` process and memory reporting, and
 signal delivery. `find` deliberately has no `-exec`, and `sed` has no in-place
-mode, preserving the binary's no-process-execution and explicit-write model.
+mode, preserving an explicit-write model for those individual applets.
+
+The scripting and diagnostic set adds a small execution-capable shell, `xargs`,
+environment and expression tools, byte and text inspection, process matching,
+kernel logs, uptime, socket inspection, DNS, ICMP, HTTP(S), and TCP/UDP copying.
+Storage recovery includes filesystem signature probing, node creation, mounting,
+unmounting, buffer flushing, and privileged halt/reboot/poweroff controls.
+`nano` is a compact full-screen editor with
+navigation, insertion/deletion, line cutting, saving (`Ctrl-S`), and guarded
+exit (`Ctrl-X`).
 
 ## Build and verify
 
@@ -36,6 +47,12 @@ The supported release target is Linux/amd64. The canonical build is static and
 installs a seccomp filter at process startup. For environments that cannot use
 the filter, invoke the binary as `ba6 --no-seccomp COMMAND ...` or
 `ba6 --seccomp=off COMMAND ...`. Other startup protections remain enabled.
+
+Applets that genuinely require a syscall denied by the normal filter
+automatically skip seccomp while retaining `no_new_privs` and core-dump
+protection. This applies to process-executing (`sh`, `xargs`, and `env`), mount,
+and ordinary network client/server applets. Other applets, including `nano`,
+continue to run with the filter enabled.
 
 ```sh
 make build
@@ -100,5 +117,9 @@ ba6 iptables -D INPUT 2
 
 The applets intentionally implement the options shown by each command's
 `--help`; unsupported options are rejected. They are not complete GNU
-coreutils or iproute2 replacements. Destructive commands include same-file,
-self-copy, and filesystem-root safeguards.
+coreutils, util-linux, procps, iproute2, or full POSIX-shell replacements. The
+shell supports quoting, variable expansion, command lists, `&&`/`||`, pipelines,
+redirections, and the `cd`, `pwd`, `export`, `unset`, `exit`, and `:` builtins;
+it intentionally omits a programming language (`if`, loops, functions, and
+command substitution). Destructive commands include same-file, self-copy, and
+filesystem-root safeguards.

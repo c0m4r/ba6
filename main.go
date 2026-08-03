@@ -20,25 +20,35 @@ type applet func(args []string) int
 
 var applets = map[string]applet{
 	"[":         cmdBracket,
+	"base64":    cmdBase64,
 	"basename":  cmdBasename,
+	"blkid":     cmdBlkid,
 	"cat":       cmdCat,
 	"chgrp":     cmdChgrp,
 	"chmod":     cmdChmod,
 	"chown":     cmdChown,
 	"cp":        cmdCp,
+	"cmp":       cmdCmp,
+	"curl":      cmdCurl,
 	"cut":       cmdCut,
 	"date":      cmdDate,
 	"df":        cmdDf,
+	"diff":      cmdDiff,
+	"dmesg":     cmdDmesg,
 	"dirname":   cmdDirname,
 	"du":        cmdDu,
 	"echo":      cmdEcho,
+	"env":       cmdEnv,
+	"expr":      cmdExpr,
 	"false":     cmdFalse,
 	"find":      cmdFind,
 	"free":      cmdFree,
 	"grep":      cmdGrep,
 	"gunzip":    cmdGunzip,
 	"gzip":      cmdGzip,
+	"halt":      cmdHalt,
 	"head":      cmdHead,
+	"hexdump":   cmdHexdump,
 	"help":      cmdHelp,
 	"hostname":  cmdHostname,
 	"id":        cmdId,
@@ -48,18 +58,37 @@ var applets = map[string]applet{
 	"ln":        cmdLn,
 	"ls":        cmdLs,
 	"mkdir":     cmdMkdir,
+	"mknod":     cmdMknod,
+	"mount":     cmdMount,
 	"mv":        cmdMv,
+	"nano":      cmdNano,
+	"nc":        cmdNc,
+	"nslookup":  cmdNslookup,
+	"od":        cmdOd,
+	"pgrep":     cmdPgrep,
+	"pidof":     cmdPidof,
+	"ping":      cmdPing,
+	"pkill":     cmdPkill,
+	"poweroff":  cmdPoweroff,
+	"printenv":  cmdPrintenv,
+	"printf":    cmdPrintf,
 	"pwd":       cmdPwd,
 	"ps":        cmdPs,
 	"readlink":  cmdReadlink,
 	"realpath":  cmdRealpath,
+	"reboot":    cmdReboot,
 	"rm":        cmdRm,
 	"rmdir":     cmdRmdir,
 	"sed":       cmdSed,
+	"seq":       cmdSeq,
 	"sha256sum": cmdSha256sum,
+	"sh":        cmdSh,
 	"sleep":     cmdSleep,
 	"sort":      cmdSort,
+	"ss":        cmdSs,
 	"stat":      cmdStat,
+	"strings":   cmdStrings,
+	"sync":      cmdSync,
 	"tail":      cmdTail,
 	"tar":       cmdTar,
 	"tee":       cmdTee,
@@ -69,8 +98,13 @@ var applets = map[string]applet{
 	"true":      cmdTrue,
 	"uname":     cmdUname,
 	"uniq":      cmdUniq,
+	"umount":    cmdUmount,
+	"uptime":    cmdUptime,
 	"wc":        cmdWc,
+	"wget":      cmdWget,
+	"which":     cmdWhich,
 	"whoami":    cmdWhoami,
+	"xargs":     cmdXargs,
 }
 
 func main() {
@@ -81,10 +115,14 @@ func main() {
 		os.Exit(2)
 	}
 
-	// Lock down the process at the kernel level before running any applet.
-	// no_new_privs and the core-dump limit remain active when seccomp is
-	// explicitly disabled.
-	applyHardening(seccompEnabled)
+	// Commands that must create ordinary sockets, execute child processes, or
+	// mount filesystems cannot run under the default seccomp denylist. They
+	// automatically retain the tier-1 protections while skipping that filter.
+	target := prog
+	if _, direct := applets[target]; !direct && len(args) > 0 {
+		target = args[0]
+	}
+	applyHardening(seccompEnabled && !appletNeedsUnrestrictedSyscalls(target))
 
 	// Invoked via symlink (e.g. "cat"): dispatch directly.
 	if fn, ok := applets[prog]; ok {
@@ -120,6 +158,14 @@ func main() {
 		os.Exit(127)
 	}
 	os.Exit(runApplet(name, fn, args[1:]))
+}
+
+func appletNeedsUnrestrictedSyscalls(name string) bool {
+	switch name {
+	case "curl", "env", "mount", "nc", "nslookup", "ping", "sh", "umount", "wget", "xargs":
+		return true
+	}
+	return false
 }
 
 // parseHardeningOptions consumes global hardening flags before applet
