@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -80,6 +81,17 @@ func TestShellParsingAndExecution(t *testing.T) {
 	status, out, _ = captureApplet(t, cmdXargs, []string{"-n", "1", "/bin/printf", "[%s]"}, "a b")
 	if status != 0 || out != "[a][b]" {
 		t.Fatalf("xargs = (%d, %q)", status, out)
+	}
+}
+
+func TestInitSupervisesAndPropagatesStatus(t *testing.T) {
+	status, out, stderr := captureApplet(t, cmdInit, []string{"/bin/sh", "-c", "printf init-ok; exit 7"}, "")
+	if status != 7 || out != "init-ok" || stderr != "" {
+		t.Fatalf("init = (%d, %q, %q)", status, out, stderr)
+	}
+	status, _, _ = captureApplet(t, cmdInit, []string{"/bin/sh", "-c", "kill -TERM $$"}, "")
+	if status != 128+int(syscall.SIGTERM) {
+		t.Fatalf("signaled init status = %d", status)
 	}
 }
 
@@ -155,7 +167,7 @@ func TestStorageHelpersAndEditorModel(t *testing.T) {
 }
 
 func TestUnrestrictedAppletClassification(t *testing.T) {
-	for _, name := range []string{"sh", "xargs", "mount", "ping", "wget", "nc"} {
+	for _, name := range []string{"sh", "init", "xargs", "mount", "ping", "wget", "nc"} {
 		if !appletNeedsUnrestrictedSyscalls(name) {
 			t.Errorf("%s should bypass seccomp", name)
 		}

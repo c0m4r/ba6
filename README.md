@@ -14,7 +14,7 @@ The binary currently includes:
 ```text
 [ base64 basename blkid cat chgrp chmod chown cmp cp curl cut date df diff dirname
 dmesg du echo env expr false find free grep gunzip gzip halt head help hexdump hostname id
-ip iptables kill ln ls mkdir mknod mount mv nano nc nslookup od pgrep pidof ping pkill
+init ip iptables kill ln ls mkdir mknod mount mv nano nc nslookup od pgrep pidof ping pkill
 poweroff printenv printf ps pwd readlink realpath reboot rm rmdir sed seq sh sha256sum sleep sort ss
 stat strings sync tail tar tee test touch tr true umount uname uniq uptime wc wget
 which whoami xargs
@@ -35,6 +35,8 @@ mode, preserving an explicit-write model for those individual applets.
 The scripting and diagnostic set adds a small execution-capable shell, `xargs`,
 environment and expression tools, byte and text inspection, process matching,
 kernel logs, uptime, socket inspection, DNS, ICMP, HTTP(S), and TCP/UDP copying.
+`init` provides a PID-1/container supervisor with process-group signal
+forwarding, orphan reaping, descendant cleanup, and exit-status propagation.
 Storage recovery includes filesystem signature probing, node creation, mounting,
 unmounting, buffer flushing, and privileged halt/reboot/poweroff controls.
 `nano` is a compact full-screen editor with
@@ -51,7 +53,7 @@ the filter, invoke the binary as `ba6 --no-seccomp COMMAND ...` or
 Applets that genuinely require a syscall denied by the normal filter
 automatically skip seccomp while retaining `no_new_privs` and core-dump
 protection. This applies to process-executing (`sh`, `xargs`, and `env`), mount,
-and ordinary network client/server applets. Other applets, including `nano`,
+the `init` supervisor, and ordinary network client/server applets. Other applets, including `nano`,
 continue to run with the filter enabled.
 
 ```sh

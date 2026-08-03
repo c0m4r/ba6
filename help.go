@@ -28,6 +28,12 @@ Evaluate arithmetic, comparisons, and boolean expressions.`,
 Halt the machine through the Linux reboot syscall. Requires CAP_SYS_BOOT.`,
 	"hexdump": `Usage: hexdump [-C] [FILE]
 Display input in hexadecimal and ASCII.`,
+	"init": `Usage: init [--] [COMMAND [ARG]...]
+Run a small PID-1/container supervisor. The default command is /bin/sh.
+
+Signals are forwarded to the command's process group, orphaned children are
+reaped, remaining descendants are terminated when the main command exits, and
+the main command's exit status is returned.`,
 	"mknod": `Usage: mknod [-m MODE] NAME TYPE [MAJOR MINOR]
 Create a FIFO, block device, or character device.`,
 	"mount": `Usage: mount [-t TYPE] [-o OPTIONS] DEVICE DIRECTORY
