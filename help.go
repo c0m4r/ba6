@@ -8,6 +8,149 @@ import (
 )
 
 var appletHelp = map[string]string{ //nolint:gosec // G101: command help contains words such as "prefix", not credentials.
+	"df": `Usage: df [OPTION]... [FILE]...
+Show filesystem space usage for FILEs, or all mounted filesystems.
+
+Options:
+  -h        human-readable sizes
+  -k        display 1K blocks (default)
+  -P        portable output layout
+  --help    show this help`,
+	"du": `Usage: du [OPTION]... [FILE]...
+Estimate allocated disk usage recursively.
+
+Options:
+  -a        print sizes for files as well as directories
+  -s        print only a total for each operand
+  -h        human-readable sizes
+  -k        display 1K blocks (default)
+  --help    show this help`,
+	"find": `Usage: find [PATH]... [EXPRESSION]
+Walk each PATH and evaluate EXPRESSION without executing external commands.
+
+Predicates and actions:
+  -name/-iname PATTERN    match a basename
+  -path/-ipath PATTERN    match the complete path
+  -type [fdlbcps]         match a file type
+  -empty                  match empty files or directories
+  -size N[c|k|M|G]        match size; +N/-N mean greater/less
+  -mtime N                match age in days; +N/-N are supported
+  -newer FILE             match files newer than FILE
+  -mindepth/-maxdepth N   control traversal depth
+  -print/-print0          print matching paths
+  !, -a, -o, ( )          boolean operators
+  --help                  show this help`,
+	"free": `Usage: free [OPTION]
+Display physical and swap memory usage from /proc/meminfo.
+
+Options:
+  -h        human-readable sizes
+  -b/-k/-m/-g
+            display bytes, KiB, MiB, or GiB
+  --help    show this help`,
+	"gunzip": `Usage: gunzip [OPTION]... [FILE]...
+Decompress gzip streams. With no FILE, read stdin and write stdout.
+Decompressed output is limited to 64 GiB per input stream.
+
+Options:
+  -c        write to standard output
+  -k        keep input files
+  -f        replace existing output files
+  --help    show this help`,
+	"gzip": `Usage: gzip [OPTION]... [FILE]...
+Compress or decompress gzip streams using the Go standard library.
+Decompressed output is limited to 64 GiB per input stream.
+
+Options:
+  -d        decompress
+  -c        write to standard output
+  -k        keep input files
+  -f        replace existing output files
+  --help    show this help`,
+	"hostname": `Usage: hostname [-s]
+Display the system hostname. Setting the hostname is intentionally unsupported.
+
+Options:
+  -s        display the name before the first dot
+  --help    show this help`,
+	"id": `Usage: id [OPTION]... [USER]
+Display user and group identity information.
+
+Options:
+  -u        print only the user ID
+  -g        print only the primary group ID
+  -G        print all group IDs
+  -n        print names instead of numbers with -u, -g, or -G
+  --help    show this help`,
+	"kill": `Usage: kill [OPTION]... PID...
+Send a signal to each PID.
+
+Options:
+  -s SIGNAL select a signal by name or number (default TERM)
+  -SIGNAL   shorthand for -s SIGNAL
+  -l [SIGNAL]
+            list signal names or translate one signal
+  --help    show this help`,
+	"ps": `Usage: ps [OPTION]...
+Display processes by reading /proc. All processes are shown by default.
+
+Options:
+  -e/-A     show all processes (default)
+  -f        full output
+  -p LIST   restrict output to comma-separated PIDs
+  -o LIST   columns: pid,ppid,uid,user,stat,vsz,rss,comm,args
+  --help    show this help`,
+	"sed": `Usage: sed [OPTION]... SCRIPT [FILE]...
+Apply a focused stream-editing language to input lines.
+
+Options:
+  -n        suppress default output
+  -e SCRIPT add a script
+  -f FILE   read a script from FILE
+  -E/-r     accept extended regular-expression syntax
+  --help    show this help
+
+Supported commands are s/// with g, p, and i flags, d, p, q, and =.
+Line-number, $, /REGEX/, and two-address ranges are supported.`,
+	"sha256sum": `Usage: sha256sum [OPTION]... [FILE]...
+Compute or check SHA-256 digests. FILE '-' means standard input.
+
+Options:
+  -c        read checksums from FILEs and verify them
+  --quiet   do not print successful verification lines
+  --status  produce no verification output
+  -b/-t     binary/text mode (identical on Linux)
+  --help    show this help`,
+	"tar": `Usage: tar -c|-x|-t [-zv] [-f ARCHIVE] [-C DIR] [FILE]...
+Create, extract, or list tar archives. ARCHIVE '-' means stdin/stdout.
+Extraction rejects escaping paths and is limited to 64 GiB of regular data.
+
+Options:
+  -c        create an archive
+  -x        extract an archive
+  -t        list archive members
+  -f FILE   use FILE as the archive
+  -z        filter the archive through gzip
+  -v        list processed members
+  -C DIR    read or extract relative to DIR
+  --help    show this help`,
+	"uname": `Usage: uname [OPTION]...
+Display kernel and machine information.
+
+Options:
+  -a        print all fields
+  -s        kernel name
+  -n        network node hostname
+  -r        kernel release
+  -v        kernel version
+  -m        machine architecture
+  -o        operating system
+  --help    show this help`,
+	"whoami": `Usage: whoami
+Print the effective user's name.
+
+Options:
+  --help    show this help`,
 	"[": `Usage: [ EXPRESSION ]
 Evaluate a conditional expression. See "test --help" for operators.`,
 	"basename": `Usage: basename NAME [SUFFIX]
@@ -296,7 +439,7 @@ Options:
   -c/-C     complement SET1
   --help    show this help`,
 	"ip": `Usage: ip OBJECT COMMAND [ARG]...
-Show or change Linux addresses and routes using rtnetlink.
+Show or change Linux links, addresses, neighbors, routes, and rules using rtnetlink.
 
 Objects and commands:
   ip link [show] [dev IFACE]
@@ -305,14 +448,46 @@ Objects and commands:
   ip link set dev IFACE up|down
   ip link set dev IFACE master BOND
   ip link set dev IFACE nomaster
+  ip link set dev IFACE mtu MTU
+  ip link set dev IFACE address LLADDR
+  ip link set dev IFACE alias TEXT
+  ip link set dev IFACE name NEWNAME
   ip link delete NAME
   ip addr [show] [dev IFACE]
   ip addr add ADDRESS dev IFACE
   ip addr del ADDRESS dev IFACE
+  ip neigh [show] [dev IFACE]
+  ip neigh add|replace ADDRESS dev IFACE lladdr LLADDR [nud STATE]
+  ip neigh del ADDRESS dev IFACE
   ip route [show]
+  ip route get ADDRESS
   ip route add PREFIX [via GATEWAY] [dev IFACE] [metric NUM]
   ip route del PREFIX [via GATEWAY] [dev IFACE] [metric NUM]
+  ip rule [show]
+  ip rule add|del [from PREFIX] [to PREFIX] [priority NUM] [table TABLE]
   --help    show this help`,
+	"iptables": `Usage: iptables COMMAND [CHAIN] [RULE]
+Manage a focused IPv4 filter ruleset through the kernel nftables API.
+
+Commands:
+  -L [CHAIN]             list rules
+  -A CHAIN RULE          append a rule
+  -D CHAIN RULE|NUMBER   delete a matching rule or rule number
+  -F [CHAIN]             flush rules
+  -P CHAIN ACCEPT|DROP   set the base-chain policy
+
+Rule matches:
+  -p all|tcp|udp|icmp
+  -s ADDRESS[/PREFIX]    source network
+  -d ADDRESS[/PREFIX]    destination network
+  --sport PORT           TCP/UDP source port
+  --dport PORT           TCP/UDP destination port
+  -j ACCEPT|DROP|REJECT  rule target
+
+Options:
+  -n                     numeric output (the default)
+  --line-numbers         show rule numbers
+  --help                 show this help`,
 	"help": `Usage: ba6 help [COMMAND]
 Show general help or detailed help for COMMAND.
 
@@ -343,9 +518,12 @@ func writeAppletHelp(w io.Writer, name string) error {
 
 func writeGeneralHelp(w io.Writer) error {
 	for _, line := range []string{
-		"Usage: ba6 <applet> [args...]",
+		"Usage: ba6 [--seccomp=on|off] <applet> [args...]",
 		"       ba6 help <applet>",
 		"       (or symlink ba6 to an applet name)",
+		"\nGlobal options:",
+		"  --seccomp=on|off  enable or disable the seccomp filter (default: on)",
+		"  --no-seccomp      alias for --seccomp=off",
 		"\nApplets:",
 	} {
 		if _, err := fmt.Fprintln(w, line); err != nil {

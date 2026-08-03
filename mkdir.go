@@ -34,7 +34,7 @@ func cmdMkdir(args []string) int {
 				fatalf("mkdir", "invalid mode: %q", modeArg)
 				return 1
 			}
-			mode, modeSet = os.FileMode(m), true
+			mode, modeSet = fileModeFromOctal(m), true
 		case len(a) > 1 && a[0] == '-':
 			fatalf("mkdir", "invalid option %q", a)
 			return 1

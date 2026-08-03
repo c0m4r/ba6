@@ -21,6 +21,7 @@ const (
 	iflaVlanID     = 1
 	iflaBondMode   = 1
 	iflaBondMiimon = 3
+	iflaIfAlias    = 20
 
 	nlaFNested  = 1 << 15
 	nlaTypeMask = 0x3fff
@@ -51,6 +52,10 @@ type linkSetSpec struct {
 	up       *bool
 	master   string
 	noMaster bool
+	mtu      *uint32
+	address  net.HardwareAddr
+	alias    *string
+	rename   string
 }
 
 func ipLink(args []string) error {
@@ -198,7 +203,7 @@ func parseLinkSet(args []string) (linkSetSpec, error) {
 		args = args[1:]
 	}
 	if len(args) < 2 {
-		return spec, fmt.Errorf("usage: ip link set dev IFACE up|down|master BOND|nomaster")
+		return spec, fmt.Errorf("usage: ip link set dev IFACE OPTION")
 	}
 	spec.name, args = args[0], args[1:]
 	if err := validateLinkName(spec.name); err != nil {
@@ -222,6 +227,46 @@ func parseLinkSet(args []string) (linkSetSpec, error) {
 		case "nomaster":
 			spec.master, spec.noMaster = "", true
 			args = args[1:]
+		case "mtu":
+			if len(args) < 2 {
+				return spec, fmt.Errorf("missing value after mtu")
+			}
+			value, err := strconv.ParseUint(args[1], 10, 32)
+			if err != nil || value == 0 {
+				return spec, fmt.Errorf("invalid MTU %q", args[1])
+			}
+			mtu := uint32(value)
+			spec.mtu = &mtu
+			args = args[2:]
+		case "address":
+			if len(args) < 2 {
+				return spec, fmt.Errorf("missing value after address")
+			}
+			address, err := net.ParseMAC(args[1])
+			if err != nil {
+				return spec, fmt.Errorf("invalid link address %q", args[1])
+			}
+			spec.address = address
+			args = args[2:]
+		case "alias":
+			if len(args) < 2 {
+				return spec, fmt.Errorf("missing value after alias")
+			}
+			alias := args[1]
+			if len(alias) > 255 || strings.ContainsRune(alias, 0) {
+				return spec, fmt.Errorf("invalid link alias")
+			}
+			spec.alias = &alias
+			args = args[2:]
+		case "name":
+			if len(args) < 2 {
+				return spec, fmt.Errorf("missing value after name")
+			}
+			if err := validateLinkName(args[1]); err != nil {
+				return spec, err
+			}
+			spec.rename = args[1]
+			args = args[2:]
 		default:
 			return spec, fmt.Errorf("unknown link set option %q", args[0])
 		}
@@ -307,6 +352,20 @@ func setLink(spec linkSetSpec) error {
 		binary.NativeEndian.PutUint32(value, masterIndex)
 		payload = append(payload, netlinkAttribute(syscall.IFLA_MASTER, value)...)
 	}
+	if spec.mtu != nil {
+		value := make([]byte, 4)
+		binary.NativeEndian.PutUint32(value, *spec.mtu)
+		payload = append(payload, netlinkAttribute(syscall.IFLA_MTU, value)...)
+	}
+	if len(spec.address) > 0 {
+		payload = append(payload, netlinkAttribute(syscall.IFLA_ADDRESS, spec.address)...)
+	}
+	if spec.alias != nil {
+		payload = append(payload, netlinkAttribute(iflaIfAlias, append([]byte(*spec.alias), 0))...)
+	}
+	if spec.rename != "" {
+		payload = append(payload, netlinkAttribute(syscall.IFLA_IFNAME, append([]byte(spec.rename), 0))...)
+	}
 	return netlinkRequest(syscall.RTM_NEWLINK, syscall.NLM_F_REQUEST|syscall.NLM_F_ACK, payload)
 }
 
@@ -327,6 +386,8 @@ type linkDetails struct {
 	vlanID   *uint16
 	bondMode *uint8
 	miimon   *uint32
+	address  net.HardwareAddr
+	alias    string
 }
 
 func showLinks(dev string) error {
@@ -371,6 +432,12 @@ func showLinks(dev string) error {
 			fmt.Fprintf(out, " master %s", master)
 		}
 		fmt.Fprintf(out, " state %s", linkStateName(link.state))
+		if len(link.address) > 0 {
+			fmt.Fprintf(out, " address %s", link.address)
+		}
+		if link.alias != "" {
+			fmt.Fprintf(out, " alias %q", link.alias)
+		}
 		if link.kind != "" {
 			fmt.Fprintf(out, " type %s", link.kind)
 		}
@@ -419,6 +486,10 @@ func parseLinkDetails(data []byte) (linkDetails, error) {
 			if len(attr.value) > 0 {
 				link.state = attr.value[0]
 			}
+		case syscall.IFLA_ADDRESS:
+			link.address = net.HardwareAddr(append([]byte(nil), attr.value...))
+		case iflaIfAlias:
+			link.alias = netlinkString(attr.value)
 		case syscall.IFLA_LINKINFO:
 			if err := parseLinkInfo(&link, attr.value); err != nil {
 				return link, err

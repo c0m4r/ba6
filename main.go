@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // applet is the signature every command implements. args are the arguments
@@ -18,62 +19,85 @@ import (
 type applet func(args []string) int
 
 var applets = map[string]applet{
-	"[":        cmdBracket,
-	"basename": cmdBasename,
-	"cat":      cmdCat,
-	"chgrp":    cmdChgrp,
-	"chmod":    cmdChmod,
-	"chown":    cmdChown,
-	"cp":       cmdCp,
-	"cut":      cmdCut,
-	"date":     cmdDate,
-	"dirname":  cmdDirname,
-	"echo":     cmdEcho,
-	"false":    cmdFalse,
-	"grep":     cmdGrep,
-	"head":     cmdHead,
-	"help":     cmdHelp,
-	"ip":       cmdIP,
-	"ln":       cmdLn,
-	"ls":       cmdLs,
-	"mkdir":    cmdMkdir,
-	"mv":       cmdMv,
-	"pwd":      cmdPwd,
-	"readlink": cmdReadlink,
-	"realpath": cmdRealpath,
-	"rm":       cmdRm,
-	"rmdir":    cmdRmdir,
-	"sleep":    cmdSleep,
-	"sort":     cmdSort,
-	"stat":     cmdStat,
-	"tail":     cmdTail,
-	"tee":      cmdTee,
-	"test":     cmdTest,
-	"touch":    cmdTouch,
-	"tr":       cmdTr,
-	"true":     cmdTrue,
-	"uniq":     cmdUniq,
-	"wc":       cmdWc,
+	"[":         cmdBracket,
+	"basename":  cmdBasename,
+	"cat":       cmdCat,
+	"chgrp":     cmdChgrp,
+	"chmod":     cmdChmod,
+	"chown":     cmdChown,
+	"cp":        cmdCp,
+	"cut":       cmdCut,
+	"date":      cmdDate,
+	"df":        cmdDf,
+	"dirname":   cmdDirname,
+	"du":        cmdDu,
+	"echo":      cmdEcho,
+	"false":     cmdFalse,
+	"find":      cmdFind,
+	"free":      cmdFree,
+	"grep":      cmdGrep,
+	"gunzip":    cmdGunzip,
+	"gzip":      cmdGzip,
+	"head":      cmdHead,
+	"help":      cmdHelp,
+	"hostname":  cmdHostname,
+	"id":        cmdId,
+	"ip":        cmdIP,
+	"iptables":  cmdIptables,
+	"kill":      cmdKill,
+	"ln":        cmdLn,
+	"ls":        cmdLs,
+	"mkdir":     cmdMkdir,
+	"mv":        cmdMv,
+	"pwd":       cmdPwd,
+	"ps":        cmdPs,
+	"readlink":  cmdReadlink,
+	"realpath":  cmdRealpath,
+	"rm":        cmdRm,
+	"rmdir":     cmdRmdir,
+	"sed":       cmdSed,
+	"sha256sum": cmdSha256sum,
+	"sleep":     cmdSleep,
+	"sort":      cmdSort,
+	"stat":      cmdStat,
+	"tail":      cmdTail,
+	"tar":       cmdTar,
+	"tee":       cmdTee,
+	"test":      cmdTest,
+	"touch":     cmdTouch,
+	"tr":        cmdTr,
+	"true":      cmdTrue,
+	"uname":     cmdUname,
+	"uniq":      cmdUniq,
+	"wc":        cmdWc,
+	"whoami":    cmdWhoami,
 }
 
 func main() {
-	// Lock down the process at the kernel level before running any applet.
-	applyHardening()
-
 	prog := filepath.Base(os.Args[0])
+	args, seccompEnabled, err := parseHardeningOptions(os.Args[1:])
+	if err != nil {
+		fatalf("ba6", "%v", err)
+		os.Exit(2)
+	}
+
+	// Lock down the process at the kernel level before running any applet.
+	// no_new_privs and the core-dump limit remain active when seccomp is
+	// explicitly disabled.
+	applyHardening(seccompEnabled)
 
 	// Invoked via symlink (e.g. "cat"): dispatch directly.
 	if fn, ok := applets[prog]; ok {
-		os.Exit(runApplet(prog, fn, os.Args[1:]))
+		os.Exit(runApplet(prog, fn, args))
 	}
 
 	// Invoked as "ba6 <applet> ...".
-	if len(os.Args) < 2 {
+	if len(args) < 1 {
 		usage()
 		os.Exit(1)
 	}
 
-	name := os.Args[1]
+	name := args[0]
 	if name == "--help" || name == "-h" {
 		if err := writeGeneralHelp(os.Stdout); err != nil {
 			fatalf("ba6", "write error: %v", err)
@@ -95,7 +119,30 @@ func main() {
 		usage()
 		os.Exit(127)
 	}
-	os.Exit(runApplet(name, fn, os.Args[2:]))
+	os.Exit(runApplet(name, fn, args[1:]))
+}
+
+// parseHardeningOptions consumes global hardening flags before applet
+// dispatch. Keeping them at the front avoids stealing similarly named applet
+// operands and also supports direct symlink invocation.
+func parseHardeningOptions(args []string) ([]string, bool, error) {
+	seccompEnabled := true
+	for len(args) > 0 {
+		switch args[0] {
+		case "--no-seccomp", "--seccomp=off", "--seccomp=disabled":
+			seccompEnabled = false
+			args = args[1:]
+		case "--seccomp", "--seccomp=on", "--seccomp=enabled":
+			seccompEnabled = true
+			args = args[1:]
+		default:
+			if strings.HasPrefix(args[0], "--seccomp=") {
+				return nil, false, fmt.Errorf("invalid seccomp mode %q (expected on or off)", strings.TrimPrefix(args[0], "--seccomp="))
+			}
+			return args, seccompEnabled, nil
+		}
+	}
+	return args, seccompEnabled, nil
 }
 
 func runApplet(name string, fn applet, args []string) int {

@@ -3,12 +3,21 @@ package main
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"io"
+	"math"
 	"os"
 	"syscall"
 	"time"
 	"unsafe"
 )
+
+func humanSizeUint64(value uint64) string {
+	if value > math.MaxInt64 {
+		return fmt.Sprintf("%.1fE", float64(value)/(1024*1024*1024*1024*1024*1024))
+	}
+	return humanSize(int64(value))
+}
 
 // openInput returns a reader for the given path. The conventional "-" means
 // standard input. The caller is responsible for closing the returned io.Closer

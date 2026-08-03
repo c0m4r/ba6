@@ -46,7 +46,7 @@ func cmdIP(args []string) int {
 
 object:
 	if len(args) == 0 {
-		fatalf("ip", "missing object (expected addr or route)")
+		fatalf("ip", "missing object (expected addr, link, neigh, route, or rule)")
 		return 1
 	}
 	var err error
@@ -55,8 +55,12 @@ object:
 		err = ipAddress(family, args[1:])
 	case "link", "l":
 		err = ipLink(args[1:])
+	case "neighbor", "neighbour", "neigh", "n":
+		err = ipNeighbor(family, args[1:])
 	case "route", "r":
 		err = ipRoute(family, args[1:])
+	case "rule", "ru":
+		err = ipRule(family, args[1:])
 	default:
 		fatalf("ip", "unknown object %q", args[0])
 		return 1
@@ -223,6 +227,9 @@ func ipRoute(family int, args []string) error {
 			return err
 		}
 		return showRoutes(family, dev)
+	}
+	if args[0] == "get" {
+		return routeGet(family, args[1:])
 	}
 	operation := args[0]
 	if operation == "remove" {

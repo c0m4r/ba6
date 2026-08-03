@@ -23,7 +23,7 @@ const (
 // already required for the zero-dependency goal, and it also guarantees the
 // pure-Go os/user path (reading /etc/passwd directly) so the seccomp socket
 // ban below never trips NSS.
-func applyHardening() {
+func applyHardening(enableSeccomp bool) {
 	// no_new_privs must be set before installing a seccomp filter without
 	// CAP_SYS_ADMIN, and it also prevents regaining privileges via a setuid
 	// exec later in the process lifetime.
@@ -31,8 +31,10 @@ func applyHardening() {
 		hardeningFatal("no_new_privs", err)
 	}
 	disableCoreDumps()
-	if err := installSeccompFilter(); err != nil {
-		hardeningFatal("seccomp", err)
+	if enableSeccomp {
+		if err := installSeccompFilter(); err != nil {
+			hardeningFatal("seccomp", err)
+		}
 	}
 }
 

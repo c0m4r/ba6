@@ -42,7 +42,55 @@ func cmdChmod(args []string) int {
 		}
 		return os.Chmod(path, mode)
 	}
+	if recursive {
+		return chmodRecursive(operands[1:], mode)
+	}
 	return changePaths("chmod", operands[1:], recursive, change)
+}
+
+// chmodRecursive reads each directory before applying a possibly restrictive
+// final mode. If a directory is initially unreadable, owner traversal bits are
+// enabled temporarily so chmod can also be used to repair locked trees.
+func chmodRecursive(roots []string, mode os.FileMode) int {
+	status := 0
+	var visit func(string)
+	visit = func(path string) {
+		info, err := os.Lstat(path)
+		if err != nil {
+			fatalf("chmod", "cannot access '%s': %v", path, err)
+			status = 1
+			return
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return
+		}
+		if info.IsDir() {
+			entries, readErr := os.ReadDir(path)
+			if os.IsPermission(readErr) {
+				if err := os.Chmod(path, info.Mode()|0o700); err == nil {
+					entries, readErr = os.ReadDir(path)
+				} else {
+					readErr = err
+				}
+			}
+			if readErr != nil {
+				fatalf("chmod", "cannot access '%s': %v", path, readErr)
+				status = 1
+			} else {
+				for _, entry := range entries {
+					visit(filepath.Join(path, entry.Name()))
+				}
+			}
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			fatalf("chmod", "cannot change '%s': %v", path, err)
+			status = 1
+		}
+	}
+	for _, root := range roots {
+		visit(root)
+	}
+	return status
 }
 
 func cmdChown(args []string) int {

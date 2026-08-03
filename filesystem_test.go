@@ -142,6 +142,46 @@ func TestMkdirParentsModeDoesNotChangeExistingDirectory(t *testing.T) {
 	}
 }
 
+func TestMkdirPreservesSpecialModeBits(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sticky")
+	if status := cmdMkdir([]string{"-m", "1777", path}); status != 0 {
+		t.Fatalf("mkdir returned %d", status)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSticky == 0 || info.Mode().Perm() != 0o777 {
+		t.Fatalf("mkdir -m 1777 created mode %v", info.Mode())
+	}
+}
+
+func TestChmodRecursiveRepairsUnreadableDirectory(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "locked")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	child := filepath.Join(root, "child")
+	if err := os.WriteFile(child, []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(root, 0o300); err != nil { //nolint:gosec // Test fixture intentionally removes read access.
+		t.Fatal(err)
+	}
+	if status := cmdChmod([]string{"-R", "755", root}); status != 0 {
+		t.Fatalf("chmod returned %d", status)
+	}
+	for _, path := range []string{root, child} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o755 {
+			t.Fatalf("%s has mode %v", path, info.Mode())
+		}
+	}
+}
+
 func captureApplet(t *testing.T, fn applet, args []string, input string) (int, string, string) {
 	t.Helper()
 	dir := t.TempDir()
