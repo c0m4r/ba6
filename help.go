@@ -135,6 +135,9 @@ Encode or decode base64 data.`,
 Probe common filesystem signatures, labels, and UUIDs.`,
 	"cmp": `Usage: cmp [-s] FILE1 FILE2
 Compare two files byte by byte.`,
+	"completion": `Usage: completion bash
+Generate a Bash completion script for ba6 on standard output. The script
+completes global options, applets, documented applet options, and paths.`,
 	"curl": `Usage: curl [-svL] [-o FILE] [-X METHOD] [-d DATA] URL
 Transfer an HTTP or HTTPS resource. -v writes connection details and request
 and response headers to standard error while preserving the response body.`,

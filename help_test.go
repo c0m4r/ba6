@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -45,6 +46,35 @@ func TestEveryAppletHasHelp(t *testing.T) {
 		if _, ok := appletHelp[name]; !ok {
 			t.Errorf("missing help for %s", name)
 		}
+	}
+}
+
+func TestBashCompletionGeneration(t *testing.T) {
+	status, output, stderr := captureApplet(t, cmdCompletion, []string{"bash"}, "")
+	if status != 0 || stderr != "" {
+		t.Fatalf("completion bash = (%d, %q)", status, stderr)
+	}
+	for _, fragment := range []string{"complete -F _ba6_complete ba6", "'completion'", "'mtr'", "-4", "--help"} {
+		if !strings.Contains(output, fragment) {
+			t.Errorf("completion output is missing %q", fragment)
+		}
+	}
+
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash is unavailable")
+	}
+	command := exec.Command(bash, "-n") //nolint:gosec // The resolved executable is specifically Bash, with fixed arguments.
+	command.Stdin = strings.NewReader(output)
+	if diagnostic, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("generated completion is invalid Bash: %v: %s", err, diagnostic)
+	}
+}
+
+func TestBashCompletionRejectsUnknownShell(t *testing.T) {
+	status, _, stderr := captureApplet(t, cmdCompletion, []string{"zsh"}, "")
+	if status != 2 || !strings.Contains(stderr, "completion bash") {
+		t.Fatalf("completion zsh = (%d, %q)", status, stderr)
 	}
 }
 

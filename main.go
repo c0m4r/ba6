@@ -32,6 +32,7 @@ var applets = map[string]applet{
 	"chroot":      cmdChroot,
 	"cp":          cmdCp,
 	"cmp":         cmdCmp,
+	"completion":  cmdCompletion,
 	"curl":        cmdCurl,
 	"cut":         cmdCut,
 	"date":        cmdDate,

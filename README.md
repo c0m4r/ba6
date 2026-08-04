@@ -12,13 +12,28 @@ or `ba6 COMMAND --help` for the same documentation.
 The binary currently includes:
 
 ```text
-[ awk base64 basename blkid blockdev cat chgrp chmod chown chroot cmp cp curl cut date dd df diff dig
+[ awk base64 basename blkid blockdev cat chgrp chmod chown chroot cmp completion cp curl cut date dd df diff dig
 dirname dmesg du echo env expr false fdisk file find free fsck fsck.ext2 fsck.ext3 fsck.ext4 grep
 gunzip gzip halt head help hexdump hostname id iftop init insmod ip iptables kill ln login losetup ls
 lsblk lsmod lsof man mkdir mkfs mkfs.ext2 mkswap mktemp mknod modprobe mount mtr mv nano nc nslookup
 od pgrep pidof ping pkill poweroff printenv printf ps pwd readlink realpath reboot rm rmdir rmmod sed
 seq sfdisk sh sha256sum sleep sort ss stat strings swapoff swapon switch_root sync tail tar tee test
 timeout top touch tr traceroute true udhcpc umount uname uniq uptime wc wget which whoami xargs
+```
+
+## Bash completion
+
+Load completion for the current Bash session with:
+
+```sh
+source <(ba6 completion bash)
+```
+
+For persistent per-user completion, generate the standard completion file:
+
+```sh
+mkdir -p ~/.local/share/bash-completion/completions
+ba6 completion bash > ~/.local/share/bash-completion/completions/ba6
 ```
 
 The filesystem and scripting set includes hard and symbolic links, canonical
