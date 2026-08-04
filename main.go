@@ -92,6 +92,7 @@ var applets = map[string]applet{
 	"nc":          cmdNc,
 	"nslookup":    cmdNslookup,
 	"od":          cmdOd,
+	"passwd":      cmdPasswd,
 	"pgrep":       cmdPgrep,
 	"pidof":       cmdPidof,
 	"ping":        cmdPing,

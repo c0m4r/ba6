@@ -53,7 +53,7 @@ validation, fixture-based tests, and clearly documented filesystem support.
 - [ ] `hwclock`
 - [ ] `lsusb`
 - [ ] `lspci`
-- [ ] `passwd`
+- [x] `passwd`
 - [ ] `useradd`
 - [ ] `groupadd`
 - [ ] `adduser`

@@ -93,6 +93,12 @@ Authenticate a user against /etc/passwd and /etc/shadow, initialize their
 supplementary groups and environment, and start their configured login shell.
 SHA-256 ($5$) and SHA-512 ($6$) crypt password hashes are supported. The applet
 must start as root; locked and expired accounts are rejected.`,
+	"passwd": `Usage: passwd [USERNAME]
+Change a user's password in /etc/shadow, or in /etc/passwd for a legacy account.
+Ordinary users may change only their own password and must enter the current
+password; sufficient permission to update the password database is still
+required. Root may name any user and can replace unsupported or locked hashes.
+New passwords are stored as salted SHA-512 crypt hashes.`,
 	"lsof": `Usage: lsof [-nP] [-p PID,...] [-i] [FILE]...
 List process file descriptors by inspecting /proc. -p selects processes, -i
 selects IPv4/IPv6 sockets, and FILE operands select exact open paths. Entries

@@ -16,7 +16,7 @@ The binary currently includes:
 dirname dmesg du echo env expr false fdisk file find free fsck fsck.ext2 fsck.ext3 fsck.ext4 grep
 gunzip gzip halt head help hexdump hostname id iftop init insmod ip iptables kill ln login losetup ls
 lsblk lsmod lsof man mkdir mkfs mkfs.ext2 mkswap mktemp mknod modprobe mount mtr mv nano nc nslookup
-od pgrep pidof ping pkill poweroff printenv printf ps pwd readlink realpath reboot rm rmdir rmmod sed
+od passwd pgrep pidof ping pkill poweroff printenv printf ps pwd readlink realpath reboot rm rmdir rmmod sed
 seq sfdisk sh sha256sum sleep sort ss stat strings swapoff swapon switch_root sync tail tar tee test
 timeout top touch tr traceroute true udhcpc umount uname uniq uptime wc wget which whoami xargs
 ```
@@ -139,6 +139,13 @@ from the passwd entry as a login shell. Configure `login` as a `respawn` service
 as above, so logging out returns to a fresh credential prompt. `login` must be
 started by root and does not implement PAM-dependent policies or yescrypt/bcrypt
 password hashes.
+
+`passwd` complements `login` with interactive password changes. It verifies the
+current password for non-root callers, confirms the replacement, generates a
+randomly salted SHA-512 crypt hash, and atomically replaces the relevant account
+database while preserving its mode and ownership. Root can reset locked accounts
+and hashes unsupported by `login`; ordinary users still need filesystem permission
+to update the database (the multicall binary should not be installed set-user-ID).
 
 ## Network configuration
 
