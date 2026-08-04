@@ -148,8 +148,11 @@ func disableTerminalEcho(fd uintptr) (*syscall.Termios, error) {
 func readLoginLine(reader *bufio.Reader, limit int) ([]byte, error) {
 	line, err := reader.ReadSlice('\n')
 	if errors.Is(err, bufio.ErrBufferFull) || len(line) > limit+1 {
+		clearBytes(line)
 		for errors.Is(err, bufio.ErrBufferFull) {
-			_, err = reader.ReadSlice('\n')
+			var discarded []byte
+			discarded, err = reader.ReadSlice('\n')
+			clearBytes(discarded)
 		}
 		return nil, fmt.Errorf("input line is too long")
 	}
@@ -158,9 +161,11 @@ func readLoginLine(reader *bufio.Reader, limit int) ([]byte, error) {
 	}
 	line = bytesWithoutLineEnding(line)
 	if len(line) > limit {
+		clearBytes(line)
 		return nil, fmt.Errorf("input line is too long")
 	}
 	result := append([]byte(nil), line...)
+	clearBytes(line)
 	if errors.Is(err, io.EOF) && len(result) == 0 {
 		return nil, io.EOF
 	}
@@ -178,9 +183,13 @@ func bytesWithoutLineEnding(value []byte) []byte {
 }
 
 func authenticateLogin(username string, password []byte, now time.Time) (*loginAccount, error) {
-	account, found, err := findLoginAccount(loginPasswdPath, username)
+	return authenticateLoginFiles(loginPasswdPath, loginShadowPath, username, password, now)
+}
+
+func authenticateLoginFiles(passwdPath, shadowPath, username string, password []byte, now time.Time) (*loginAccount, error) {
+	account, found, err := findLoginAccount(passwdPath, username)
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", loginPasswdPath, err)
+		return nil, fmt.Errorf("read %s: %w", passwdPath, err)
 	}
 	if !found {
 		// Do the same expensive operation used for a normal SHA-512 password so
@@ -192,9 +201,9 @@ func authenticateLogin(username string, password []byte, now time.Time) (*loginA
 	stored := account.password
 	shadow := shadowAccount{expires: -1}
 	if stored == "x" {
-		shadow, found, err = findShadowAccount(loginShadowPath, username)
+		shadow, found, err = findShadowAccount(shadowPath, username)
 		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", loginShadowPath, err)
+			return nil, fmt.Errorf("read %s: %w", shadowPath, err)
 		}
 		if !found {
 			return nil, fmt.Errorf("no shadow entry for %s", username)
@@ -202,6 +211,9 @@ func authenticateLogin(username string, password []byte, now time.Time) (*loginA
 		stored = shadow.password
 	}
 	valid, err := verifyLoginPassword(password, stored)
+	if err != nil || stored == "" || stored[0] == '!' || stored[0] == '*' {
+		_, _ = verifyLoginPassword(password, "$6$saltsalt$qFmFH.bQmmtXzyBY0s9v7Oicd2z4XSIecDzlB5KiA2/jctKu9YterLp8wwnSq.qc.eoxqOmSuNp2xS0ktL3nh/")
+	}
 	if err != nil || !valid {
 		return nil, err
 	}
@@ -430,7 +442,7 @@ func repeatedBytes(value []byte, count int) []byte {
 const cryptBase64 = "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
 func encodeCrypt24(output *strings.Builder, b0, b1, b2 byte, count int) {
-	value := uint(b2)<<16 | uint(b1)<<8 | uint(b0)
+	value := uint(b0)<<16 | uint(b1)<<8 | uint(b2)
 	for range count {
 		output.WriteByte(cryptBase64[value&0x3f])
 		value >>= 6
@@ -510,9 +522,13 @@ func beginLoginSession(account *loginAccount) error {
 	}
 	term := os.Getenv("TERM")
 	os.Clearenv()
+	path := "/usr/local/bin:/usr/bin:/bin"
+	if account.uid == 0 {
+		path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	}
 	for name, value := range map[string]string{
 		"HOME": home, "USER": account.name, "LOGNAME": account.name,
-		"SHELL": account.shell, "PATH": "/usr/local/bin:/usr/bin:/bin",
+		"SHELL": account.shell, "PATH": path,
 	} {
 		if err := os.Setenv(name, value); err != nil {
 			return fmt.Errorf("set environment: %w", err)

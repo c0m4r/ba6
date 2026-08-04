@@ -177,6 +177,9 @@ func TestInitEnvironmentAndHardeningProfiles(t *testing.T) {
 	if profile := hardeningForApplet("sh", 42, true); profile.noNewPrivs || profile.seccomp {
 		t.Fatalf("execution frontend profile = %+v", profile)
 	}
+	if profile := hardeningForApplet("login", 42, true); profile.noNewPrivs || profile.seccomp {
+		t.Fatalf("login profile = %+v", profile)
+	}
 	if profile := hardeningForApplet("cat", 1, true); !profile.noNewPrivs || !profile.seccomp {
 		t.Fatalf("ordinary applet profile = %+v", profile)
 	}

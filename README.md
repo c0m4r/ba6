@@ -56,7 +56,7 @@ the filter, invoke the binary as `ba6 --no-seccomp COMMAND ...` or
 
 Applets that genuinely require a syscall denied by the normal filter
 automatically skip seccomp. Mount and network applets retain `no_new_privs`;
-execution frontends (`sh`, `env`, `xargs`, `timeout`, `chroot`, and
+execution frontends (`sh`, `env`, `xargs`, `timeout`, `chroot`, `login`, and
 `switch_root`) do not, because changing that state would silently prevent their
 children from using set-user-ID programs or file capabilities. A real PID 1
 `init` likewise runs without seccomp or
