@@ -16,7 +16,12 @@ import (
 	"time"
 )
 
-const defaultInittab = "/etc/inittab"
+const (
+	defaultInittab      = "/etc/inittab"
+	defaultHostnameFile = "/etc/hostname"
+	kernelHostnameFile  = "/proc/sys/kernel/hostname"
+	maxHostnameLength   = 64
+)
 
 type initAction string
 
@@ -164,11 +169,7 @@ func runSystemInit(path string) {
 
 	signals := initSignalChannel()
 	defer signal.Stop(signals)
-	for _, action := range []initAction{initSysinit, initWait} {
-		for _, entry := range entriesForAction(entries, action) {
-			runInitEntryAndWait(entry)
-		}
-	}
+	runInitBootActions(entries, defaultHostnameFile, kernelHostnameFile)
 	for _, entry := range entriesForAction(entries, initOnce) {
 		if _, err := startInitEntry(entry); err != nil {
 			logInit("line %d: %v", entry.line, err)
@@ -272,6 +273,46 @@ func runInitActions(entries []inittabEntry, action initAction) {
 	for _, entry := range entriesForAction(entries, action) {
 		runInitEntryAndWait(entry)
 	}
+}
+
+func runInitBootActions(entries []inittabEntry, hostnamePath, kernelPath string) {
+	runInitActions(entries, initSysinit)
+	if err := setInitHostname(hostnamePath, kernelPath); err != nil {
+		logInit("hostname: %v", err)
+	}
+	runInitActions(entries, initWait)
+}
+
+func setInitHostname(hostnamePath, kernelPath string) error {
+	data, err := os.ReadFile(hostnamePath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", hostnamePath, err)
+	}
+	hostname := strings.TrimSpace(string(data))
+	if hostname == "" {
+		return fmt.Errorf("%s is empty", hostnamePath)
+	}
+	if len(hostname) > maxHostnameLength {
+		return fmt.Errorf("%s exceeds the %d-byte kernel limit", hostnamePath, maxHostnameLength)
+	}
+	for _, character := range []byte(hostname) {
+		if character <= ' ' || character == 0x7f || character == '/' {
+			return fmt.Errorf("%s contains an invalid hostname character", hostnamePath)
+		}
+	}
+
+	file, err := os.OpenFile(kernelPath, os.O_WRONLY|os.O_TRUNC|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", kernelPath, err)
+	}
+	if _, err := io.WriteString(file, hostname+"\n"); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("write %s: %w", kernelPath, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", kernelPath, err)
+	}
+	return nil
 }
 
 func runInitEntryAndWait(entry inittabEntry) {

@@ -12,12 +12,13 @@ or `ba6 COMMAND --help` for the same documentation.
 The binary currently includes:
 
 ```text
-[ awk base64 basename blkid cat chgrp chmod chown chroot cmp cp curl cut date dd df diff dirname
-dmesg du echo env expr false file find free grep gunzip gzip halt head help hexdump hostname id
-init insmod ip iptables kill ln login losetup ls lsblk lsmod man mkdir mktemp mknod modprobe mount mv
-nano nc nslookup od pgrep pidof ping pkill poweroff printenv printf ps pwd readlink realpath reboot
-rm rmdir rmmod sed seq sh sha256sum sleep sort ss stat strings switch_root sync tail tar tee test
-timeout top touch tr true udhcpc umount uname uniq uptime wc wget which whoami xargs
+[ awk base64 basename blkid blockdev cat chgrp chmod chown chroot cmp cp curl cut date dd df diff dig
+dirname dmesg du echo env expr false fdisk file find free fsck fsck.ext2 fsck.ext3 fsck.ext4 grep
+gunzip gzip halt head help hexdump hostname id iftop init insmod ip iptables kill ln login losetup ls
+lsblk lsmod lsof man mkdir mkfs mkfs.ext2 mkswap mktemp mknod modprobe mount mtr mv nano nc nslookup
+od pgrep pidof ping pkill poweroff printenv printf ps pwd readlink realpath reboot rm rmdir rmmod sed
+seq sfdisk sh sha256sum sleep sort ss stat strings swapoff swapon switch_root sync tail tar tee test
+timeout top touch tr traceroute true udhcpc umount uname uniq uptime wc wget which whoami xargs
 ```
 
 The filesystem and scripting set includes hard and symbolic links, canonical
@@ -34,13 +35,23 @@ mode, preserving an explicit-write model for those individual applets.
 
 The scripting and diagnostic set adds a small execution-capable shell, `xargs`,
 environment and expression tools, byte and text inspection, process matching,
-kernel logs, uptime, socket inspection, DNS, ICMP, HTTP(S), and TCP/UDP copying.
+kernel logs, uptime, open-file and socket inspection, direct DNS queries,
+IPv4/IPv6 ICMP, route/loss probing, interface traffic rates, verbose HTTP(S),
+and TCP/UDP copying. The route tools use Linux's unprivileged UDP error queue;
+`iftop` is a bounded batch sampler of per-interface `/proc/net/dev` counters
+rather than an interactive per-flow display.
 `init` provides a PID-1/container supervisor with process-group signal
 forwarding, orphan reaping, descendant cleanup, and exit-status propagation.
 Storage recovery includes filesystem signature probing, node creation, mounting,
 unmounting, buffer flushing, and privileged halt/reboot/poweroff controls.
 It now also includes block-device discovery, loop-device setup, chroot and root
-switching, kernel-module management, and a focused one-shot DHCP client. Text
+switching, kernel-module management, and a focused one-shot DHCP client. Disk
+recovery gains block-device controls, validated DOS/MBR partition editing,
+read-only DOS/MBR and GPT partition listing,
+read-only ext2/ext3/ext4 structural checking, a bounded ext2 formatter, and
+Linux swap formatting and activation. The ext2 formatter intentionally creates
+only a 4 KiB-block, single-group profile from 1 MiB through 128 MiB; its images
+are checked by system `e2fsck` in development. Text
 recovery gains focused AWK processing, block copying, file identification,
 secure temporary files, command timeouts, and process snapshots.
 `nano` is a compact full-screen editor with
@@ -86,9 +97,12 @@ ttyS0::respawn:/bin/login
 ::shutdown:/bin/umount -a -r
 ```
 
-`sysinit` and `wait` commands run synchronously in phase and file order;
-`once` commands start afterward; and `respawn`/`askfirst` services are monitored
-with exponential crash backoff. The supported event actions are `shutdown`,
+`sysinit` and `wait` commands run synchronously in phase and file order. After
+the `sysinit` phase, where `/proc` should be mounted, init validates
+`/etc/hostname` and writes it to `/proc/sys/kernel/hostname`. Hostname errors
+are reported but do not stop boot. `once` commands start after the `wait` phase,
+and `respawn`/`askfirst` services are monitored with exponential crash backoff.
+The supported event actions are `shutdown`,
 `ctrlaltdel`, `powerfail`, `powerwait`, and `powerokwait`. SIGHUP reloads the
 file. SIGINT runs `ctrlaltdel` and reboots; SIGUSR1 halts; SIGUSR2 powers off;
 SIGTERM reboots; and SIGPWR runs power-failure actions before powering off.

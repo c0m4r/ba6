@@ -24,13 +24,13 @@ BusyBox, or POSIX compatibility.
 
 ## Disk and filesystem recovery
 
-- [ ] `blockdev`
-- [ ] `fdisk` or `sfdisk`
-- [ ] `fsck` and selected filesystem-specific checkers
-- [ ] `mkfs` and selected filesystem-specific formatters
-- [ ] `mkswap`
-- [ ] `swapon`
-- [ ] `swapoff`
+- [x] `blockdev`
+- [x] read-only `fdisk -l` and writable `sfdisk`
+- [x] `fsck` and selected filesystem-specific checkers
+- [x] `mkfs` and selected filesystem-specific formatters
+- [x] `mkswap`
+- [x] `swapon`
+- [x] `swapoff`
 
 Filesystem creation and repair tools require particular care: partial or
 incorrect implementations can destroy data. Add them only with strict format
@@ -53,12 +53,19 @@ validation, fixture-based tests, and clearly documented filesystem support.
 - [ ] `hwclock`
 - [ ] `lsusb`
 - [ ] `lspci`
+- [ ] `passwd`
+- [ ] `useradd`
+- [ ] `groupadd`
+- [ ] `adduser`
 
 ## Diagnostics
 
-- [ ] `lsof`
-- [ ] `traceroute`
-- [ ] IPv6 support for `ping`
+- [x] `lsof`
+- [x] `traceroute`
+- [x] IPv6 support for `ping`
+- [x] `mtr`
+- [x] `dig`
+- [x] `iftop`
 
 ## Text and data processing
 

@@ -133,23 +133,54 @@ func TestInittabParsingAndBootOrdering(t *testing.T) {
 }
 
 func TestInitBootAndShutdownActionsExecuteInOrder(t *testing.T) {
-	marker := filepath.Join(t.TempDir(), "order")
+	directory := t.TempDir()
+	marker := filepath.Join(directory, "order")
+	hostname := filepath.Join(directory, "hostname")
+	kernelHostname := filepath.Join(directory, "kernel-hostname")
+	if err := os.WriteFile(kernelHostname, []byte("old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	entries := []inittabEntry{
-		{action: initWait, command: "printf W >> " + marker, line: 1},
-		{action: initSysinit, command: "printf S >> " + marker, line: 2},
+		{action: initWait, command: "test \"$(cat " + kernelHostname + ")\" = rescue && printf W >> " + marker, line: 1},
+		{action: initSysinit, command: "printf rescue > " + hostname + "; printf S >> " + marker, line: 2},
 		{action: initShutdown, command: "printf X >> " + marker, line: 3},
 	}
-	for _, action := range []initAction{initSysinit, initWait} {
-		runInitActions(entries, action)
-	}
+	runInitBootActions(entries, hostname, kernelHostname)
 	data, err := os.ReadFile(marker)
 	if err != nil || string(data) != "SW" {
 		t.Fatalf("boot order = %q, %v", data, err)
+	}
+	data, err = os.ReadFile(kernelHostname)
+	if err != nil || string(data) != "rescue\n" {
+		t.Fatalf("kernel hostname = %q, %v", data, err)
 	}
 	runInitActions(entries, initShutdown)
 	data, err = os.ReadFile(marker)
 	if err != nil || string(data) != "SWX" {
 		t.Fatalf("shutdown order = %q, %v", data, err)
+	}
+}
+
+func TestInitHostnameValidation(t *testing.T) {
+	directory := t.TempDir()
+	hostname := filepath.Join(directory, "hostname")
+	kernelHostname := filepath.Join(directory, "kernel-hostname")
+	if err := os.WriteFile(kernelHostname, []byte("unchanged\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	invalid := []string{"", "bad name\n", "bad/name\n", "first\nsecond\n", strings.Repeat("a", maxHostnameLength+1)}
+	for _, value := range invalid {
+		if err := os.WriteFile(hostname, []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := setInitHostname(hostname, kernelHostname); err == nil {
+			t.Errorf("setInitHostname(%q) unexpectedly succeeded", value)
+		}
+		data, err := os.ReadFile(kernelHostname)
+		if err != nil || string(data) != "unchanged\n" {
+			t.Fatalf("invalid hostname changed target to %q: %v", data, err)
+		}
 	}
 }
 

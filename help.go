@@ -8,6 +8,61 @@ import (
 )
 
 var appletHelp = map[string]string{ //nolint:gosec // G101: command help contains words such as "prefix", not credentials.
+	"blockdev": `Usage: blockdev OPERATION [VALUE] DEVICE
+Perform a focused Linux block-device ioctl.
+
+Operations:
+  --getro/--setro/--setrw  query or change read-only state
+  --getsize64              print device size in bytes
+  --getsz                  print device size in 512-byte sectors
+  --getss/--getbsz         print logical sector/I/O block size
+  --getra/--setra SECTORS  query or set readahead
+  --flushbufs/--rereadpt   flush buffers or reread the partition table
+  --report DEVICE...       display a compact device report`,
+	"fdisk": `Usage: fdisk -l [DEVICE]...
+List DOS/MBR or GPT partition tables without modifying them. With no DEVICE,
+inspect whole block devices found through /sys/class/block. GPT header and
+entry-array checksums and all partition bounds are validated. Interactive
+partition editing is intentionally unsupported.`,
+	"sfdisk": `Usage: sfdisk [--force] DEVICE
+       sfdisk --dump DEVICE
+       sfdisk --list DEVICE
+Read or write a DOS/MBR partition table. Write mode accepts up to four lines
+from standard input with start=, size=, type=, and bootable fields. Units are
+512-byte sectors; K, M, and G suffixes are accepted. All ranges and overlaps
+are validated before the single-sector write. GPT and extended partitions are
+intentionally unsupported.`,
+	"fsck": `Usage: fsck [-t ext2|ext3|ext4] [-nfpav] DEVICE...
+Validate ext-family superblock geometry, feature flags, group metadata, the
+root inode, and root directory structure. This checker is strictly read-only;
+it reports damage with fsck status bit 4 and never attempts repair.`,
+	"fsck.ext2": `Usage: fsck.ext2 [-nfpav] DEVICE...
+Read-only structural validation for ext2, ext3, and ext4 filesystems.`,
+	"fsck.ext3": `Usage: fsck.ext3 [-nfpav] DEVICE...
+Read-only structural validation for ext2, ext3, and ext4 filesystems.`,
+	"fsck.ext4": `Usage: fsck.ext4 [-nfpav] DEVICE...
+Read-only structural validation for ext2, ext3, and ext4 filesystems.`,
+	"mkfs": `Usage: mkfs -t ext2 [OPTION]... DEVICE [BLOCKS]
+Create a filesystem. Only the carefully bounded mkfs.ext2 profile is bundled.`,
+	"mkfs.ext2": `Usage: mkfs.ext2 [-F] [-L LABEL] DEVICE [BLOCKS]
+Create a revision-1 ext2 filesystem with 4 KiB blocks, one block group, a root
+directory, and lost+found. Supported sizes are 1 MiB through 128 MiB. BLOCKS
+is expressed in 1 KiB units. -F is required for regular files. Mounted devices
+and active swap are rejected unless explicitly forced.`,
+	"mkswap": `Usage: mkswap [-f] [-L LABEL] DEVICE_OR_FILE
+Write a Linux version-1 swap header after validating the target and its size.
+Mounted targets and active swap are rejected unless explicitly forced.`,
+	"mtr": `Usage: mtr [-r] [-c CYCLES] [-46n] [-m HOPS] [-w SECONDS] HOST
+Probe each route hop with UDP and ICMP error replies, then print loss and
+latency statistics. The default bounded report uses one cycle and a one-second
+per-probe timeout, stopping after five consecutive unanswered hops. Linux's
+UDP error queue avoids raw-socket privileges.`,
+	"swapon": `Usage: swapon [-a] [-p PRIORITY] [DEVICE]...
+Enable swap devices using the Linux swapon syscall. -a reads swap entries from
+/etc/fstab. Requires CAP_SYS_ADMIN.`,
+	"swapoff": `Usage: swapoff [-a] [DEVICE]...
+Disable swap devices using the Linux swapoff syscall. -a reads /proc/swaps.
+Requires CAP_SYS_ADMIN.`,
 	"awk": `Usage: awk [-F SEPARATOR] [-v NAME=VALUE] PROGRAM [FILE]...
 Process text as records and fields.
 
@@ -38,6 +93,10 @@ Authenticate a user against /etc/passwd and /etc/shadow, initialize their
 supplementary groups and environment, and start their configured login shell.
 SHA-256 ($5$) and SHA-512 ($6$) crypt password hashes are supported. The applet
 must start as root; locked and expired accounts are rejected.`,
+	"lsof": `Usage: lsof [-nP] [-p PID,...] [-i] [FILE]...
+List process file descriptors by inspecting /proc. -p selects processes, -i
+selects IPv4/IPv6 sockets, and FILE operands select exact open paths. Entries
+that kernel permissions hide are skipped.`,
 	"lsblk": `Usage: lsblk [-abn] [-o COLUMN,...]
 List Linux block devices from sysfs. Columns include NAME, KNAME, MAJ:MIN, RM,
 SIZE, RO, TYPE, MOUNTPOINT, and MOUNTPOINTS.`,
@@ -62,6 +121,9 @@ Run COMMAND and signal its process group if it exceeds DURATION. Exit status
 	"top": `Usage: top [-b] [-n ITERATIONS] [-d DELAY]
 Display process, memory, uptime, and load snapshots. Output is batch-oriented;
 up to 25 processes are shown, ordered by lifetime-average CPU use.`,
+	"traceroute": `Usage: traceroute [-46n] [-m HOPS] [-q PROBES] [-w SECONDS] HOST
+Trace an IPv4 or IPv6 route with increasing UDP hop limits and Linux's
+unprivileged UDP error queue. -n disables reverse DNS.`,
 	"udhcpc": `Usage: udhcpc [-i INTERFACE] [-t RETRIES] [-T SECONDS]
               [-x HOSTNAME] [--no-configure]
 Obtain one IPv4 DHCP lease, configure the address and default route, update
@@ -73,8 +135,13 @@ Encode or decode base64 data.`,
 Probe common filesystem signatures, labels, and UUIDs.`,
 	"cmp": `Usage: cmp [-s] FILE1 FILE2
 Compare two files byte by byte.`,
-	"curl": `Usage: curl [-sL] [-o FILE] [-X METHOD] [-d DATA] URL
-Transfer an HTTP or HTTPS resource.`,
+	"curl": `Usage: curl [-svL] [-o FILE] [-X METHOD] [-d DATA] URL
+Transfer an HTTP or HTTPS resource. -v writes connection details and request
+and response headers to standard error while preserving the response body.`,
+	"dig": `Usage: dig [@SERVER] NAME [TYPE] [+short] [+tcp] [+time=SECONDS]
+Query DNS over UDP with automatic TCP retry for truncated replies. Supported
+types are A, AAAA, CNAME, MX, NS, PTR, SOA, TXT, and ANY. Compressed names and
+response bounds are validated before records are displayed.`,
 	"diff": `Usage: diff [-u] FILE1 FILE2
 Show a line-oriented difference.`,
 	"dmesg": `Usage: dmesg [-c]
@@ -92,6 +159,8 @@ Display input in hexadecimal and ASCII.`,
        init [--] COMMAND [ARG]...
 Run the system initializer when invoked as PID 1. The default inittab path is
 /etc/inittab. Outside PID 1, supervise COMMAND and return its exit status.
+After sysinit entries finish, set the kernel hostname from /etc/hostname via
+/proc/sys/kernel/hostname; failures are reported without stopping boot.
 
 Inittab uses id:runlevels:action:process fields. Supported actions are sysinit,
 wait, once, respawn, askfirst, shutdown, ctrlaltdel, powerfail, powerwait, and
@@ -115,8 +184,9 @@ Display input in hexadecimal and ASCII.`,
 Print PIDs whose process names match a regular expression.`,
 	"pidof": `Usage: pidof NAME...
 Print process IDs for program names.`,
-	"ping": `Usage: ping [-c COUNT] [-W SECONDS] [-i SECONDS] HOST
-Send IPv4 ICMP echo requests.`,
+	"ping": `Usage: ping [-46] [-c COUNT] [-W SECONDS] [-i SECONDS] HOST
+Send IPv4 or IPv6 ICMP echo requests. The address family is selected from the
+resolved address unless -4 or -6 is specified.`,
 	"pkill": `Usage: pkill [-SIGNAL] [-fxv] PATTERN
 Signal processes whose names match a regular expression.`,
 	"poweroff": `Usage: poweroff [-nf]
@@ -215,6 +285,9 @@ Display the system hostname. Setting the hostname is intentionally unsupported.
 Options:
   -s        display the name before the first dot
   --help    show this help`,
+	"iftop": `Usage: iftop [-t] [-i INTERFACE] [-s SECONDS]
+Sample /proc/net/dev and report receive/transmit rates and totals per interface.
+This focused batch implementation accepts -n, -N, and -P for compatibility.`,
 	"id": `Usage: id [OPTION]... [USER]
 Display user and group identity information.
 

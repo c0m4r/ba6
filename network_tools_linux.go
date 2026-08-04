@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"os"
 	"strconv"
@@ -49,28 +50,54 @@ func cmdNslookup(args []string) int {
 
 func cmdPing(args []string) int {
 	count, timeout, interval := 4, time.Second, time.Second
+	family := 0
 	host := ""
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "-4":
+			if family == 6 {
+				fatalf("ping", "-4 and -6 are mutually exclusive")
+				return 2
+			}
+			family = 4
+		case "-6":
+			if family == 4 {
+				fatalf("ping", "-4 and -6 are mutually exclusive")
+				return 2
+			}
+			family = 6
 		case "-c":
 			i++
 			if i >= len(args) {
 				return 2
 			}
-			count, _ = strconv.Atoi(args[i])
+			var err error
+			count, err = strconv.Atoi(args[i])
+			if err != nil || count < 1 {
+				fatalf("ping", "invalid count %q", args[i])
+				return 2
+			}
 		case "-W":
 			i++
 			if i >= len(args) {
 				return 2
 			}
-			n, _ := strconv.ParseFloat(args[i], 64)
+			n, parseErr := strconv.ParseFloat(args[i], 64)
+			if parseErr != nil || n <= 0 {
+				fatalf("ping", "invalid timeout %q", args[i])
+				return 2
+			}
 			timeout = time.Duration(n * float64(time.Second))
 		case "-i":
 			i++
 			if i >= len(args) {
 				return 2
 			}
-			n, _ := strconv.ParseFloat(args[i], 64)
+			n, parseErr := strconv.ParseFloat(args[i], 64)
+			if parseErr != nil || n < 0 {
+				fatalf("ping", "invalid interval %q", args[i])
+				return 2
+			}
 			interval = time.Duration(n * float64(time.Second))
 		default:
 			if strings.HasPrefix(args[i], "-") {
@@ -91,16 +118,24 @@ func cmdPing(args []string) int {
 	}
 	var ip net.IP
 	for _, candidate := range ips {
-		if candidate.To4() != nil {
-			ip = candidate.To4()
+		if family != 6 && candidate.To4() != nil {
+			ip, family = candidate.To4(), 4
+			break
+		}
+		if family != 4 && candidate.To4() == nil && candidate.To16() != nil {
+			ip, family = candidate.To16(), 6
 			break
 		}
 	}
 	if ip == nil {
-		fatalf("ping", "IPv4 address required")
+		fatalf("ping", "no address found for requested family")
 		return 2
 	}
-	conn, err := net.ListenPacket("ip4:icmp", "0.0.0.0")
+	network, bindAddress, requestType, replyType := "ip4:icmp", "0.0.0.0", byte(8), byte(0)
+	if family == 6 {
+		network, bindAddress, requestType, replyType = "ip6:ipv6-icmp", "::", 128, 129
+	}
+	conn, err := net.ListenPacket(network, bindAddress)
 	if err != nil {
 		fatalf("ping", "%v", err)
 		return 2
@@ -112,11 +147,13 @@ func cmdPing(args []string) int {
 	fmt.Printf("PING %s (%s): 56 data bytes\n", host, ip)
 	for seq := 1; seq <= count; seq++ {
 		packet := make([]byte, 64)
-		packet[0] = 8
+		packet[0] = requestType
 		binary.BigEndian.PutUint16(packet[4:6], uint16(id))
 		binary.BigEndian.PutUint16(packet[6:8], uint16(seq))
 		binary.BigEndian.PutUint64(packet[8:16], uint64(time.Now().UnixNano()))
-		binary.BigEndian.PutUint16(packet[2:4], icmpChecksum(packet))
+		if family == 4 {
+			binary.BigEndian.PutUint16(packet[2:4], icmpChecksum(packet))
+		}
 		start := time.Now()
 		_ = conn.SetDeadline(start.Add(timeout))
 		_, err = conn.WriteTo(packet, &net.IPAddr{IP: ip})
@@ -127,11 +164,8 @@ func cmdPing(args []string) int {
 				if e != nil {
 					break
 				}
-				offset := 0
-				if n >= 20 && buf[0]>>4 == 4 {
-					offset = int(buf[0]&15) * 4
-				}
-				if n >= offset+8 && buf[offset] == 0 && int(binary.BigEndian.Uint16(buf[offset+4:offset+6])) == id && int(binary.BigEndian.Uint16(buf[offset+6:offset+8])) == seq {
+				offset, matches := matchPingReply(buf[:n], family, replyType, id, seq)
+				if matches {
 					elapsed := time.Since(start)
 					received++
 					total += elapsed
@@ -152,6 +186,19 @@ func cmdPing(args []string) int {
 	}
 	return 1
 }
+
+func matchPingReply(packet []byte, family int, replyType byte, id, sequence int) (int, bool) {
+	offset := 0
+	if family == 4 && len(packet) >= 20 && packet[0]>>4 == 4 {
+		offset = int(packet[0]&15) * 4
+	}
+	if len(packet) < offset+8 || packet[offset] != replyType {
+		return offset, false
+	}
+	return offset, int(binary.BigEndian.Uint16(packet[offset+4:offset+6])) == id &&
+		int(binary.BigEndian.Uint16(packet[offset+6:offset+8])) == sequence
+}
+
 func icmpChecksum(data []byte) uint16 {
 	sum := uint32(0)
 	for len(data) > 1 {
@@ -282,10 +329,30 @@ func cmdCurl(args []string) int { return httpFetch("curl", args) }
 func httpFetch(prog string, args []string) int {
 	output, method, data := "", "GET", ""
 	headers := http.Header{}
-	head, quiet, follow := false, false, prog == "wget"
+	head, quiet, verbose, follow := false, false, false, prog == "wget"
 	target := ""
 	for i := 0; i < len(args); i++ {
 		a := args[i]
+		if prog == "curl" && len(a) > 2 && strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") {
+			validCluster := true
+			for _, flag := range a[1:] {
+				switch flag {
+				case 's':
+					quiet = true
+				case 'v':
+					verbose = true
+				case 'L':
+					follow = true
+				case 'I':
+					head, method = true, "HEAD"
+				default:
+					validCluster = false
+				}
+			}
+			if validCluster {
+				continue
+			}
+		}
 		switch a {
 		case "-O", "-o", "--output":
 			i++
@@ -295,6 +362,12 @@ func httpFetch(prog string, args []string) int {
 			output = args[i]
 		case "-q", "--quiet", "-s", "--silent":
 			quiet = true
+		case "-v", "--verbose":
+			if prog != "curl" {
+				fatalf(prog, "unsupported option %q", a)
+				return 2
+			}
+			verbose = true
 		case "-L", "--location":
 			follow = true
 		case "-I", "--head":
@@ -350,6 +423,32 @@ func httpFetch(prog string, args []string) int {
 		return 2
 	}
 	req.Header = headers
+	if verbose {
+		trace := &httptrace.ClientTrace{
+			ConnectStart: func(network, address string) {
+				fmt.Fprintf(os.Stderr, "* Connecting to %s over %s\n", address, network)
+			},
+			GotConn: func(info httptrace.GotConnInfo) {
+				fmt.Fprintf(os.Stderr, "* Connected to %s from %s\n", info.Conn.RemoteAddr(), info.Conn.LocalAddr())
+			},
+		}
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
+		path := req.URL.RequestURI()
+		if path == "" {
+			path = "/"
+		}
+		host := req.Host
+		if host == "" {
+			host = req.URL.Host
+		}
+		fmt.Fprintf(os.Stderr, "> %s %s HTTP/1.1\n> Host: %s\n", req.Method, path, host)
+		for name, values := range req.Header {
+			for _, value := range values {
+				fmt.Fprintf(os.Stderr, "> %s: %s\n", name, value)
+			}
+		}
+		fmt.Fprintln(os.Stderr, ">")
+	}
 	client := &http.Client{Timeout: 60 * time.Second}
 	if !follow {
 		client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
@@ -360,7 +459,15 @@ func httpFetch(prog string, args []string) int {
 		return 1
 	}
 	defer resp.Body.Close()
-	if !quiet {
+	if verbose {
+		fmt.Fprintf(os.Stderr, "< %s %s\n", resp.Proto, resp.Status)
+		for name, values := range resp.Header {
+			for _, value := range values {
+				fmt.Fprintf(os.Stderr, "< %s: %s\n", name, value)
+			}
+		}
+		fmt.Fprintln(os.Stderr, "<")
+	} else if !quiet {
 		fmt.Fprintf(os.Stderr, "%s: %s\n", prog, resp.Status)
 	}
 	if head {
