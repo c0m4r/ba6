@@ -20,6 +20,20 @@ func TestHelpCommandAndFlagShareContent(t *testing.T) {
 	}
 }
 
+func TestManAliasesHelp(t *testing.T) {
+	man, ok := applets["man"]
+	if !ok {
+		t.Fatal("man applet is not registered")
+	}
+
+	helpStatus, helpOut, helpErr := captureApplet(t, cmdHelp, []string{"cat"}, "")
+	manStatus, manOut, manErr := captureApplet(t, man, []string{"cat"}, "")
+	if manStatus != helpStatus || manOut != helpOut || manErr != helpErr {
+		t.Fatalf("help=(%d,%q,%q) man=(%d,%q,%q)",
+			helpStatus, helpOut, helpErr, manStatus, manOut, manErr)
+	}
+}
+
 func TestDoubleDashPreventsHelpInterception(t *testing.T) {
 	if helpRequested([]string{"--", "--help"}) {
 		t.Fatal("literal --help operand was intercepted")

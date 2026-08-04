@@ -576,6 +576,11 @@ Show general help or detailed help for COMMAND.
 
 Options:
   --help    show this help`,
+	"man": `Usage: ba6 man [COMMAND]
+Alias for help. Show general help or detailed help for COMMAND.
+
+Options:
+  --help    show this help`,
 }
 
 func helpRequested(args []string) bool {

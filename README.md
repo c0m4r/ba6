@@ -14,7 +14,7 @@ The binary currently includes:
 ```text
 [ base64 basename blkid cat chgrp chmod chown cmp cp curl cut date df diff dirname
 dmesg du echo env expr false find free grep gunzip gzip halt head help hexdump hostname id
-init ip iptables kill ln ls mkdir mknod mount mv nano nc nslookup od pgrep pidof ping pkill
+init ip iptables kill ln ls man mkdir mknod mount mv nano nc nslookup od pgrep pidof ping pkill
 poweroff printenv printf ps pwd readlink realpath reboot rm rmdir sed seq sh sha256sum sleep sort ss
 stat strings sync tail tar tee test touch tr true umount uname uniq uptime wc wget
 which whoami xargs

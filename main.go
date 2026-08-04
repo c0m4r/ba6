@@ -58,6 +58,7 @@ var applets = map[string]applet{
 	"kill":      cmdKill,
 	"ln":        cmdLn,
 	"ls":        cmdLs,
+	"man":       cmdHelp,
 	"mkdir":     cmdMkdir,
 	"mknod":     cmdMknod,
 	"mount":     cmdMount,
