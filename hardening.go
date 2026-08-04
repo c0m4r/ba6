@@ -32,7 +32,7 @@ func hardeningForApplet(name string, pid int, seccompRequested bool) hardeningPr
 	// commands and interactive consoles that may later invoke login/setuid
 	// programs. These applets still disable core dumps at startup.
 	switch name {
-	case "chroot", "env", "sh", "switch_root", "timeout", "xargs":
+	case "chroot", "env", "login", "sh", "switch_root", "timeout", "xargs":
 		return hardeningProfile{}
 	}
 	return hardeningProfile{

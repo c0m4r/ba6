@@ -41,6 +41,7 @@ validation, fixture-based tests, and clearly documented filesystem support.
 - [ ] `pivot_root`
 - [ ] `setsid`
 - [ ] `getty`
+- [x] `login`
 - [ ] `nice`
 - [ ] `renice`
 - [ ] `nohup`

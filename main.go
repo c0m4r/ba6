@@ -62,6 +62,7 @@ var applets = map[string]applet{
 	"iptables":    cmdIptables,
 	"kill":        cmdKill,
 	"ln":          cmdLn,
+	"login":       cmdLogin,
 	"ls":          cmdLs,
 	"lsblk":       cmdLsblk,
 	"lsmod":       cmdLsmod,
@@ -179,7 +180,7 @@ func main() {
 
 func appletNeedsUnrestrictedSyscalls(name string) bool {
 	switch name {
-	case "chroot", "curl", "env", "init", "insmod", "modprobe", "mount", "nc", "nslookup", "ping",
+	case "chroot", "curl", "env", "init", "insmod", "login", "modprobe", "mount", "nc", "nslookup", "ping",
 		"rmmod", "sh", "switch_root", "timeout", "udhcpc", "umount", "wget", "xargs":
 		return true
 	}

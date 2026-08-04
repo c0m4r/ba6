@@ -14,7 +14,7 @@ The binary currently includes:
 ```text
 [ awk base64 basename blkid cat chgrp chmod chown chroot cmp cp curl cut date dd df diff dirname
 dmesg du echo env expr false file find free grep gunzip gzip halt head help hexdump hostname id
-init insmod ip iptables kill ln losetup ls lsblk lsmod man mkdir mktemp mknod modprobe mount mv
+init insmod ip iptables kill ln login losetup ls lsblk lsmod man mkdir mktemp mknod modprobe mount mv
 nano nc nslookup od pgrep pidof ping pkill poweroff printenv printf ps pwd readlink realpath reboot
 rm rmdir rmmod sed seq sh sha256sum sleep sort ss stat strings switch_root sync tail tar tee test
 timeout top touch tr true udhcpc umount uname uniq uptime wc wget which whoami xargs
@@ -82,7 +82,7 @@ for a serial-console system is:
 ::sysinit:/bin/mount -t proc proc /proc
 ::sysinit:/bin/mount -t sysfs sysfs /sys
 ::sysinit:/bin/mount -t devtmpfs devtmpfs /dev
-ttyS0::respawn:/bin/sh
+ttyS0::respawn:/bin/login
 ::shutdown:/bin/umount -a -r
 ```
 
@@ -101,6 +101,15 @@ runs configured actions, signals remaining processes, flushes buffers, unmounts
 filesystems deepest-first, remounts the root filesystem read-only, and invokes
 the kernel reboot operation. If reboot fails, PID 1 reports the error and stays
 alive. `init -f FILE` selects an alternate inittab.
+
+The bundled `login` applet authenticates against `/etc/passwd` and `/etc/shadow`
+and supports SHA-256 (`$5$`) and SHA-512 (`$6$`) crypt hashes. It rejects locked
+and expired accounts, initializes supplementary groups, drops all user and group
+IDs, clears the inherited environment except for `TERM`, and executes the shell
+from the passwd entry as a login shell. Configure `login` as a `respawn` service,
+as above, so logging out returns to a fresh credential prompt. `login` must be
+started by root and does not implement PAM-dependent policies or yescrypt/bcrypt
+password hashes.
 
 ## Network configuration
 

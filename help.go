@@ -33,6 +33,11 @@ kernels. Requires CAP_SYS_MODULE.`,
        losetup [-r] [-o OFFSET] [--sizelimit SIZE] LOOPDEV FILE
        losetup -d LOOPDEV
 List, find, attach, inspect, or detach Linux loop devices.`,
+	"login": `Usage: login [USERNAME]
+Authenticate a user against /etc/passwd and /etc/shadow, initialize their
+supplementary groups and environment, and start their configured login shell.
+SHA-256 ($5$) and SHA-512 ($6$) crypt password hashes are supported. The applet
+must start as root; locked and expired accounts are rejected.`,
 	"lsblk": `Usage: lsblk [-abn] [-o COLUMN,...]
 List Linux block devices from sysfs. Columns include NAME, KNAME, MAJ:MIN, RM,
 SIZE, RO, TYPE, MOUNTPOINT, and MOUNTPOINTS.`,
