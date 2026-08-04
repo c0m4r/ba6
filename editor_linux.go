@@ -231,9 +231,13 @@ func (e *miniEditor) scroll() {
 }
 func (e *miniEditor) refresh() {
 	var out strings.Builder
-	out.WriteString("\x1b[?25l\x1b[H")
+	// Disable autowrap while painting. Filling the last terminal column and then
+	// writing CRLF can otherwise wrap twice and scroll the first editor rows off
+	// the top of a narrow terminal.
+	out.WriteString("\x1b[?25l\x1b[?7l")
 	height := e.rows - 2
 	for y := 0; y < height; y++ {
+		fmt.Fprintf(&out, "\x1b[%d;1H", y+1)
 		index := e.rowOffset + y
 		if index < len(e.lines) {
 			line := e.lines[index]
@@ -255,7 +259,7 @@ func (e *miniEditor) refresh() {
 		} else {
 			out.WriteByte('~')
 		}
-		out.WriteString("\x1b[K\r\n")
+		out.WriteString("\x1b[K")
 	}
 	title := " ba6 nano "
 	if e.filename != "" {
@@ -267,15 +271,17 @@ func (e *miniEditor) refresh() {
 	if len(title) > e.cols {
 		title = title[:e.cols]
 	}
-	out.WriteString("\x1b[7m" + title + strings.Repeat(" ", maxInt(0, e.cols-len(title))) + "\x1b[m\r\n")
+	fmt.Fprintf(&out, "\x1b[%d;1H", height+1)
+	out.WriteString("\x1b[7m" + title + strings.Repeat(" ", maxInt(0, e.cols-len(title))) + "\x1b[m")
 	message := e.message
 	if len(message) > e.cols {
 		message = message[:e.cols]
 	}
+	fmt.Fprintf(&out, "\x1b[%d;1H", height+2)
 	out.WriteString(message + "\x1b[K")
 	cursorRow := e.row - e.rowOffset + 1
 	cursorCol := e.col - e.colOffset + 1
-	fmt.Fprintf(&out, "\x1b[%d;%dH\x1b[?25h", cursorRow, cursorCol)
+	fmt.Fprintf(&out, "\x1b[%d;%dH\x1b[?7h\x1b[?25h", cursorRow, cursorCol)
 	fmt.Fprint(os.Stdout, out.String())
 }
 func maxInt(a, b int) int {

@@ -431,6 +431,26 @@ func TestHTTPClientApplet(t *testing.T) {
 	if status != 0 || out != "downloaded" {
 		t.Fatalf("curl = (%d, %q)", status, out)
 	}
+
+	output := filepath.Join(t.TempDir(), "download")
+	status, _, stderr := captureApplet(t, cmdWget, []string{"-O", output, server.URL}, "")
+	data, err := os.ReadFile(output)
+	if status != 0 || err != nil || string(data) != "downloaded" {
+		t.Fatalf("wget = (%d, %q, %v)", status, data, err)
+	}
+	if !strings.Contains(stderr, "100% (10/10 bytes)") {
+		t.Fatalf("wget progress missing from stderr: %q", stderr)
+	}
+}
+
+func TestIPShortAddressShow(t *testing.T) {
+	status, stdout, stderr := captureApplet(t, cmdIP, []string{"a", "s"}, "")
+	if strings.Contains(stderr, `unknown address command "s"`) {
+		t.Fatalf("ip a s = (%d, %q, %q)", status, stdout, stderr)
+	}
+	if status == 0 && stdout == "" {
+		t.Fatal("ip a s succeeded without showing addresses")
+	}
 }
 
 func TestStorageHelpersAndEditorModel(t *testing.T) {
@@ -467,6 +487,26 @@ func TestStorageHelpersAndEditorModel(t *testing.T) {
 	data, err := os.ReadFile(file)
 	if err != nil || string(data) != "a\nb\n" {
 		t.Fatalf("saved editor data = %q, %v", data, err)
+	}
+}
+
+func TestEditorRefreshDoesNotWrapScreenRows(t *testing.T) {
+	status, output, stderr := captureApplet(t, func(_ []string) int {
+		editor := newMiniEditor("")
+		editor.rows = 3
+		editor.cols = 4
+		editor.lines = [][]byte{[]byte("1234")}
+		editor.refresh()
+		return 0
+	}, nil, "")
+	if status != 0 || stderr != "" {
+		t.Fatalf("refresh = (%d, %q)", status, stderr)
+	}
+	if !strings.Contains(output, "\x1b[?7l") || !strings.Contains(output, "\x1b[?7h") {
+		t.Fatalf("editor refresh does not bracket repaint with autowrap control: %q", output)
+	}
+	if strings.Contains(output, "\r\n") {
+		t.Fatalf("editor refresh can scroll via CRLF: %q", output)
 	}
 }
 

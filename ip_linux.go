@@ -73,7 +73,7 @@ object:
 }
 
 func ipAddress(family int, args []string) error {
-	if len(args) == 0 || args[0] == "show" || args[0] == "list" {
+	if len(args) == 0 || args[0] == "show" || args[0] == "list" || args[0] == "s" {
 		if len(args) > 0 {
 			args = args[1:]
 		}

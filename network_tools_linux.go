@@ -326,6 +326,50 @@ func readUnixSockets(listen, all bool) {
 
 func cmdWget(args []string) int { return httpFetch("wget", args) }
 func cmdCurl(args []string) int { return httpFetch("curl", args) }
+
+type downloadProgress struct {
+	destination io.Writer
+	output      io.Writer
+	total       int64
+	downloaded  int64
+	lastUpdate  time.Time
+}
+
+func newDownloadProgress(destination, output io.Writer, total int64) *downloadProgress {
+	p := &downloadProgress{destination: destination, output: output, total: total}
+	p.report(false)
+	return p
+}
+
+func (p *downloadProgress) Write(data []byte) (int, error) {
+	n, err := p.destination.Write(data)
+	p.downloaded += int64(n)
+	if time.Since(p.lastUpdate) >= 200*time.Millisecond || p.total > 0 && p.downloaded >= p.total {
+		p.report(false)
+	}
+	return n, err
+}
+
+func (p *downloadProgress) finish() {
+	p.report(true)
+}
+
+func (p *downloadProgress) report(final bool) {
+	if p.total > 0 {
+		percent := p.downloaded * 100 / p.total
+		if percent > 100 {
+			percent = 100
+		}
+		fmt.Fprintf(p.output, "\rwget: %3d%% (%d/%d bytes)", percent, p.downloaded, p.total)
+	} else {
+		fmt.Fprintf(p.output, "\rwget: %d bytes downloaded", p.downloaded)
+	}
+	if final {
+		fmt.Fprintln(p.output)
+	}
+	p.lastUpdate = time.Now()
+}
+
 func httpFetch(prog string, args []string) int {
 	output, method, data := "", "GET", ""
 	headers := http.Header{}
@@ -500,7 +544,15 @@ func httpFetch(prog string, args []string) int {
 		defer file.Close()
 		w = file
 	}
+	var progress *downloadProgress
+	if prog == "wget" && !quiet {
+		progress = newDownloadProgress(w, os.Stderr, resp.ContentLength)
+		w = progress
+	}
 	_, err = io.Copy(w, io.LimitReader(resp.Body, 1<<34))
+	if progress != nil {
+		progress.finish()
+	}
 	if err != nil {
 		fatalf(prog, "%v", err)
 		return 1
