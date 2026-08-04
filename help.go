@@ -8,6 +8,60 @@ import (
 )
 
 var appletHelp = map[string]string{ //nolint:gosec // G101: command help contains words such as "prefix", not credentials.
+	"awk": `Usage: awk [-F SEPARATOR] [-v NAME=VALUE] PROGRAM [FILE]...
+Process text as records and fields.
+
+Supported rules include BEGIN, END, /REGEX/, and expressions. Actions support
+print, printf, variable assignment and arithmetic assignment, next, and exit.
+Built-ins include NR, FNR, NF, FS, OFS, ORS, length, int, substr, tolower, and
+toupper. Arrays, user functions, getline, redirection, and system() are omitted.`,
+	"chroot": `Usage: chroot NEW_ROOT [COMMAND [ARG]...]
+Run COMMAND with NEW_ROOT as the filesystem root. The default command is
+/bin/sh -i. Requires appropriate privilege.`,
+	"dd": `Usage: dd [if=FILE] [of=FILE] [bs=N] [count=N] [skip=N] [seek=N]
+Copy data in blocks. ibs= and obs= set separate block sizes. Supported
+conversions are notrunc, sync, and noerror; status=none suppresses statistics.
+Size suffixes include c, w, b, K, kB, M, MB, G, and GB.`,
+	"file": `Usage: file [-b] FILE...
+Identify filesystem objects and common data formats using metadata and magic
+bytes. -b omits file names from output.`,
+	"insmod": `Usage: insmod MODULE_FILE [PARAMETER=VALUE]...
+Insert a kernel module using finit_module, with an init_module fallback on old
+kernels. Requires CAP_SYS_MODULE.`,
+	"losetup": `Usage: losetup -a
+       losetup -f [--show] [FILE]
+       losetup [-r] [-o OFFSET] [--sizelimit SIZE] LOOPDEV FILE
+       losetup -d LOOPDEV
+List, find, attach, inspect, or detach Linux loop devices.`,
+	"lsblk": `Usage: lsblk [-abn] [-o COLUMN,...]
+List Linux block devices from sysfs. Columns include NAME, KNAME, MAJ:MIN, RM,
+SIZE, RO, TYPE, MOUNTPOINT, and MOUNTPOINTS.`,
+	"lsmod": `Usage: lsmod
+Display loaded kernel modules from /proc/modules.`,
+	"mktemp": `Usage: mktemp [-d] [-p DIRECTORY] [TEMPLATE]
+Create a securely named temporary file or directory. TEMPLATE must contain a
+run of at least three X characters.`,
+	"modprobe": `Usage: modprobe [-qv] MODULE [PARAMETER=VALUE]...
+       modprobe -r [-qv] MODULE
+Load or remove a module and its dependencies using the running kernel's
+modules.dep, modules.alias, and modules.builtin files.`,
+	"rmmod": `Usage: rmmod [-f] MODULE...
+Remove kernel modules. Requires CAP_SYS_MODULE; -f also requires kernel support
+for forced module unloading.`,
+	"switch_root": `Usage: switch_root NEW_ROOT NEW_INIT [ARG]...
+As PID 1, pivot to NEW_ROOT, move API filesystem mounts, detach the old root,
+and execute NEW_INIT. NEW_ROOT must be a usable root filesystem.`,
+	"timeout": `Usage: timeout [-s SIGNAL] [-k DURATION] DURATION COMMAND [ARG]...
+Run COMMAND and signal its process group if it exceeds DURATION. Exit status
+124 indicates a timeout.`,
+	"top": `Usage: top [-b] [-n ITERATIONS] [-d DELAY]
+Display process, memory, uptime, and load snapshots. Output is batch-oriented;
+up to 25 processes are shown, ordered by lifetime-average CPU use.`,
+	"udhcpc": `Usage: udhcpc [-i INTERFACE] [-t RETRIES] [-T SECONDS]
+              [-x HOSTNAME] [--no-configure]
+Obtain one IPv4 DHCP lease, configure the address and default route, update
+/etc/resolv.conf, and exit. --no-configure performs the exchange without
+changing interface or resolver configuration.`,
 	"base64": `Usage: base64 [-d] [-w COLS] [FILE]
 Encode or decode base64 data.`,
 	"blkid": `Usage: blkid [DEVICE]...

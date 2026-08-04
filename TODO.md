@@ -6,21 +6,21 @@ BusyBox, or POSIX compatibility.
 
 ## Priority applets
 
-- [ ] `awk`
-- [ ] `dd`
-- [ ] `file`
-- [ ] `mktemp`
-- [ ] `timeout`
-- [ ] `top`
-- [ ] `lsblk`
-- [ ] `losetup`
-- [ ] `chroot`
-- [ ] `switch_root`
-- [ ] `lsmod`
-- [ ] `modprobe`
-- [ ] `insmod`
-- [ ] `rmmod`
-- [ ] `udhcpc` or another small DHCP client
+- [x] `awk`
+- [x] `dd`
+- [x] `file`
+- [x] `mktemp`
+- [x] `timeout`
+- [x] `top`
+- [x] `lsblk`
+- [x] `losetup`
+- [x] `chroot`
+- [x] `switch_root`
+- [x] `lsmod`
+- [x] `modprobe`
+- [x] `insmod`
+- [x] `rmmod`
+- [x] `udhcpc` or another small DHCP client
 
 ## Disk and filesystem recovery
 
@@ -97,4 +97,3 @@ validation, fixture-based tests, and clearly documented filesystem support.
 Execution features such as `sh` command substitution, `find -exec`, and
 `sed -i` expand the security and destructive-write surface. Their designs
 should preserve the project's explicit-write and startup-hardening goals.
-

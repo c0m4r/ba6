@@ -12,12 +12,12 @@ or `ba6 COMMAND --help` for the same documentation.
 The binary currently includes:
 
 ```text
-[ base64 basename blkid cat chgrp chmod chown cmp cp curl cut date df diff dirname
-dmesg du echo env expr false find free grep gunzip gzip halt head help hexdump hostname id
-init ip iptables kill ln ls man mkdir mknod mount mv nano nc nslookup od pgrep pidof ping pkill
-poweroff printenv printf ps pwd readlink realpath reboot rm rmdir sed seq sh sha256sum sleep sort ss
-stat strings sync tail tar tee test touch tr true umount uname uniq uptime wc wget
-which whoami xargs
+[ awk base64 basename blkid cat chgrp chmod chown chroot cmp cp curl cut date dd df diff dirname
+dmesg du echo env expr false file find free grep gunzip gzip halt head help hexdump hostname id
+init insmod ip iptables kill ln losetup ls lsblk lsmod man mkdir mktemp mknod modprobe mount mv
+nano nc nslookup od pgrep pidof ping pkill poweroff printenv printf ps pwd readlink realpath reboot
+rm rmdir rmmod sed seq sh sha256sum sleep sort ss stat strings switch_root sync tail tar tee test
+timeout top touch tr true udhcpc umount uname uniq uptime wc wget which whoami xargs
 ```
 
 The filesystem and scripting set includes hard and symbolic links, canonical
@@ -39,6 +39,10 @@ kernel logs, uptime, socket inspection, DNS, ICMP, HTTP(S), and TCP/UDP copying.
 forwarding, orphan reaping, descendant cleanup, and exit-status propagation.
 Storage recovery includes filesystem signature probing, node creation, mounting,
 unmounting, buffer flushing, and privileged halt/reboot/poweroff controls.
+It now also includes block-device discovery, loop-device setup, chroot and root
+switching, kernel-module management, and a focused one-shot DHCP client. Text
+recovery gains focused AWK processing, block copying, file identification,
+secure temporary files, command timeouts, and process snapshots.
 `nano` is a compact full-screen editor with
 navigation, insertion/deletion, line cutting, saving (`Ctrl-S`), and guarded
 exit (`Ctrl-X`).
@@ -52,9 +56,10 @@ the filter, invoke the binary as `ba6 --no-seccomp COMMAND ...` or
 
 Applets that genuinely require a syscall denied by the normal filter
 automatically skip seccomp. Mount and network applets retain `no_new_privs`;
-execution frontends (`sh`, `env`, and `xargs`) do not, because changing that
-state would silently prevent their children from using set-user-ID programs or
-file capabilities. A real PID 1 `init` likewise runs without seccomp or
+execution frontends (`sh`, `env`, `xargs`, `timeout`, `chroot`, and
+`switch_root`) do not, because changing that state would silently prevent their
+children from using set-user-ID programs or file capabilities. A real PID 1
+`init` likewise runs without seccomp or
 `no_new_privs`. Core-dump protection remains active for every profile. Other
 applets, including `nano`, continue to run with the filter enabled.
 
