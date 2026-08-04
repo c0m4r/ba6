@@ -25,15 +25,20 @@ Display or modify the environment and optionally run a command.`,
 	"expr": `Usage: expr EXPRESSION
 Evaluate arithmetic, comparisons, and boolean expressions.`,
 	"halt": `Usage: halt [-nf]
-Halt the machine through the Linux reboot syscall. Requires CAP_SYS_BOOT.`,
+Ask PID 1 to halt the machine. -f uses the reboot syscall directly and requires
+CAP_SYS_BOOT; -n skips the pre-syscall sync in forced mode.`,
 	"hexdump": `Usage: hexdump [-C] [FILE]
 Display input in hexadecimal and ASCII.`,
-	"init": `Usage: init [--] [COMMAND [ARG]...]
-Run a small PID-1/container supervisor. The default command is /bin/sh.
+	"init": `Usage: init [-f INITTAB]
+       init [--] COMMAND [ARG]...
+Run the system initializer when invoked as PID 1. The default inittab path is
+/etc/inittab. Outside PID 1, supervise COMMAND and return its exit status.
 
-Signals are forwarded to the command's process group, orphaned children are
-reaped, remaining descendants are terminated when the main command exits, and
-the main command's exit status is returned.`,
+Inittab uses id:runlevels:action:process fields. Supported actions are sysinit,
+wait, once, respawn, askfirst, shutdown, ctrlaltdel, powerfail, powerwait, and
+powerokwait. PID 1 never returns; SIGHUP reloads inittab, SIGINT runs ctrlaltdel
+and reboots, SIGUSR1 halts, SIGUSR2 powers off, SIGTERM reboots, and SIGPWR runs
+power-failure actions before powering off.`,
 	"mknod": `Usage: mknod [-m MODE] NAME TYPE [MAJOR MINOR]
 Create a FIFO, block device, or character device.`,
 	"mount": `Usage: mount [-t TYPE] [-o OPTIONS] DEVICE DIRECTORY
@@ -56,13 +61,15 @@ Send IPv4 ICMP echo requests.`,
 	"pkill": `Usage: pkill [-SIGNAL] [-fxv] PATTERN
 Signal processes whose names match a regular expression.`,
 	"poweroff": `Usage: poweroff [-nf]
-Power off the machine through the Linux reboot syscall. Requires CAP_SYS_BOOT.`,
+Ask PID 1 to power off. -f uses the reboot syscall directly and requires
+CAP_SYS_BOOT; -n skips the pre-syscall sync in forced mode.`,
 	"printenv": `Usage: printenv [NAME]...
 Print environment variables.`,
 	"printf": `Usage: printf FORMAT [ARG]...
 Format and print arguments with standard escape sequences.`,
 	"reboot": `Usage: reboot [-nf]
-Restart the machine through the Linux reboot syscall. Requires CAP_SYS_BOOT.`,
+Ask PID 1 to restart. -f uses the reboot syscall directly and requires
+CAP_SYS_BOOT; -n skips the pre-syscall sync in forced mode.`,
 	"seq": `Usage: seq [-s STRING] [-f FORMAT] [FIRST [INCREMENT]] LAST
 Print a numeric sequence.`,
 	"sh": `Usage: sh [-c COMMAND | FILE]
@@ -73,8 +80,9 @@ Display TCP, UDP, and Unix sockets from /proc.`,
 Print runs of printable bytes.`,
 	"sync": `Usage: sync
 Flush filesystem buffers.`,
-	"umount": `Usage: umount [-lf] TARGET...
-Unmount filesystems.`,
+	"umount": `Usage: umount [-aflr] [TARGET]...
+Unmount filesystems. -a processes all mounted filesystems and -r remounts
+busy filesystems read-only.`,
 	"uptime": `Usage: uptime [-p]
 Display system uptime and load averages.`,
 	"wget": `Usage: wget [-q] [-O FILE] URL

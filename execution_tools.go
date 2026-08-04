@@ -408,6 +408,34 @@ func runShellBuiltin(args []string) (int, bool, bool) {
 		return 0, true, false
 	}
 	switch args[0] {
+	case "echo":
+		return cmdEcho(args[1:]), true, false
+	case "printf":
+		return cmdPrintf(args[1:]), true, false
+	case "read":
+		name := "REPLY"
+		if len(args) > 1 {
+			name = args[1]
+		}
+		var value strings.Builder
+		one := []byte{0}
+		for {
+			n, err := os.Stdin.Read(one)
+			if n == 1 && one[0] != '\n' && one[0] != '\r' {
+				value.WriteByte(one[0])
+			}
+			if n == 1 && (one[0] == '\n' || one[0] == '\r') {
+				break
+			}
+			if err != nil {
+				if errors.Is(err, io.EOF) && value.Len() > 0 {
+					break
+				}
+				return 1, true, false
+			}
+		}
+		_ = os.Setenv(name, value.String())
+		return 0, true, false
 	case "cd":
 		dir := ""
 		if len(args) > 1 {

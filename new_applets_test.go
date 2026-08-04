@@ -3,15 +3,20 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestCoreExtraApplets(t *testing.T) {
@@ -93,6 +98,271 @@ func TestInitSupervisesAndPropagatesStatus(t *testing.T) {
 	if status != 128+int(syscall.SIGTERM) {
 		t.Fatalf("signaled init status = %d", status)
 	}
+}
+
+func TestInittabParsingAndBootOrdering(t *testing.T) {
+	input := strings.Join([]string{
+		"# boot configuration",
+		"::wait:/bin/echo wait",
+		"::sysinit:/bin/mount -t proc proc /proc",
+		"ttyS0::respawn:/bin/sh",
+		"::once:/bin/echo once",
+		"::shutdown:/bin/umount -a -r",
+		"broken line",
+	}, "\n")
+	entries, err := parseInittab(strings.NewReader(input))
+	if err == nil || !strings.Contains(err.Error(), "line 7") {
+		t.Fatalf("expected a line-numbered parse warning, got %v", err)
+	}
+	if len(entries) != 5 {
+		t.Fatalf("parsed %d entries, want 5", len(entries))
+	}
+	var order []string
+	for _, action := range []initAction{initSysinit, initWait, initOnce} {
+		for _, entry := range entriesForAction(entries, action) {
+			order = append(order, string(entry.action))
+		}
+	}
+	if strings.Join(order, ",") != "sysinit,wait,once" {
+		t.Fatalf("boot order = %v", order)
+	}
+	respawn := entriesForAction(entries, initRespawn)
+	if len(respawn) != 1 || respawn[0].id != "ttyS0" || respawn[0].command != "/bin/sh" {
+		t.Fatalf("respawn entry = %#v", respawn)
+	}
+}
+
+func TestInitBootAndShutdownActionsExecuteInOrder(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "order")
+	entries := []inittabEntry{
+		{action: initWait, command: "printf W >> " + marker, line: 1},
+		{action: initSysinit, command: "printf S >> " + marker, line: 2},
+		{action: initShutdown, command: "printf X >> " + marker, line: 3},
+	}
+	for _, action := range []initAction{initSysinit, initWait} {
+		runInitActions(entries, action)
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil || string(data) != "SW" {
+		t.Fatalf("boot order = %q, %v", data, err)
+	}
+	runInitActions(entries, initShutdown)
+	data, err = os.ReadFile(marker)
+	if err != nil || string(data) != "SWX" {
+		t.Fatalf("shutdown order = %q, %v", data, err)
+	}
+}
+
+func TestInitEnvironmentAndHardeningProfiles(t *testing.T) {
+	oldDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldMask := syscall.Umask(0)
+	syscall.Umask(oldMask)
+	t.Cleanup(func() { _ = os.Chdir(oldDirectory); syscall.Umask(oldMask) })
+	for _, name := range []string{"PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM"} {
+		t.Setenv(name, "")
+	}
+	establishInitEnvironment()
+	if os.Getenv("PATH") != "/sbin:/bin:/usr/sbin:/usr/bin" || os.Getenv("HOME") != "/root" || os.Getenv("TERM") != "linux" {
+		t.Fatalf("incomplete init environment: PATH=%q HOME=%q TERM=%q", os.Getenv("PATH"), os.Getenv("HOME"), os.Getenv("TERM"))
+	}
+	if profile := hardeningForApplet("init", 1, true); profile.noNewPrivs || profile.seccomp {
+		t.Fatalf("PID 1 profile = %+v", profile)
+	}
+	if profile := hardeningForApplet("init", 42, true); !profile.noNewPrivs || profile.seccomp {
+		t.Fatalf("non-PID-1 init profile = %+v", profile)
+	}
+	if profile := hardeningForApplet("sh", 42, true); profile.noNewPrivs || profile.seccomp {
+		t.Fatalf("execution frontend profile = %+v", profile)
+	}
+	if profile := hardeningForApplet("cat", 1, true); !profile.noNewPrivs || !profile.seccomp {
+		t.Fatalf("ordinary applet profile = %+v", profile)
+	}
+	if respawnDelay(1) != time.Second || respawnDelay(9) != 32*time.Second {
+		t.Fatalf("unexpected respawn delays")
+	}
+	if !powerStatusRestored("O\n") || powerStatusRestored("F\n") {
+		t.Fatalf("power status classification failed")
+	}
+}
+
+func TestInitPIDNamespaceRespawnsAndStaysAlive(t *testing.T) {
+	if os.Getenv("BA6_PID1_HELPER") == "1" {
+		cmdInit([]string{"-f", os.Getenv("BA6_INITTAB")})
+		t.Fatal("PID 1 returned")
+	}
+	unshare, err := exec.LookPath("unshare")
+	if err != nil {
+		t.Skip("unshare is unavailable")
+	}
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "respawned")
+	powerMarker := filepath.Join(dir, "power")
+	shutdownMarker := filepath.Join(dir, "shutdown")
+	inittab := filepath.Join(dir, "inittab")
+	configuration := "::respawn:/bin/sh -c 'echo x >> " + marker + "; exit 0'\n" +
+		"::powerfail:/bin/sh -c 'echo power >> " + powerMarker + "'\n" +
+		"::shutdown:/bin/sh -c 'echo shutdown >> " + shutdownMarker + "'\n"
+	if err := os.WriteFile(inittab, []byte(configuration), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(unshare, "--user", "--map-root-user", "--mount", "--pid", "--fork", "--kill-child=SIGKILL", "--mount-proc", os.Args[0], "-test.run=^TestInitPIDNamespaceRespawnsAndStaysAlive$") //nolint:gosec // G204: fixed integration-test command using the current test binary.
+	var output bytes.Buffer
+	command.Stdout, command.Stderr = &output, &output
+	command.Env = append(os.Environ(), "BA6_PID1_HELPER=1", "BA6_INITTAB="+inittab)
+	if err := command.Start(); err != nil {
+		t.Skipf("cannot start PID namespace: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- command.Wait() }()
+	finished := false
+	t.Cleanup(func() {
+		if finished {
+			return
+		}
+		if command.Process != nil {
+			_ = command.Process.Kill()
+		}
+		<-done
+	})
+	deadline := time.Now().Add(7 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case waitErr := <-done:
+			finished = true
+			message := output.String()
+			if strings.Contains(message, "Operation not permitted") || strings.Contains(message, "Permission denied") {
+				t.Skipf("PID namespaces unavailable: %s", strings.TrimSpace(message))
+			}
+			t.Fatalf("PID namespace init exited early: %v: %s", waitErr, message)
+		default:
+		}
+		data, _ := os.ReadFile(marker)
+		if strings.Count(string(data), "x\n") >= 2 {
+			initPID, err := namespaceInitHostPID(command.Process.Pid)
+			if err != nil {
+				t.Fatalf("locate namespace PID 1: %v", err)
+			}
+			if err := syscall.Kill(initPID, 0); err != nil {
+				t.Fatalf("PID 1 did not remain alive after respawn: %v", err)
+			}
+			if err := syscall.Kill(initPID, syscall.SIGPWR); err != nil {
+				t.Fatalf("send SIGPWR: %v", err)
+			}
+			shutdownDeadline := time.Now().Add(4 * time.Second)
+			for time.Now().Before(shutdownDeadline) {
+				power, _ := os.ReadFile(powerMarker)
+				shutdown, _ := os.ReadFile(shutdownMarker)
+				if strings.Contains(string(power), "power") && strings.Contains(string(shutdown), "shutdown") {
+					return
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+			t.Fatalf("SIGPWR actions did not run: %s", output.String())
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("respawn was not observed: %s", output.String())
+}
+
+func TestInitBinaryPID1HardeningProfile(t *testing.T) {
+	unshare, err := exec.LookPath("unshare")
+	if err != nil {
+		t.Skip("unshare is unavailable")
+	}
+	dir := t.TempDir()
+	binaryPath := filepath.Join(dir, "ba6")
+	build := exec.Command("go", "build", "-buildvcs=false", "-o", binaryPath, ".") //nolint:gosec // G204: fixed Go build integration command.
+	build.Env = append(os.Environ(), "CGO_ENABLED=0", "GOCACHE="+filepath.Join(dir, "go-cache"))
+	if output, buildErr := build.CombinedOutput(); buildErr != nil {
+		t.Fatalf("build init binary: %v: %s", buildErr, output)
+	}
+	statusFile := filepath.Join(dir, "status")
+	parentStatus, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentNoNewPrivs := procStatusValue(string(parentStatus), "NoNewPrivs")
+	parentFilters := procStatusValue(string(parentStatus), "Seccomp_filters")
+	inittab := filepath.Join(dir, "inittab")
+	configuration := "::once:/bin/sh -c \"grep -E '^(NoNewPrivs|Seccomp|Seccomp_filters):' /proc/1/status > " + statusFile + "\"\n" +
+		"::respawn:/bin/sleep 30\n"
+	if err := os.WriteFile(inittab, []byte(configuration), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(unshare, "--user", "--map-root-user", "--mount", "--pid", "--fork", "--kill-child=SIGKILL", "--mount-proc", binaryPath, "init", "-f", inittab) //nolint:gosec // G204: fixed PID-namespace integration command.
+	var output bytes.Buffer
+	command.Stdout, command.Stderr = &output, &output
+	if err := command.Start(); err != nil {
+		t.Skipf("cannot start PID namespace: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- command.Wait() }()
+	finished := false
+	t.Cleanup(func() {
+		if finished {
+			return
+		}
+		if command.Process != nil {
+			_ = command.Process.Kill()
+		}
+		<-done
+	})
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case waitErr := <-done:
+			finished = true
+			message := output.String()
+			if strings.Contains(message, "Operation not permitted") || strings.Contains(message, "Permission denied") {
+				t.Skipf("PID namespaces unavailable: %s", strings.TrimSpace(message))
+			}
+			t.Fatalf("PID 1 exited early: %v: %s", waitErr, message)
+		default:
+		}
+		data, _ := os.ReadFile(statusFile)
+		status := string(data)
+		if procStatusValue(status, "NoNewPrivs") == parentNoNewPrivs && procStatusValue(status, "Seccomp_filters") == parentFilters {
+			initPID, locateErr := namespaceInitHostPID(command.Process.Pid)
+			if locateErr != nil {
+				t.Fatal(locateErr)
+			}
+			if err := syscall.Kill(initPID, syscall.SIGUSR2); err != nil {
+				t.Fatalf("stop namespace init: %v", err)
+			}
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("PID 1 hardening status not observed: %s", output.String())
+}
+
+func procStatusValue(status, name string) string {
+	for _, line := range strings.Split(status, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && strings.TrimSuffix(fields[0], ":") == name {
+			return fields[1]
+		}
+	}
+	return ""
+}
+
+func namespaceInitHostPID(unsharePID int) (int, error) {
+	path := fmt.Sprintf("/proc/%d/task/%d/children", unsharePID, unsharePID)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			fields := strings.Fields(string(data))
+			if len(fields) > 0 {
+				return strconv.Atoi(fields[0])
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return 0, fmt.Errorf("no child listed in %s", path)
 }
 
 func TestWhichAndPowerOptionValidation(t *testing.T) {

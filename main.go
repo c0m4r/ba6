@@ -123,7 +123,7 @@ func main() {
 	if _, direct := applets[target]; !direct && len(args) > 0 {
 		target = args[0]
 	}
-	applyHardening(seccompEnabled && !appletNeedsUnrestrictedSyscalls(target))
+	applyHardeningProfile(hardeningForApplet(target, os.Getpid(), seccompEnabled))
 
 	// Invoked via symlink (e.g. "cat"): dispatch directly.
 	if fn, ok := applets[prog]; ok {

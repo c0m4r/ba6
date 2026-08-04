@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -80,23 +81,33 @@ func cmdSync(args []string) int {
 }
 
 func cmdReboot(args []string) int {
-	return powerControl("reboot", args, syscall.LINUX_REBOOT_CMD_RESTART)
+	return powerControl("reboot", args, syscall.LINUX_REBOOT_CMD_RESTART, syscall.SIGTERM)
 }
 func cmdPoweroff(args []string) int {
-	return powerControl("poweroff", args, syscall.LINUX_REBOOT_CMD_POWER_OFF)
+	return powerControl("poweroff", args, syscall.LINUX_REBOOT_CMD_POWER_OFF, syscall.SIGUSR2)
 }
-func cmdHalt(args []string) int { return powerControl("halt", args, syscall.LINUX_REBOOT_CMD_HALT) }
-func powerControl(prog string, args []string, action int) int {
-	skipSync := false
+func cmdHalt(args []string) int {
+	return powerControl("halt", args, syscall.LINUX_REBOOT_CMD_HALT, syscall.SIGUSR1)
+}
+func powerControl(prog string, args []string, action int, initSignal syscall.Signal) int {
+	skipSync, force := false, false
 	for _, arg := range args {
 		switch arg {
 		case "-n", "--no-sync":
 			skipSync = true
 		case "-f", "--force":
+			force = true
 		default:
 			fatalf(prog, "unsupported option %q", arg)
 			return 1
 		}
+	}
+	if !force && os.Getpid() != 1 {
+		if err := syscall.Kill(1, initSignal); err != nil {
+			fatalf(prog, "signal init: %v", err)
+			return 1
+		}
+		return 0
 	}
 	if !skipSync {
 		syscall.Sync()
@@ -321,7 +332,7 @@ func listMounts() int {
 	return 0
 }
 func cmdUmount(args []string) int {
-	flags := 0
+	flags, all, remountReadonly := 0, false, false
 	targets := []string{}
 	for _, a := range args {
 		switch a {
@@ -329,13 +340,49 @@ func cmdUmount(args []string) int {
 			flags |= syscall.MNT_DETACH
 		case "-f", "--force":
 			flags |= syscall.MNT_FORCE
+		case "-a", "--all":
+			all = true
+		case "-r", "--read-only":
+			remountReadonly = true
 		default:
+			if strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") {
+				for _, option := range strings.TrimPrefix(a, "-") {
+					switch option {
+					case 'l':
+						flags |= syscall.MNT_DETACH
+					case 'f':
+						flags |= syscall.MNT_FORCE
+					case 'a':
+						all = true
+					case 'r':
+						remountReadonly = true
+					default:
+						fatalf("umount", "unsupported option -%c", option)
+						return 1
+					}
+				}
+				continue
+			}
 			if strings.HasPrefix(a, "-") {
 				fatalf("umount", "unsupported option %q", a)
 				return 1
 			}
 			targets = append(targets, a)
 		}
+	}
+	if all {
+		data, err := os.ReadFile("/proc/self/mounts")
+		if err != nil {
+			fatalf("umount", "%v", err)
+			return 1
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 && fields[1] != "/" {
+				targets = append(targets, decodeMountField(fields[1]))
+			}
+		}
+		sort.SliceStable(targets, func(i, j int) bool { return len(targets[i]) > len(targets[j]) })
 	}
 	if len(targets) == 0 {
 		fatalf("umount", "missing operand")
@@ -344,7 +391,16 @@ func cmdUmount(args []string) int {
 	status := 0
 	for _, t := range targets {
 		if err := syscall.Unmount(t, flags); err != nil {
+			if remountReadonly && syscall.Mount("", t, "", syscall.MS_REMOUNT|syscall.MS_RDONLY, "") == nil {
+				continue
+			}
 			fatalf("umount", "%s: %v", t, err)
+			status = 1
+		}
+	}
+	if all && remountReadonly {
+		if err := syscall.Mount("", "/", "", syscall.MS_REMOUNT|syscall.MS_RDONLY, ""); err != nil {
+			fatalf("umount", "/: %v", err)
 			status = 1
 		}
 	}
