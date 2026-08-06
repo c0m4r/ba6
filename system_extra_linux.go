@@ -517,7 +517,13 @@ func probeFilesystem(path string) (string, string, string, error) {
 		return kind, label, uuid, nil
 	}
 	if string(buf[:4]) == "XFSB" {
-		return "xfs", "", formatUUID(buf[32:48]), nil
+		return "xfs", strings.TrimRight(string(buf[0x6c:0x78]), "\x00 "), formatUUID(buf[32:48]), nil
+	}
+	// btrfs keeps its superblock at 64 KiB so that a boot loader can live
+	// in front of it, so it needs a second read.
+	super := make([]byte, 4096)
+	if _, e := f.ReadAt(super, 65536); e == nil && string(super[64:72]) == "_BHRfS_M" {
+		return "btrfs", strings.TrimRight(string(super[299:555]), "\x00 "), formatUUID(super[32:48]), nil
 	}
 	if string(buf[3:11]) == "NTFS    " {
 		return "ntfs", "", "", nil

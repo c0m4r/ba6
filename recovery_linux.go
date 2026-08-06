@@ -761,18 +761,85 @@ func pathIsInUse(path string) (bool, error) {
 	return false, nil
 }
 
-// The ext2 formatter and checker below deliberately support one conservative
-// profile: a 4 KiB block, single-group, revision-1 ext2 filesystem. Keeping the
-// accepted format narrow makes every metadata offset independently verifiable.
+// The ext formatter and checker below deliberately support one conservative
+// geometry: a 4 KiB block, single-group, revision-1 filesystem. Keeping the
+// written format narrow makes every metadata offset independently verifiable.
+// Only the feature set varies between ext2, ext3, and ext4.
 const (
-	ext2BlockSize      = 4096
-	ext2InodeSize      = 128
-	ext2Inodes         = 1024
-	ext2InodeTableBlks = ext2Inodes * ext2InodeSize / ext2BlockSize
-	ext2RootBlock      = 4 + ext2InodeTableBlks
-	ext2LostFoundBlock = ext2RootBlock + 1
-	ext2FirstFreeBlock = ext2LostFoundBlock + 1
+	ext2BlockSize    = 4096
+	ext2InodeSize    = 128
+	ext4InodeSize    = 256
+	ext2Inodes       = 1024
+	extReservedInode = 11
+	// extJournalBlocks is JBD2's minimum journal length, and also the size
+	// mke2fs picks for every filesystem this formatter can create.
+	extJournalBlocks   = 1024
+	extJournalMagic    = 0xc03b3998
+	extExtentMagic     = 0xf30a
+	extInodeExtentsFlg = 0x80000
+	extExtraIsize      = 32
 )
+
+// extProfile names one of the supported ext-family on-disk formats. ext3 adds a
+// journal to ext2, and ext4 additionally maps file data with extent trees and
+// widens inodes so that later kernels can store the extra timestamp fields.
+type extProfile struct {
+	name      string
+	inodeSize uint32
+	journal   bool
+	extents   bool
+	minBlocks uint32
+}
+
+var extProfiles = map[string]extProfile{
+	"ext2": {name: "ext2", inodeSize: ext2InodeSize, minBlocks: 256},
+	"ext3": {name: "ext3", inodeSize: ext2InodeSize, journal: true, minBlocks: 2048},
+	"ext4": {name: "ext4", inodeSize: ext4InodeSize, journal: true, extents: true, minBlocks: 2048},
+}
+
+// extLayout is the block assignment derived from a profile. Every block below
+// firstFree is metadata written by the formatter; everything above it is free.
+type extLayout struct {
+	inodeTable      uint32
+	inodeTableBlks  uint32
+	root            uint32
+	lostFound       uint32
+	journal         uint32
+	journalIndirect uint32
+	firstFree       uint32
+}
+
+func (p extProfile) layout() extLayout {
+	// Blocks 0 through 3 hold the superblock, the group descriptor table, the
+	// block bitmap, and the inode bitmap respectively.
+	layout := extLayout{inodeTable: 4, inodeTableBlks: ext2Inodes * p.inodeSize / ext2BlockSize}
+	layout.root = layout.inodeTable + layout.inodeTableBlks
+	layout.lostFound = layout.root + 1
+	layout.firstFree = layout.lostFound + 1
+	if p.journal {
+		layout.journal = layout.firstFree
+		layout.firstFree = layout.journal + extJournalBlocks
+		if !p.extents {
+			// A block-mapped journal needs one indirect block for the
+			// blocks that do not fit in the twelve direct pointers.
+			layout.journalIndirect = layout.firstFree
+			layout.firstFree++
+		}
+	}
+	return layout
+}
+
+// journalBlockCount is the number of blocks the journal occupies on disk,
+// including the indirect block a block-mapped journal needs.
+func (p extProfile) journalBlockCount() uint32 {
+	if !p.journal {
+		return 0
+	}
+	if p.extents {
+		return extJournalBlocks
+	}
+	return extJournalBlocks + 1
+}
 
 func cmdMkfs(args []string) int {
 	filesystem := ""
@@ -790,108 +857,164 @@ func cmdMkfs(args []string) int {
 		}
 	}
 	if filesystem == "" {
-		fatalf("mkfs", "filesystem type is required (supported: ext2)")
+		fatalf("mkfs", "filesystem type is required (supported: %s)", mkfsSupportedTypes)
 		return 1
 	}
-	if filesystem != "ext2" {
-		fatalf("mkfs", "unsupported filesystem type %q (supported: ext2)", filesystem)
-		return 1
+	switch filesystem {
+	case "ext2", "ext3", "ext4":
+		return mkfsExt("mkfs."+filesystem, forward, extProfiles[filesystem])
+	case "xfs":
+		return cmdMkfsXfs(forward)
+	case "btrfs":
+		return cmdMkfsBtrfs(forward)
 	}
-	return cmdMkfsExt2(forward)
+	fatalf("mkfs", "unsupported filesystem type %q (supported: %s)", filesystem, mkfsSupportedTypes)
+	return 1
 }
 
-func cmdMkfsExt2(args []string) int {
-	force := false
-	label := ""
-	var operands []string
-	for index := 0; index < len(args); index++ {
-		switch args[index] {
-		case "-F", "--force":
-			force = true
-		case "-L":
-			index++
-			if index >= len(args) {
-				fatalf("mkfs.ext2", "-L requires a label")
-				return 1
-			}
-			label = args[index]
-		default:
-			if strings.HasPrefix(args[index], "-") {
-				fatalf("mkfs.ext2", "unsupported option %q", args[index])
-				return 1
-			}
-			operands = append(operands, args[index])
-		}
-	}
-	if len(operands) < 1 || len(operands) > 2 {
-		fatalf("mkfs.ext2", "expected DEVICE [BLOCKS]")
+const mkfsSupportedTypes = "ext2, ext3, ext4, xfs, btrfs"
+
+func cmdMkfsExt2(args []string) int { return mkfsExt("mkfs.ext2", args, extProfiles["ext2"]) }
+func cmdMkfsExt3(args []string) int { return mkfsExt("mkfs.ext3", args, extProfiles["ext3"]) }
+func cmdMkfsExt4(args []string) int { return mkfsExt("mkfs.ext4", args, extProfiles["ext4"]) }
+
+func mkfsExt(prog string, args []string, profile extProfile) int {
+	request, ok := parseFormatArgs(prog, args, 16)
+	if !ok {
 		return 1
 	}
-	if len(label) > 16 || strings.IndexByte(label, 0) >= 0 {
-		fatalf("mkfs.ext2", "label must contain at most 16 non-NUL bytes")
-		return 1
-	}
-	path := operands[0]
-	file, err := os.OpenFile(path, os.O_RDWR, 0)
-	if err != nil {
-		fatalf("mkfs.ext2", "%s: %v", path, err)
-		return 1
+	file, bytesAvailable, status := openFormatTarget(prog, request.device, request.force)
+	if file == nil {
+		return status
 	}
 	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		fatalf("mkfs.ext2", "%s: %v", path, err)
-		return 1
-	}
-	if !info.Mode().IsRegular() && !isBlockDevice(info.Mode()) {
-		fatalf("mkfs.ext2", "%s is not a regular file or block device", path)
-		return 1
-	}
-	if info.Mode().IsRegular() && !force {
-		fatalf("mkfs.ext2", "%s is a regular file; use -F to confirm formatting", path)
-		return 1
-	}
-	if !force {
-		mounted, mountErr := pathIsInUse(path)
-		if mountErr != nil {
-			fatalf("mkfs.ext2", "cannot verify mount status: %v", mountErr)
-			return 1
-		}
-		if mounted {
-			fatalf("mkfs.ext2", "%s is mounted or active swap", path)
-			return 1
-		}
-	}
-	bytesAvailable, err := deviceSize(file)
-	if err != nil {
-		fatalf("mkfs.ext2", "%s: %v", path, err)
-		return 1
-	}
 	blocks := bytesAvailable / ext2BlockSize
-	if len(operands) == 2 {
-		requested, parseErr := strconv.ParseUint(operands[1], 10, 32)
-		if parseErr != nil || requested == 0 || requested%4 != 0 || requested > bytesAvailable/1024 {
-			fatalf("mkfs.ext2", "invalid 1 KiB block count %q", operands[1])
+	if request.kibibytes != 0 {
+		if request.kibibytes%4 != 0 || request.kibibytes > bytesAvailable/1024 {
+			fatalf(prog, "invalid 1 KiB block count %d", request.kibibytes)
 			return 1
 		}
-		blocks = requested * 1024 / ext2BlockSize
+		blocks = request.kibibytes * 1024 / ext2BlockSize
 	}
-	if blocks < 256 || blocks > ext2BlockSize*8 {
-		fatalf("mkfs.ext2", "supported filesystem size is 1 MiB through 128 MiB")
+	if blocks < uint64(profile.minBlocks) || blocks > ext2BlockSize*8 {
+		fatalf(prog, "supported %s size is %s through 128 MiB", profile.name,
+			humanSizeUint64(uint64(profile.minBlocks)*ext2BlockSize))
 		return 1
 	}
-	if err := writeExt2(file, uint32(blocks), label); err != nil {
-		fatalf("mkfs.ext2", "%s: %v", path, err)
+	if err := writeExtFilesystem(file, uint32(blocks), request.label, profile); err != nil {
+		fatalf(prog, "%s: %v", request.device, err)
 		return 1
 	}
 	return 0
 }
 
-func writeExt2(file *os.File, blocks uint32, label string) error {
-	if blocks <= ext2FirstFreeBlock {
+// formatRequest is the option set every mkfs applet accepts. kibibytes is the
+// optional explicit size operand, expressed in 1 KiB units like mke2fs, and is
+// zero when the whole target should be used.
+type formatRequest struct {
+	force     bool
+	label     string
+	device    string
+	kibibytes uint64
+}
+
+func parseFormatArgs(prog string, args []string, labelMax int) (formatRequest, bool) {
+	var request formatRequest
+	var operands []string
+	for index := 0; index < len(args); index++ {
+		switch args[index] {
+		case "-F", "-f", "--force":
+			request.force = true
+		case "-L", "--label":
+			flag := args[index]
+			index++
+			if index >= len(args) {
+				fatalf(prog, "%s requires a label", flag)
+				return request, false
+			}
+			request.label = args[index]
+		default:
+			if strings.HasPrefix(args[index], "-") {
+				fatalf(prog, "unsupported option %q", args[index])
+				return request, false
+			}
+			operands = append(operands, args[index])
+		}
+	}
+	if len(operands) < 1 || len(operands) > 2 {
+		fatalf(prog, "expected DEVICE [BLOCKS]")
+		return request, false
+	}
+	if len(request.label) > labelMax || strings.IndexByte(request.label, 0) >= 0 {
+		fatalf(prog, "label must contain at most %d non-NUL bytes", labelMax)
+		return request, false
+	}
+	request.device = operands[0]
+	if len(operands) == 2 {
+		kibibytes, err := strconv.ParseUint(operands[1], 10, 64)
+		if err != nil || kibibytes == 0 {
+			fatalf(prog, "invalid 1 KiB block count %q", operands[1])
+			return request, false
+		}
+		request.kibibytes = kibibytes
+	}
+	return request, true
+}
+
+// openFormatTarget performs the checks every formatter shares: the target must
+// be a block device or an explicitly forced regular file, and it must not be
+// mounted or in use as swap. A nil file means the returned status should be
+// used as the applet exit code.
+func openFormatTarget(prog, path string, force bool) (*os.File, uint64, int) {
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		fatalf(prog, "%s: %v", path, err)
+		return nil, 0, 1
+	}
+	info, err := file.Stat()
+	if err != nil {
+		file.Close()
+		fatalf(prog, "%s: %v", path, err)
+		return nil, 0, 1
+	}
+	if !info.Mode().IsRegular() && !isBlockDevice(info.Mode()) {
+		file.Close()
+		fatalf(prog, "%s is not a regular file or block device", path)
+		return nil, 0, 1
+	}
+	if info.Mode().IsRegular() && !force {
+		file.Close()
+		fatalf(prog, "%s is a regular file; use -F to confirm formatting", path)
+		return nil, 0, 1
+	}
+	if !force {
+		mounted, mountErr := pathIsInUse(path)
+		if mountErr != nil {
+			file.Close()
+			fatalf(prog, "cannot verify mount status: %v", mountErr)
+			return nil, 0, 1
+		}
+		if mounted {
+			file.Close()
+			fatalf(prog, "%s is mounted or active swap", path)
+			return nil, 0, 1
+		}
+	}
+	size, err := deviceSize(file)
+	if err != nil {
+		file.Close()
+		fatalf(prog, "%s: %v", path, err)
+		return nil, 0, 1
+	}
+	return file, size, 0
+}
+
+func writeExtFilesystem(file *os.File, blocks uint32, label string, profile extProfile) error {
+	layout := profile.layout()
+	if blocks <= layout.firstFree {
 		return fmt.Errorf("device is too small")
 	}
-	metadata := make([]byte, ext2FirstFreeBlock*ext2BlockSize)
+	metadata := make([]byte, uint64(layout.firstFree)*ext2BlockSize)
 	now := uint32(time.Now().Unix()) //nolint:gosec // ext2 revision 1 uses unsigned 32-bit timestamps.
 	uuid := make([]byte, 16)
 	if _, err := rand.Read(uuid); err != nil {
@@ -900,11 +1023,38 @@ func writeExt2(file *os.File, blocks uint32, label string) error {
 	uuid[6] = uuid[6]&0x0f | 0x40
 	uuid[8] = uuid[8]&0x3f | 0x80
 
+	inodeTable := metadata[uint64(layout.inodeTable)*ext2BlockSize : uint64(layout.root)*ext2BlockSize]
+	inodeAt := func(number uint32) []byte {
+		start := uint64(number-1) * uint64(profile.inodeSize)
+		return inodeTable[start : start+uint64(profile.inodeSize)]
+	}
+	writeExtDirectoryInode(inodeAt(2), layout.root, 3, now, profile)
+	writeExtDirectoryInode(inodeAt(extReservedInode), layout.lostFound, 2, now, profile)
+	journalInode := []byte(nil)
+	if profile.journal {
+		journalInode = inodeAt(8)
+		writeExtJournalInode(journalInode, layout, profile, now)
+		writeExtJournalSuperblock(metadata[uint64(layout.journal)*ext2BlockSize:], uuid)
+		if !profile.extents {
+			indirect := metadata[uint64(layout.journalIndirect)*ext2BlockSize:]
+			for index := uint32(12); index < extJournalBlocks; index++ {
+				binary.LittleEndian.PutUint32(indirect[(index-12)*4:(index-12)*4+4], layout.journal+index)
+			}
+		}
+	}
+
 	super := metadata[1024:2048]
 	put32 := func(offset int, value uint32) { binary.LittleEndian.PutUint32(super[offset:offset+4], value) }
 	put16 := func(offset int, value uint16) { binary.LittleEndian.PutUint16(super[offset:offset+2], value) }
-	freeBlocks := blocks - ext2FirstFreeBlock
-	freeInodes := uint32(ext2Inodes - 11)
+	freeBlocks := blocks - layout.firstFree
+	freeInodes := uint32(ext2Inodes - extReservedInode)
+	compat, incompat, roCompat := uint32(0), uint32(0x2), uint32(0x1)
+	if profile.journal {
+		compat |= 0x4
+	}
+	if profile.extents {
+		incompat |= 0x40
+	}
 	put32(0, ext2Inodes)
 	put32(4, blocks)
 	put32(8, blocks/20)
@@ -927,45 +1077,56 @@ func writeExt2(file *os.File, blocks uint32, label string) error {
 	put32(68, 180*24*60*60)
 	put32(72, 0)
 	put32(76, 1)
-	put32(84, 11)
-	put16(88, ext2InodeSize)
-	put32(96, 2) // Directory entries carry a file-type byte.
-	put32(100, 1)
+	put32(84, extReservedInode)
+	put16(88, uint16(profile.inodeSize)) //nolint:gosec // Profile inode sizes are 128 or 256.
+	put32(92, compat)
+	put32(96, incompat) // Directory entries carry a file-type byte.
+	put32(100, roCompat)
 	copy(super[104:120], uuid)
 	copy(super[120:136], label)
+	put32(264, now) // s_mkfs_time
+	if profile.journal {
+		put32(224, 8) // s_journal_inum
+		super[253] = 1
+		// s_jnl_blocks backs up the journal inode's block map and size so
+		// that a checker can find the journal if the inode is damaged.
+		copy(super[268:328], journalInode[40:100])
+		put32(332, extJournalBlocks*ext2BlockSize)
+	}
+	if profile.inodeSize > ext2InodeSize {
+		put16(348, extExtraIsize) // s_min_extra_isize
+		put16(350, extExtraIsize) // s_want_extra_isize
+	}
 
 	group := metadata[ext2BlockSize : ext2BlockSize+32]
 	binary.LittleEndian.PutUint32(group[0:4], 2)
 	binary.LittleEndian.PutUint32(group[4:8], 3)
-	binary.LittleEndian.PutUint32(group[8:12], 4)
+	binary.LittleEndian.PutUint32(group[8:12], layout.inodeTable)
 	binary.LittleEndian.PutUint16(group[12:14], uint16(freeBlocks)) //nolint:gosec // Single group has at most 32768 blocks.
 	binary.LittleEndian.PutUint16(group[14:16], uint16(freeInodes))
 	binary.LittleEndian.PutUint16(group[16:18], 2)
 
 	blockBitmap := metadata[2*ext2BlockSize : 3*ext2BlockSize]
-	for block := uint32(0); block < ext2FirstFreeBlock; block++ {
+	for block := uint32(0); block < layout.firstFree; block++ {
 		setBitmapBit(blockBitmap, block)
 	}
 	for block := blocks; block < ext2BlockSize*8; block++ {
 		setBitmapBit(blockBitmap, block)
 	}
 	inodeBitmap := metadata[3*ext2BlockSize : 4*ext2BlockSize]
-	for inode := uint32(0); inode < 11; inode++ {
+	for inode := uint32(0); inode < extReservedInode; inode++ {
 		setBitmapBit(inodeBitmap, inode)
 	}
 	for inode := uint32(ext2Inodes); inode < ext2BlockSize*8; inode++ {
 		setBitmapBit(inodeBitmap, inode)
 	}
 
-	inodeTable := metadata[4*ext2BlockSize : ext2RootBlock*ext2BlockSize]
-	writeExt2DirectoryInode(inodeTable[(2-1)*ext2InodeSize:], ext2RootBlock, 3, now)
-	writeExt2DirectoryInode(inodeTable[(11-1)*ext2InodeSize:], ext2LostFoundBlock, 2, now)
-	root := metadata[ext2RootBlock*ext2BlockSize : (ext2RootBlock+1)*ext2BlockSize]
+	root := metadata[uint64(layout.root)*ext2BlockSize : uint64(layout.root+1)*ext2BlockSize]
 	writeExt2Dirent(root[0:12], 2, 12, ".")
 	writeExt2Dirent(root[12:24], 2, 12, "..")
-	writeExt2Dirent(root[24:], 11, ext2BlockSize-24, "lost+found")
-	lostFound := metadata[ext2LostFoundBlock*ext2BlockSize : ext2FirstFreeBlock*ext2BlockSize]
-	writeExt2Dirent(lostFound[0:12], 11, 12, ".")
+	writeExt2Dirent(root[24:], extReservedInode, ext2BlockSize-24, "lost+found")
+	lostFound := metadata[uint64(layout.lostFound)*ext2BlockSize : uint64(layout.lostFound+1)*ext2BlockSize]
+	writeExt2Dirent(lostFound[0:12], extReservedInode, 12, ".")
 	writeExt2Dirent(lostFound[12:], 2, ext2BlockSize-12, "..")
 
 	if _, err := file.WriteAt(metadata, 0); err != nil {
@@ -978,7 +1139,7 @@ func setBitmapBit(bitmap []byte, bit uint32) {
 	bitmap[bit/8] |= 1 << (bit % 8)
 }
 
-func writeExt2DirectoryInode(inode []byte, block uint32, links uint16, now uint32) {
+func writeExtDirectoryInode(inode []byte, block uint32, links uint16, now uint32, profile extProfile) {
 	binary.LittleEndian.PutUint16(inode[0:2], 0x41ed)
 	binary.LittleEndian.PutUint32(inode[4:8], ext2BlockSize)
 	binary.LittleEndian.PutUint32(inode[8:12], now)
@@ -986,7 +1147,69 @@ func writeExt2DirectoryInode(inode []byte, block uint32, links uint16, now uint3
 	binary.LittleEndian.PutUint32(inode[16:20], now)
 	binary.LittleEndian.PutUint16(inode[26:28], links)
 	binary.LittleEndian.PutUint32(inode[28:32], ext2BlockSize/512)
-	binary.LittleEndian.PutUint32(inode[40:44], block)
+	if profile.extents {
+		binary.LittleEndian.PutUint32(inode[32:36], extInodeExtentsFlg)
+		writeExtExtentMap(inode[40:100], 1, block)
+	} else {
+		binary.LittleEndian.PutUint32(inode[40:44], block)
+	}
+	if profile.inodeSize > ext2InodeSize {
+		binary.LittleEndian.PutUint16(inode[128:130], extExtraIsize)
+	}
+}
+
+// writeExtJournalInode fills reserved inode 8, whose data blocks are the
+// journal itself. The journal is always laid out as one contiguous run, so
+// extent profiles need a single extent and block-mapped profiles need the
+// twelve direct pointers plus one indirect block.
+func writeExtJournalInode(inode []byte, layout extLayout, profile extProfile, now uint32) {
+	binary.LittleEndian.PutUint16(inode[0:2], 0x8180) // regular file, mode 0600
+	binary.LittleEndian.PutUint32(inode[4:8], extJournalBlocks*ext2BlockSize)
+	binary.LittleEndian.PutUint32(inode[8:12], now)
+	binary.LittleEndian.PutUint32(inode[12:16], now)
+	binary.LittleEndian.PutUint32(inode[16:20], now)
+	binary.LittleEndian.PutUint16(inode[26:28], 1)
+	binary.LittleEndian.PutUint32(inode[28:32], profile.journalBlockCount()*(ext2BlockSize/512))
+	if profile.extents {
+		binary.LittleEndian.PutUint32(inode[32:36], extInodeExtentsFlg)
+		writeExtExtentMap(inode[40:100], extJournalBlocks, layout.journal)
+	} else {
+		for index := uint32(0); index < 12; index++ {
+			binary.LittleEndian.PutUint32(inode[40+index*4:44+index*4], layout.journal+index)
+		}
+		binary.LittleEndian.PutUint32(inode[88:92], layout.journalIndirect)
+	}
+	if profile.inodeSize > ext2InodeSize {
+		binary.LittleEndian.PutUint16(inode[128:130], extExtraIsize)
+	}
+}
+
+// writeExtJournalSuperblock writes the JBD2 V2 superblock that marks an empty,
+// fully recovered journal. Every field in it is big-endian.
+func writeExtJournalSuperblock(journal []byte, uuid []byte) {
+	be32 := func(offset int, value uint32) { binary.BigEndian.PutUint32(journal[offset:offset+4], value) }
+	be32(0, extJournalMagic)
+	be32(4, 4) // JBD2 V2 superblock block type
+	be32(12, ext2BlockSize)
+	be32(16, extJournalBlocks)
+	be32(20, 1) // first block of the log
+	be32(24, 1) // first expected commit sequence
+	be32(28, 0) // no outstanding log start
+	copy(journal[48:64], uuid)
+	be32(64, 1) // one filesystem shares this journal
+}
+
+// writeExtExtentMap fills an inode's inline block area with a depth-zero extent
+// tree mapping length logical blocks from logical block zero onto start.
+func writeExtExtentMap(target []byte, length uint16, start uint32) {
+	binary.LittleEndian.PutUint16(target[0:2], extExtentMagic)
+	binary.LittleEndian.PutUint16(target[2:4], 1) // one extent
+	binary.LittleEndian.PutUint16(target[4:6], 4) // the inline area holds four
+	binary.LittleEndian.PutUint16(target[6:8], 0) // depth zero: entries are leaves
+	binary.LittleEndian.PutUint32(target[12:16], 0)
+	binary.LittleEndian.PutUint16(target[16:18], length)
+	binary.LittleEndian.PutUint16(target[18:20], 0)
+	binary.LittleEndian.PutUint32(target[20:24], start)
 }
 
 func writeExt2Dirent(target []byte, inode uint32, recordLength int, name string) {

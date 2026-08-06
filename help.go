@@ -42,21 +42,67 @@ Read-only structural validation for ext2, ext3, and ext4 filesystems.`,
 Read-only structural validation for ext2, ext3, and ext4 filesystems.`,
 	"fsck.ext4": `Usage: fsck.ext4 [-nfpav] DEVICE...
 Read-only structural validation for ext2, ext3, and ext4 filesystems.`,
-	"mkfs": `Usage: mkfs -t ext2 [OPTION]... DEVICE [BLOCKS]
-Create a filesystem. Only the carefully bounded mkfs.ext2 profile is bundled.`,
+	"mkfs": `Usage: mkfs -t ext2|ext3|ext4|xfs|btrfs [OPTION]... DEVICE [BLOCKS]
+Create a filesystem by dispatching to the matching bundled formatter. Each one
+writes a single carefully bounded profile rather than a configurable layout.`,
 	"mkfs.ext2": `Usage: mkfs.ext2 [-F] [-L LABEL] DEVICE [BLOCKS]
 Create a revision-1 ext2 filesystem with 4 KiB blocks, one block group, a root
 directory, and lost+found. Supported sizes are 1 MiB through 128 MiB. BLOCKS
 is expressed in 1 KiB units. -F is required for regular files. Mounted devices
 and active swap are rejected unless explicitly forced.`,
+	"mkfs.ext3": `Usage: mkfs.ext3 [-F] [-L LABEL] DEVICE [BLOCKS]
+Create the ext2 profile plus a 4 MiB JBD2 journal in reserved inode 8, marked
+clean so no recovery is needed at first mount. Supported sizes are 8 MiB
+through 128 MiB. BLOCKS is expressed in 1 KiB units. -F is required for
+regular files. Mounted devices and active swap are rejected unless forced.`,
+	"mkfs.ext4": `Usage: mkfs.ext4 [-F] [-L LABEL] DEVICE [BLOCKS]
+Create the ext3 profile with 256-byte inodes and extent-mapped files, which is
+the feature set that identifies a filesystem as ext4. Supported sizes are
+8 MiB through 128 MiB. BLOCKS is expressed in 1 KiB units. -F is required for
+regular files. Mounted devices and active swap are rejected unless forced.`,
+	"mkfs.xfs": `Usage: mkfs.xfs [-f] [-L LABEL] DEVICE [BLOCKS]
+Create a version 5 XFS with 4 KiB blocks, 512-byte inodes, four allocation
+groups, and a 64 MiB internal log left clean by an unmount record. Reverse
+mapping, reflink, the free inode btree, and sparse inodes are all off.
+Supported sizes are 320 MiB through 4 TiB and labels are at most 12 bytes.
+BLOCKS is expressed in 1 KiB units. -f is required for regular files.`,
+	"mkfs.btrfs": `Usage: mkfs.btrfs [-f] [-L LABEL] DEVICE [BLOCKS]
+Create a single-device btrfs with 16 KiB nodes, 4 KiB sectors, and unmirrored
+system, metadata, and data block groups. Checksums are CRC32C and the free
+space tree, quotas, and block group tree are off. The minimum size is 128 MiB.
+BLOCKS is expressed in 1 KiB units. -f is required for regular files.`,
 	"mkswap": `Usage: mkswap [-f] [-L LABEL] DEVICE_OR_FILE
 Write a Linux version-1 swap header after validating the target and its size.
 Mounted targets and active swap are rejected unless explicitly forced.`,
-	"mtr": `Usage: mtr [-r] [-c CYCLES] [-46n] [-m HOPS] [-w SECONDS] HOST
-Probe each route hop with UDP and ICMP error replies, then print loss and
-latency statistics. The default bounded report uses one cycle and a one-second
-per-probe timeout, stopping after five consecutive unanswered hops. Linux's
-UDP error queue avoids raw-socket privileges.`,
+	"mtr": `Usage: mtr [OPTION]... HOST
+Probe every hop on the route to HOST and keep loss and latency statistics for
+each one. On a terminal the display refreshes continuously like the original
+curses interface; redirected output and -r print a one-shot report instead.
+
+Options:
+  -r, --report            print a report instead of the live display
+  -w, --report-wide       report without truncating host names (implies -r)
+  -c, --report-cycles N   stop after N cycles (report 10, live unlimited)
+  -i, --interval SECONDS  delay between cycles (default 1)
+  -Z, --timeout SECONDS   time to wait for a reply (default 1)
+  -m, --max-ttl N         highest hop to probe (default 30)
+  -f, --first-ttl N       first hop to probe (default 1)
+  -s, --psize N           probe payload bytes (default 56)
+  -n, --no-dns            show addresses instead of names
+  -b, --show-ips          show names together with addresses
+  -u, --udp               probe with UDP instead of ICMP echo
+  -I, --icmp              fail rather than fall back to UDP probes
+  -4, -6                  force IPv4 or IPv6
+  --help                  show this help
+
+Probes are ICMP echo requests as in the original, because the high UDP ports
+traceroute uses are commonly filtered before the destination. Unprivileged
+ICMP datagram sockets are used where net.ipv4.ping_group_range permits them,
+otherwise probing falls back to Linux's UDP error queue. A sweep stops after
+five consecutive unanswered hops.
+
+Interactive keys: h help, n toggle DNS, p pause, SPACE resume, r restart
+statistics, q quit.`,
 	"swapon": `Usage: swapon [-a] [-p PRIORITY] [DEVICE]...
 Enable swap devices using the Linux swapon syscall. -a reads swap entries from
 /etc/fstab. Requires CAP_SYS_ADMIN.`,

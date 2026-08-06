@@ -15,7 +15,8 @@ The binary currently includes:
 [ awk base64 basename blkid blockdev cat chgrp chmod chown chroot cmp completion cp curl cut date dd df diff dig
 dirname dmesg du echo env expr false fdisk file find free fsck fsck.ext2 fsck.ext3 fsck.ext4 grep
 gunzip gzip halt head help hexdump hostname id iftop init insmod ip iptables kill ln login losetup ls
-lsblk lsmod lsof man mkdir mkfs mkfs.ext2 mkswap mktemp mknod modprobe mount mtr mv nano nc nslookup
+lsblk lsmod lsof man mkdir mkfs mkfs.btrfs mkfs.ext2 mkfs.ext3 mkfs.ext4 mkfs.xfs mkswap mktemp mknod
+modprobe mount mtr mv nano nc nslookup
 od passwd pgrep pidof ping pkill poweroff printenv printf ps pwd readlink realpath reboot rm rmdir rmmod sed
 seq sfdisk sh sha256sum sleep sort ss stat strings swapoff swapon switch_root sync tail tar tee test
 timeout top touch tr traceroute true udhcpc umount uname uniq uptime wc wget which whoami xargs
@@ -52,9 +53,14 @@ The scripting and diagnostic set adds a small execution-capable shell, `xargs`,
 environment and expression tools, byte and text inspection, process matching,
 kernel logs, uptime, open-file and socket inspection, direct DNS queries,
 IPv4/IPv6 ICMP, route/loss probing, interface traffic rates, verbose HTTP(S),
-and TCP/UDP copying. The route tools use Linux's unprivileged UDP error queue;
-`iftop` is a bounded batch sampler of per-interface `/proc/net/dev` counters
-rather than an interactive per-flow display.
+and TCP/UDP copying. `traceroute` probes with UDP and reads Linux's
+unprivileged error queue; `mtr` prefers ICMP echo like the original, using
+unprivileged ICMP datagram sockets where `net.ipv4.ping_group_range` permits
+them and falling back to the UDP error queue otherwise. `mtr` refreshes a
+full-screen display on a terminal and prints an mtr-compatible report when its
+output is redirected or `-r` is given. `iftop` is a bounded batch sampler of
+per-interface `/proc/net/dev` counters rather than an interactive per-flow
+display.
 `init` provides a PID-1/container supervisor with process-group signal
 forwarding, orphan reaping, descendant cleanup, and exit-status propagation.
 Storage recovery includes filesystem signature probing, node creation, mounting,
@@ -63,10 +69,15 @@ It now also includes block-device discovery, loop-device setup, chroot and root
 switching, kernel-module management, and a focused one-shot DHCP client. Disk
 recovery gains block-device controls, validated DOS/MBR partition editing,
 read-only DOS/MBR and GPT partition listing,
-read-only ext2/ext3/ext4 structural checking, a bounded ext2 formatter, and
-Linux swap formatting and activation. The ext2 formatter intentionally creates
-only a 4 KiB-block, single-group profile from 1 MiB through 128 MiB; its images
-are checked by system `e2fsck` in development. Text
+read-only ext2/ext3/ext4 structural checking, bounded ext2, ext3, ext4, XFS,
+and btrfs formatters, and Linux swap formatting and activation. Each formatter
+writes exactly one fixed profile rather than a configurable layout: the ext
+family uses 4 KiB blocks and a single block group from 1 MiB through 128 MiB
+(8 MiB and up for the journalled ext3 and ext4 variants); `mkfs.xfs` writes a
+version 5 filesystem with four allocation groups and a clean 64 MiB internal
+log from 320 MiB up; and `mkfs.btrfs` writes a single-device filesystem with
+unmirrored block groups from 128 MiB up. Their images are checked against
+system `e2fsck`, `xfs_repair`, and `btrfs check` in development. Text
 recovery gains focused AWK processing, block copying, file identification,
 secure temporary files, command timeouts, and process snapshots.
 `nano` is a compact full-screen editor with

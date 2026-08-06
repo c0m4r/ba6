@@ -28,6 +28,7 @@ BusyBox, or POSIX compatibility.
 - [x] read-only `fdisk -l` and writable `sfdisk`
 - [x] `fsck` and selected filesystem-specific checkers
 - [x] `mkfs` and selected filesystem-specific formatters
+      (`mkfs.ext2`, `mkfs.ext3`, `mkfs.ext4`, `mkfs.xfs`, `mkfs.btrfs`)
 - [x] `mkswap`
 - [x] `swapon`
 - [x] `swapoff`
