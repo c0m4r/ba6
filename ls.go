@@ -97,8 +97,8 @@ rest:
 	for _, op := range operands {
 		info, err := os.Lstat(op)
 		if err != nil {
-			fatalf("ls", "cannot access '%s': %v", op, err)
-			status = 1
+			fatalf("ls", "cannot access '%s': %s", op, errText(err))
+			status = 2
 			continue
 		}
 		isDirectory := info.IsDir()
@@ -131,11 +131,11 @@ rest:
 			fmt.Fprintln(out)
 		}
 		if !l.listDir(d, multiHeader) {
-			status = 1
+			status = 2
 		}
 	}
 	if err := out.Flush(); err != nil {
-		fatalf("ls", "write error: %v", err)
+		fatalf("ls", "write error: %s", errText(err))
 		status = 1
 	}
 	return status
@@ -158,7 +158,7 @@ type lister struct {
 func (l *lister) listDir(dir string, header bool) bool {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		fatalf("ls", "cannot open directory '%s': %v", dir, err)
+		fatalf("ls", "cannot open directory '%s': %s", dir, errText(err))
 		return false
 	}
 
@@ -183,7 +183,7 @@ func (l *lister) listDir(dir string, header bool) bool {
 		}
 		info, err := e.Info()
 		if err != nil {
-			fatalf("ls", "cannot access '%s': %v", filepath.Join(dir, name), err)
+			fatalf("ls", "cannot access '%s': %s", filepath.Join(dir, name), errText(err))
 			ok = false
 			continue
 		}

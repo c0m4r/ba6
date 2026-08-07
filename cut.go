@@ -17,6 +17,7 @@ import (
 // are comma-separated ranges like "1,3-5,7-". -s suppresses lines with no
 // delimiter (field mode). --output-delimiter sets the field join string.
 func cmdCut(args []string) int {
+	args = expandShortOptions(args, "bcfd")
 	var (
 		fieldList string
 		charList  string

@@ -19,6 +19,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -263,20 +264,24 @@ func cmdSs(args []string) int {
 		tcp, udp, unix = true, true, true
 	}
 	fmt.Println("Netid State  Local Address:Port       Peer Address:Port")
+	v6only := map[uint64]bool{}
+	if tcp || udp {
+		v6only = v6OnlySockets()
+	}
 	if tcp {
-		readSocketTable("tcp", "/proc/net/tcp", listen, all)
-		readSocketTable("tcp6", "/proc/net/tcp6", listen, all)
+		readSocketTable("tcp", "/proc/net/tcp", listen, all, nil)
+		readSocketTable("tcp6", "/proc/net/tcp6", listen, all, v6only)
 	}
 	if udp {
-		readSocketTable("udp", "/proc/net/udp", listen, all)
-		readSocketTable("udp6", "/proc/net/udp6", listen, all)
+		readSocketTable("udp", "/proc/net/udp", listen, all, nil)
+		readSocketTable("udp6", "/proc/net/udp6", listen, all, v6only)
 	}
 	if unix {
 		readUnixSockets(listen, all)
 	}
 	return 0
 }
-func readSocketTable(kind, path string, listen, all bool) {
+func readSocketTable(kind, path string, listen, all bool, v6only map[uint64]bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return
@@ -288,12 +293,133 @@ func readSocketTable(kind, path string, listen, all bool) {
 			continue
 		}
 		state := socketState(f[3])
-		isListen := state == "LISTEN" || kind[:3] == "udp" && f[2] == "00000000:0000"
+		// A UDP socket with no peer is this table's equivalent of a listener.
+		// The remote field is eight hex digits for IPv4 and thirty-two for
+		// IPv6, so test what it holds rather than matching one spelling of it.
+		isListen := state == "LISTEN" || kind[:3] == "udp" && strings.Trim(f[2], "0:") == ""
 		if listen && !isListen || !listen && !all && isListen {
 			continue
 		}
-		fmt.Printf("%-5s %-6s %-24s %s\n", kind, state, decodeSocketAddr(f[1]), decodeSocketAddr(f[2]))
+		// The wildcard address is written "*" for a socket that also accepts
+		// IPv4 and "[::]" for one bound v6-only. /proc records the socket's
+		// inode, which is what ties this row to the netlink answer.
+		bound := false
+		if len(f) > 9 {
+			if inode, convErr := strconv.ParseUint(f[9], 10, 64); convErr == nil {
+				bound = v6only[inode]
+			}
+		}
+		fmt.Printf("%-5s %-6s %-24s %s\n", kind, state,
+			decodeSocketAddrMode(f[1], bound), decodeSocketAddrMode(f[2], bound))
 	}
+}
+
+// Linux sock_diag numbers. ss has to ask the kernel for the v6only flag because
+// it appears nowhere in /proc.
+const (
+	netlinkSockDiag  = 4  // NETLINK_SOCK_DIAG
+	sockDiagByFamily = 20 // SOCK_DIAG_BY_FAMILY
+	inetDiagSKV6Only = 11 // INET_DIAG_SKV6ONLY
+	inetDiagMsgLen   = 72 // sizeof(struct inet_diag_msg)
+	inetDiagReqLen   = 56 // sizeof(struct inet_diag_req_v2)
+)
+
+// v6OnlySockets returns the inodes of IPv6 sockets bound with IPV6_V6ONLY. An
+// empty map is a safe answer -- it renders every wildcard listener as "*",
+// which is what this applet did before and what a dual-stack socket wants --
+// so a kernel without the inet_diag modules simply loses the distinction.
+func v6OnlySockets() map[uint64]bool {
+	found := map[uint64]bool{}
+	for _, protocol := range []byte{syscall.IPPROTO_TCP, syscall.IPPROTO_UDP} {
+		messages, err := sockDiagDump(syscall.AF_INET6, protocol)
+		if err != nil {
+			continue
+		}
+		for _, message := range messages {
+			if inode, only, ok := parseInetDiag(message.Data); ok && only {
+				found[inode] = true
+			}
+		}
+	}
+	return found
+}
+
+// sockDiagDump asks for every socket of one family and protocol.
+func sockDiagDump(family, protocol byte) ([]syscall.NetlinkMessage, error) {
+	fd, err := syscall.Socket(syscall.AF_NETLINK, syscall.SOCK_RAW|syscall.SOCK_CLOEXEC, netlinkSockDiag)
+	if err != nil {
+		return nil, err
+	}
+	defer syscall.Close(fd)
+	if err := syscall.Bind(fd, &syscall.SockaddrNetlink{Family: syscall.AF_NETLINK}); err != nil {
+		return nil, err
+	}
+	// struct inet_diag_req_v2: family, protocol, ext, pad, then the state mask.
+	// The 48-byte socket id that follows stays zeroed, which means "any".
+	payload := make([]byte, inetDiagReqLen)
+	payload[0], payload[1] = family, protocol
+	binary.NativeEndian.PutUint32(payload[4:8], 0xffffffff)
+	seq := netlinkSequence.Add(1)
+	request := make([]byte, syscall.NLMSG_HDRLEN+len(payload))
+	binary.NativeEndian.PutUint32(request[0:4], uint32(len(request))) //nolint:gosec // the request is 72 bytes.
+	binary.NativeEndian.PutUint16(request[4:6], sockDiagByFamily)
+	binary.NativeEndian.PutUint16(request[6:8], syscall.NLM_F_REQUEST|syscall.NLM_F_DUMP)
+	binary.NativeEndian.PutUint32(request[8:12], seq)
+	copy(request[syscall.NLMSG_HDRLEN:], payload)
+	if err := syscall.Sendto(fd, request, 0, &syscall.SockaddrNetlink{Family: syscall.AF_NETLINK}); err != nil {
+		return nil, err
+	}
+	var collected []syscall.NetlinkMessage
+	buffer := make([]byte, 64*1024)
+	for {
+		n, _, recvErr := syscall.Recvfrom(fd, buffer, 0)
+		if errors.Is(recvErr, syscall.EINTR) {
+			continue
+		}
+		if recvErr != nil {
+			return nil, recvErr
+		}
+		messages, parseErr := syscall.ParseNetlinkMessage(buffer[:n])
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		for _, message := range messages {
+			if message.Header.Seq != seq {
+				continue
+			}
+			switch message.Header.Type {
+			case syscall.NLMSG_DONE:
+				return collected, nil
+			case syscall.NLMSG_ERROR:
+				return nil, errors.New("sock_diag is unavailable")
+			default:
+				collected = append(collected, message)
+			}
+		}
+	}
+}
+
+// parseInetDiag takes the socket inode and the v6only flag out of one
+// inet_diag_msg. The fixed part is 72 bytes and the flag follows it as a
+// one-byte netlink attribute.
+func parseInetDiag(data []byte) (uint64, bool, bool) {
+	if len(data) < inetDiagMsgLen {
+		return 0, false, false
+	}
+	inode := uint64(binary.NativeEndian.Uint32(data[68:72]))
+	v6only := false
+	for offset := inetDiagMsgLen; offset+4 <= len(data); {
+		length := int(binary.NativeEndian.Uint16(data[offset : offset+2]))
+		kind := binary.NativeEndian.Uint16(data[offset+2 : offset+4])
+		if length < 4 || offset+length > len(data) {
+			break
+		}
+		if kind == inetDiagSKV6Only && length >= 5 {
+			v6only = data[offset+4] != 0
+		}
+		offset += (length + 3) &^ 3
+	}
+	return inode, v6only, true
 }
 func socketState(s string) string {
 	states := map[string]string{"01": "ESTAB", "02": "SYN-SENT", "03": "SYN-RECV", "04": "FIN-WAIT-1", "05": "FIN-WAIT-2", "06": "TIME-WAIT", "07": "UNCONN", "08": "CLOSE-WAIT", "09": "LAST-ACK", "0A": "LISTEN", "0B": "CLOSING"}
@@ -309,6 +435,12 @@ func socketState(s string) string {
 // network byte order; printing the digits as they appear gives an address that
 // is not merely unformatted but wrong.
 func decodeSocketAddr(value string) string {
+	return decodeSocketAddrMode(value, false)
+}
+
+// decodeSocketAddrMode renders an address field, showing the IPv6 wildcard as
+// "[::]" when the socket is v6-only and as "*" when it also accepts IPv4.
+func decodeSocketAddrMode(value string, v6only bool) string {
 	separator := strings.LastIndexByte(value, ':')
 	if separator < 0 {
 		return value
@@ -332,6 +464,8 @@ func decodeSocketAddr(value string) string {
 		port = strconv.FormatUint(number, 10)
 	}
 	switch {
+	case len(address) == net.IPv6len && address.IsUnspecified() && v6only:
+		return "[::]:" + port
 	case len(address) == net.IPv6len && address.IsUnspecified():
 		return "*:" + port
 	case len(address) == net.IPv6len:

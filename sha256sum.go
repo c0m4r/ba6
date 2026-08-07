@@ -13,6 +13,7 @@ import (
 )
 
 func cmdSha256sum(args []string) int {
+	args = expandShortOptions(args, "")
 	check, quiet, statusOnly := false, false, false
 	binary, modeGiven := false, false
 	var files []string

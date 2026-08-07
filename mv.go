@@ -85,7 +85,7 @@ rest:
 			if _, err := os.Lstat(target); err == nil {
 				confirmed, confirmErr := confirm(input, fmt.Sprintf("mv: overwrite '%s'? ", target))
 				if confirmErr != nil {
-					fatalf("mv", "cannot read response: %v", confirmErr)
+					fatalf("mv", "cannot read response: %s", errText(confirmErr))
 					status = 1
 					continue
 				}
@@ -96,13 +96,13 @@ rest:
 		}
 		moved, err := moveOne(src, target, force, noClobber)
 		if err != nil {
-			fatalf("mv", "%v", err)
+			fatalf("mv", "%s", errText(err))
 			status = 1
 			continue
 		}
 		if verbose && moved {
 			if _, writeErr := fmt.Fprintf(os.Stdout, "'%s' -> '%s'\n", src, target); writeErr != nil {
-				fatalf("mv", "write error: %v", writeErr)
+				fatalf("mv", "write error: %s", errText(writeErr))
 				status = 1
 			}
 		}
@@ -113,7 +113,7 @@ rest:
 func moveOne(src, dst string, force, noClobber bool) (bool, error) {
 	srcInfo, err := os.Lstat(src)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("cannot stat '%s': %s", src, errText(err))
 	}
 	dstInfo, dstErr := os.Lstat(dst)
 	if dstErr == nil {
@@ -151,9 +151,9 @@ func moveOne(src, dst string, force, noClobber bool) (bool, error) {
 			return false, cErr
 		}
 		if removeErr := os.RemoveAll(src); removeErr != nil {
-			return false, removeErr
+			return false, fmt.Errorf("cannot remove '%s': %s", src, errText(removeErr))
 		}
 		return true, nil
 	}
-	return false, err
+	return false, fmt.Errorf("cannot move '%s' to '%s': %s", src, dst, errText(err))
 }

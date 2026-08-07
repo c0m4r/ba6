@@ -16,6 +16,7 @@ import (
 // starting at line N), -c N (last N bytes), and -f (follow appended data).
 // Multiple files get coreutils-style headers unless -q is given.
 func cmdTail(args []string) int {
+	args = expandShortOptions(args, "nc")
 	count := int64(10)
 	byMode := false // true => -c bytes
 	fromStart := false
@@ -88,7 +89,7 @@ rest:
 	for idx, fname := range files {
 		f, err := openInput(fname)
 		if err != nil {
-			fatalf("tail", "cannot open '%s' for reading: %v", fname, err)
+			fatalf("tail", "cannot open '%s' for reading: %s", fname, errText(err))
 			status = 1
 			continue
 		}
@@ -104,17 +105,17 @@ rest:
 		}
 		if byMode {
 			if readErr := emitLastBytes(out, f, count, fromStart); readErr != nil {
-				fatalf("tail", "%s: %v", fname, readErr)
+				fatalf("tail", "error reading '%s': %s", fname, errText(readErr))
 				status = 1
 			}
 		} else {
 			if readErr := emitLastLines(out, f, count, fromStart); readErr != nil {
-				fatalf("tail", "%s: %v", fname, readErr)
+				fatalf("tail", "error reading '%s': %s", fname, errText(readErr))
 				status = 1
 			}
 		}
 		if flushErr := out.Flush(); flushErr != nil {
-			fatalf("tail", "write error: %v", flushErr)
+			fatalf("tail", "write error: %s", errText(flushErr))
 			_ = f.Close()
 			return 1
 		}
@@ -124,18 +125,18 @@ rest:
 		if follow && fname != "-" {
 			if osf, ok := f.(*os.File); ok && idx == len(files)-1 {
 				if followErr := followFile(out, osf); followErr != nil {
-					fatalf("tail", "%s: %v", fname, followErr)
+					fatalf("tail", "error reading '%s': %s", fname, errText(followErr))
 					status = 1
 				}
 			}
 		}
 		if closeErr := f.Close(); closeErr != nil {
-			fatalf("tail", "%s: %v", fname, closeErr)
+			fatalf("tail", "error reading '%s': %s", fname, errText(closeErr))
 			status = 1
 		}
 	}
 	if err := out.Flush(); err != nil {
-		fatalf("tail", "write error: %v", err)
+		fatalf("tail", "write error: %s", errText(err))
 		status = 1
 	}
 	return status

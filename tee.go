@@ -11,6 +11,7 @@ import (
 )
 
 func cmdTee(args []string) int {
+	args = expandShortOptions(args, "")
 	appendMode := false
 	ignoreInterrupts := false
 	var files []string

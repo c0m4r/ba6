@@ -11,6 +11,7 @@ import (
 // cmdMkdir implements mkdir(1): -p (create parents, no error if existing) and
 // -m MODE (octal permissions for the final directory).
 func cmdMkdir(args []string) int {
+	args = expandShortOptions(args, "m")
 	parents := false
 	mode := os.FileMode(0o777)
 	modeSet := false
@@ -63,7 +64,7 @@ rest:
 			err = os.Mkdir(d, mode)
 		}
 		if err != nil {
-			fatalf("mkdir", "cannot create directory '%s': %v", d, err)
+			fatalf("mkdir", "cannot create directory '%s': %s", d, errText(err))
 			status = 1
 			continue
 		}
@@ -71,7 +72,7 @@ rest:
 		// mode, so chmod the final directory to honor it.
 		if modeSet && !existed {
 			if err := os.Chmod(d, mode); err != nil {
-				fatalf("mkdir", "cannot set mode on '%s': %v", d, err)
+				fatalf("mkdir", "cannot set mode on '%s': %s", d, errText(err))
 				status = 1
 			}
 		}

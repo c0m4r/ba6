@@ -1252,6 +1252,7 @@ func cmdFsckExt3(args []string) int { return fsckExt("fsck.ext3", args, "") }
 func cmdFsckExt4(args []string) int { return fsckExt("fsck.ext4", args, "") }
 
 func fsckExt(prog string, args []string, requestedType string) int {
+	args = expandShortOptions(args, "")
 	var devices []string
 	for _, arg := range args {
 		switch arg {
@@ -1625,6 +1626,7 @@ func cmdSwapoff(args []string) int {
 }
 
 func swapCommand(prog string, args []string, enable bool) int {
+	args = expandShortOptions(args, "p")
 	all, priority := false, -1
 	var paths []string
 	for index := 0; index < len(args); index++ {

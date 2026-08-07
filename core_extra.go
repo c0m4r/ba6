@@ -283,6 +283,17 @@ func decodeEscapes(value string, stop bool) string {
 
 func cmdPrintenv(args []string) int {
 	status := 0
+	for index, arg := range args {
+		if arg == "--" {
+			args = args[index+1:]
+			break
+		}
+		if len(arg) > 1 && arg[0] == '-' {
+			fatalf("printenv", "unrecognized option '%s'", arg)
+			fmt.Fprintln(os.Stderr, "Try 'printenv --help' for more information.")
+			return 2
+		}
+	}
 	if len(args) == 0 {
 		for _, value := range os.Environ() {
 			fmt.Fprintln(os.Stdout, value)
@@ -461,7 +472,9 @@ func cmdCmp(args []string) int {
 	for i := 0; i < limit; i++ {
 		if a[i] != b[i] {
 			if !silent {
-				fmt.Printf("%s %s differ: byte %d, line %d\n", args[0], args[1], i+1, line)
+				// The original counts in "char" here even though the unit is a
+				// byte, and quotes the name only in the EOF message.
+				fmt.Printf("%s %s differ: char %d, line %d\n", args[0], args[1], i+1, line)
 			}
 			return 1
 		}
@@ -475,7 +488,17 @@ func cmdCmp(args []string) int {
 			if len(b) < len(a) {
 				shorter = args[1]
 			}
-			fmt.Fprintf(os.Stderr, "cmp: EOF on %s after byte %d\n", shorter, limit)
+			switch {
+			case limit == 0:
+				fmt.Fprintf(os.Stderr, "cmp: EOF on '%s' which is empty\n", shorter)
+			case a[limit-1] == '\n':
+				// The file stopped on a line boundary, so count whole lines.
+				fmt.Fprintf(os.Stderr, "cmp: EOF on '%s' after byte %d, line %d\n", shorter, limit, line-1)
+			default:
+				// It stopped part-way through a line, which the original says
+				// differently: "in line N" names the incomplete line.
+				fmt.Fprintf(os.Stderr, "cmp: EOF on '%s' after byte %d, in line %d\n", shorter, limit, line)
+			}
 		}
 		return 1
 	}
@@ -492,6 +515,7 @@ func readInputBytes(name string) ([]byte, error) {
 }
 
 func cmdBase64(args []string) int {
+	args = expandShortOptions(args, "w")
 	decode, wrap := false, 76
 	files := []string{}
 	for i := 0; i < len(args); i++ {

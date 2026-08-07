@@ -74,13 +74,19 @@ func TestCompareAndDiff(t *testing.T) {
 
 func TestShellParsingAndExecution(t *testing.T) {
 	t.Setenv("BA6_SHELL_TEST", "expanded")
-	words, err := shellTokens("printf '%s' '$BA6_SHELL_TEST' \"$BA6_SHELL_TEST\" ''")
+	tokens, err := shellTokens("printf '%s' '$BA6_SHELL_TEST' \"$BA6_SHELL_TEST\" ''")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Tokenising leaves words unexpanded; expansion happens when the command
+	// runs, so a single-quoted $ has to survive as a literal until then.
+	command, err := shellCommand(tokens)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []string{"printf", "%s", "$BA6_SHELL_TEST", "expanded", ""}
-	if strings.Join(words, "|") != strings.Join(want, "|") {
-		t.Fatalf("tokens = %#v, want %#v", words, want)
+	if strings.Join(command.argv, "|") != strings.Join(want, "|") {
+		t.Fatalf("argv = %#v, want %#v", command.argv, want)
 	}
 	status, out, _ := captureApplet(t, cmdSh, []string{"-c", "/bin/printf shell-ok"}, "")
 	if status != 0 || out != "shell-ok" {

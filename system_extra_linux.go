@@ -160,6 +160,12 @@ func cmdDmesg(args []string) int {
 func cmdPgrep(args []string) int { return processMatchCommand("pgrep", args, false) }
 func cmdPkill(args []string) int { return processMatchCommand("pkill", args, true) }
 func cmdPidof(args []string) int {
+	for _, arg := range args {
+		if len(arg) > 1 && arg[0] == '-' {
+			fatalf("pidof", "unrecognized option '%s'", arg)
+			return 1
+		}
+	}
 	if len(args) == 0 {
 		fatalf("pidof", "missing program name")
 		return 1
@@ -470,6 +476,13 @@ func linuxMakeDevice(major, minor uint32) uint64 {
 }
 
 func cmdBlkid(args []string) int {
+	for _, arg := range args {
+		if len(arg) > 1 && arg[0] == '-' {
+			fatalf("blkid", "unrecognized option '%s'", arg)
+			fmt.Fprintln(os.Stderr, "Try 'blkid --help' for more information.")
+			return 1
+		}
+	}
 	devices := args
 	if len(devices) == 0 {
 		matches, _ := filepath.Glob("/dev/*")

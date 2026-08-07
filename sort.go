@@ -78,8 +78,8 @@ rest:
 	for _, f := range files {
 		r, err := openInput(f)
 		if err != nil {
-			fatalf("sort", "%s: %v", f, err)
-			status = 1
+			fatalf("sort", "cannot read: %s: %s", f, errText(err))
+			status = 2
 			continue
 		}
 		sc := newLineScanner(r)
@@ -87,11 +87,11 @@ rest:
 			lines = append(lines, sc.Text())
 		}
 		if scanErr("sort", f, sc) {
-			status = 1
+			status = 2
 		}
 		if closeErr := r.Close(); closeErr != nil {
-			fatalf("sort", "%s: %v", f, closeErr)
-			status = 1
+			fatalf("sort", "%s: %s", f, errText(closeErr))
+			status = 2
 		}
 	}
 
@@ -164,7 +164,7 @@ rest:
 		prev, havePrev = ln, true
 	}
 	if err := out.Flush(); err != nil {
-		fatalf("sort", "write error: %v", err)
+		fatalf("sort", "write error: %s", errText(err))
 		return 1
 	}
 	return status

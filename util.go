@@ -10,12 +10,44 @@ import (
 	"io"
 	"math"
 	"os"
+	"strings"
 	"syscall"
 	"time"
 	"unicode"
 	"unicode/utf8"
 	"unsafe"
 )
+
+// expandShortOptions rewrites clustered short options into separate arguments
+// so a parser that matches whole arguments still accepts every form the
+// originals do: "-qn2" becomes "-q -n 2" and "-n2" becomes "-n 2". Letters
+// listed in withValue consume the rest of their cluster as the value, which is
+// why the scan stops there. Long options, "--", "-" and operands pass through
+// untouched.
+func expandShortOptions(args []string, withValue string) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			out = append(out, args[i:]...)
+			break
+		}
+		if len(arg) < 3 || arg[0] != '-' || arg[1] == '-' {
+			out = append(out, arg)
+			continue
+		}
+		for j := 1; j < len(arg); j++ {
+			out = append(out, "-"+string(arg[j]))
+			if strings.IndexByte(withValue, arg[j]) >= 0 {
+				if j+1 < len(arg) {
+					out = append(out, arg[j+1:])
+				}
+				break
+			}
+		}
+	}
+	return out
+}
 
 // errText renders err the way the C tools do: the strerror(3) sentence on its
 // own. Go wraps syscall errors in *os.PathError and friends, which prepend the
@@ -70,7 +102,16 @@ func scanErr(prog, name string, sc *bufio.Scanner) bool {
 		if name == "-" || name == "" {
 			name = "standard input"
 		}
-		fatalf(prog, "%s: %v", name, err)
+		// Each original words a failed read its own way; cut and grep simply
+		// name the file.
+		switch prog {
+		case "sort":
+			fatalf(prog, "read failed: %s: %s", name, errText(err))
+		case "uniq":
+			fatalf(prog, "error reading '%s': %s", name, errText(err))
+		default:
+			fatalf(prog, "%s: %s", name, errText(err))
+		}
 		return true
 	}
 	return false

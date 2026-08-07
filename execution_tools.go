@@ -29,7 +29,18 @@ func cmdEnv(args []string) int {
 			}
 			unset = append(unset, args[1])
 			args = args[2:]
+		case "--":
+			args = args[1:]
+			goto optionsDone
 		default:
+			// The first operand ends option parsing; anything that still looks
+			// like an option at that point is one env does not have, and env
+			// reserves 125 for its own failures.
+			if len(args[0]) > 1 && args[0][0] == '-' {
+				fatalf("env", "unrecognized option '%s'", args[0])
+				fmt.Fprintln(os.Stderr, "Try 'env --help' for more information.")
+				return 125
+			}
 			goto optionsDone
 		}
 	}
@@ -72,6 +83,13 @@ func cmdWhich(args []string) int {
 	}
 	status := 0
 	for _, name := range args {
+		// which warns about an option it does not know and carries on with the
+		// remaining names rather than failing, so the exit status still
+		// reflects only whether the commands were found.
+		if len(name) > 1 && name[0] == '-' {
+			fatalf("which", "unrecognized option '%s'", name)
+			continue
+		}
 		matches := []string{}
 		if strings.ContainsRune(name, '/') {
 			if executableFile(name) {
@@ -326,8 +344,12 @@ func cmdSh(args []string) int {
 			name = "sh"
 		}
 	}
+	// Positional parameters are shell variables, not environment entries: a
+	// child process must not inherit $0 and $1 from its caller.
+	shellVariables = map[string]string{}
+	shellStatus = 0
 	for i, value := range append([]string{name}, scriptArgs...) {
-		os.Setenv(strconv.Itoa(i), value)
+		shellVariables[strconv.Itoa(i)] = value
 	}
 	if interactive {
 		return runInteractiveShell()
@@ -366,7 +388,7 @@ func runShellSourceControl(source string) (int, bool) {
 	}
 	status := 0
 	exit := false
-	segment := []string{}
+	segment := []shellToken{}
 	connector := ";"
 	run := func() {
 		if len(segment) == 0 {
@@ -376,15 +398,17 @@ func runShellSourceControl(source string) (int, bool) {
 			return
 		}
 		status, exit = runShellPipeline(segment)
+		shellStatus = status
 	}
 	for _, token := range tokens {
-		if token == ";" || token == "\n" || token == "&&" || token == "||" {
+		if token.operator && (token.text == ";" || token.text == "\n" ||
+			token.text == "&&" || token.text == "||") {
 			run()
 			if exit {
 				return status, true
 			}
 			segment = nil
-			connector = token
+			connector = token.text
 		} else {
 			segment = append(segment, token)
 		}
@@ -393,11 +417,11 @@ func runShellSourceControl(source string) (int, bool) {
 	return status, exit
 }
 
-func runShellPipeline(tokens []string) (int, bool) {
-	parts := [][]string{{}}
+func runShellPipeline(tokens []shellToken) (int, bool) {
+	parts := [][]shellToken{{}}
 	for _, token := range tokens {
-		if token == "|" {
-			parts = append(parts, []string{})
+		if token.operator && token.text == "|" {
+			parts = append(parts, []shellToken{})
 		} else {
 			parts[len(parts)-1] = append(parts[len(parts)-1], token)
 		}
@@ -406,14 +430,26 @@ func runShellPipeline(tokens []string) (int, bool) {
 	// here. Passing the raw tokens straight to the builtin would make "echo hi
 	// > f" print "hi > f" and create no file.
 	if len(parts) == 1 {
-		argv, input, output, appendMode, err := shellRedirections(parts[0])
-		if err == nil && len(argv) > 0 && isShellBuiltin(argv[0]) {
-			restore, redirectErr := redirectStandardFiles(input, output, appendMode)
+		command, err := shellCommand(parts[0])
+		if err != nil {
+			fatalf("sh", "%v", err)
+			return 2, false
+		}
+		// A command that is nothing but assignments sets shell variables and
+		// succeeds: "x=1" is a complete statement, not a program to look up.
+		if len(command.argv) == 0 && len(command.assignments) > 0 {
+			for _, assignment := range command.assignments {
+				setShellVariable(assignment.name, assignment.value)
+			}
+			return 0, false
+		}
+		if len(command.argv) > 0 && isShellBuiltin(command.argv[0]) {
+			restore, redirectErr := redirectStandardFiles(command.input, command.output, command.appendMode)
 			if redirectErr != nil {
 				fatalf("sh", "%v", redirectErr)
 				return 1, false
 			}
-			status, _, exit := runShellBuiltin(argv)
+			status, _, exit := runShellBuiltin(command.argv)
 			restore()
 			return status, exit
 		}
@@ -421,13 +457,22 @@ func runShellPipeline(tokens []string) (int, bool) {
 	commands := make([]*exec.Cmd, 0, len(parts))
 	var previous io.ReadCloser
 	for index, part := range parts {
-		argv, input, output, appendMode, err := shellRedirections(part)
-		if err != nil || len(argv) == 0 {
+		command, err := shellCommand(part)
+		if err != nil || len(command.argv) == 0 {
 			fatalf("sh", "invalid command")
 			return 2, false
 		}
+		argv, input, output, appendMode := command.argv, command.input, command.output, command.appendMode
 		cmd := exec.Command(argv[0], argv[1:]...) //nolint:gosec // G204: command execution is the shell's explicit purpose.
 		cmd.Stderr = os.Stderr
+		// Assignments written in front of a command belong to that command
+		// alone: "x=1 env" must not leave x set in the shell afterwards.
+		if len(command.assignments) > 0 {
+			cmd.Env = os.Environ()
+			for _, assignment := range command.assignments {
+				cmd.Env = append(cmd.Env, assignment.name+"="+assignment.value)
+			}
+		}
 		if previous != nil {
 			cmd.Stdin = previous
 		} else {
@@ -466,8 +511,15 @@ func runShellPipeline(tokens []string) (int, bool) {
 	}
 	for _, cmd := range commands {
 		if err := cmd.Start(); err != nil {
-			fatalf("sh", "%v", err)
-			return 127, false
+			// A shell reports the command that could not be run, not the Go
+			// call that failed, and distinguishes "no such command" (127) from
+			// "found but not runnable" (126).
+			if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
+				fatalf("sh", "%s: not found", cmd.Args[0])
+				return 127, false
+			}
+			fatalf("sh", "%s: %s", cmd.Args[0], errText(err))
+			return 126, false
 		}
 	}
 	status := 0
@@ -478,28 +530,57 @@ func runShellPipeline(tokens []string) (int, bool) {
 	}
 	return status, false
 }
-func shellRedirections(tokens []string) ([]string, string, string, bool, error) {
-	argv := []string{}
-	input, output := "", ""
-	appendMode := false
+
+// shellAssignmentPair is one NAME=VALUE written in front of a command.
+type shellAssignmentPair struct{ name, value string }
+
+// shellCommandParts is a single command: its leading assignments, its expanded
+// argument vector, and where its standard input and output go.
+type shellCommandParts struct {
+	assignments []shellAssignmentPair
+	argv        []string
+	input       string
+	output      string
+	appendMode  bool
+}
+
+// shellCommand turns one command's tokens into something runnable. This is
+// where expansion happens -- as late as possible, so every word sees the
+// variables and the exit status as they are at this moment.
+func shellCommand(tokens []shellToken) (shellCommandParts, error) {
+	var command shellCommandParts
+	leading := true
 	for i := 0; i < len(tokens); i++ {
-		switch tokens[i] {
-		case "<", ">", ">>":
-			if i+1 >= len(tokens) {
-				return nil, "", "", false, errors.New("missing redirection target")
+		if tokens[i].operator {
+			switch tokens[i].text {
+			case "<", ">", ">>":
+				if i+1 >= len(tokens) {
+					return command, errors.New("missing redirection target")
+				}
+				target := expandShellWord(tokens[i+1].text)
+				if tokens[i].text == "<" {
+					command.input = target
+				} else {
+					command.output = target
+					command.appendMode = tokens[i].text == ">>"
+				}
+				i++
+				continue
+			default:
+				return command, fmt.Errorf("unexpected %q", tokens[i].text)
 			}
-			i++
-			if tokens[i-1] == "<" {
-				input = tokens[i]
-			} else {
-				output = tokens[i]
-				appendMode = tokens[i-1] == ">>"
-			}
-		default:
-			argv = append(argv, tokens[i])
 		}
+		if leading {
+			if name, value, ok := shellAssignment(tokens[i].text); ok {
+				command.assignments = append(command.assignments,
+					shellAssignmentPair{name: name, value: expandShellWord(value)})
+				continue
+			}
+			leading = false
+		}
+		command.argv = append(command.argv, expandShellWord(tokens[i].text))
 	}
-	return argv, input, output, appendMode, nil
+	return command, nil
 }
 
 // isShellBuiltin reports whether a command runs inside the shell itself rather
@@ -581,7 +662,7 @@ func runShellBuiltin(args []string) (int, bool, bool) {
 				return 1, true, false
 			}
 		}
-		_ = os.Setenv(name, value.String())
+		setShellVariable(name, value.String())
 		return 0, true, false
 	case "cd":
 		dir := ""
@@ -603,15 +684,23 @@ func runShellBuiltin(args []string) (int, bool, bool) {
 		fmt.Println(dir)
 		return 0, true, false
 	case "export":
+		// "export NAME=value" assigns and exports; "export NAME" promotes a
+		// variable the script already set, which is why the two are separate.
 		for _, v := range args[1:] {
-			p := strings.SplitN(v, "=", 2)
-			if len(p) == 2 {
-				os.Setenv(p[0], p[1])
+			if name, value, ok := shellAssignment(v); ok {
+				delete(shellVariables, name)
+				os.Setenv(name, value)
+				continue
+			}
+			if value, ok := shellVariables[v]; ok {
+				delete(shellVariables, v)
+				os.Setenv(v, value)
 			}
 		}
 		return 0, true, false
 	case "unset":
 		for _, v := range args[1:] {
+			delete(shellVariables, v)
 			os.Unsetenv(v)
 		}
 		return 0, true, false
@@ -627,14 +716,26 @@ func runShellBuiltin(args []string) (int, bool, bool) {
 	return 0, false, false
 }
 
-func shellTokens(source string) ([]string, error) {
-	tokens := []string{}
+// shellToken is one word or one operator of the source. The two are kept apart
+// because an operator decides the shape of the script and a word never should:
+// a ';' written inside quotes is an argument, not a command separator.
+type shellToken struct {
+	text     string
+	operator bool
+}
+
+// shellTokens splits source into words and operators without expanding
+// anything. Expansion is deliberately left to the moment each command runs --
+// doing it here would freeze every variable at the value it had when the script
+// was read, so a script could never see a variable it had just set.
+func shellTokens(source string) ([]shellToken, error) {
+	tokens := []shellToken{}
 	var word strings.Builder
 	quote := byte(0)
 	wordStarted := false
 	flush := func() {
 		if wordStarted {
-			tokens = append(tokens, expandShellWord(word.String()))
+			tokens = append(tokens, shellToken{text: word.String()})
 			word.Reset()
 			wordStarted = false
 		}
@@ -676,7 +777,7 @@ func shellTokens(source string) ([]string, error) {
 			flush()
 		case '\n':
 			flush()
-			tokens = append(tokens, "\n")
+			tokens = append(tokens, shellToken{text: "\n", operator: true})
 		case '#':
 			if word.Len() == 0 {
 				for i < len(source) && source[i] != '\n' {
@@ -693,7 +794,7 @@ func shellTokens(source string) ([]string, error) {
 				op += string(c)
 				i++
 			}
-			tokens = append(tokens, op)
+			tokens = append(tokens, shellToken{text: op, operator: true})
 		default:
 			word.WriteByte(c)
 			wordStarted = true
@@ -705,6 +806,62 @@ func shellTokens(source string) ([]string, error) {
 	flush()
 	return tokens, nil
 }
+
+// shellVariables holds the variables a script assigns without exporting them.
+// A real shell keeps these out of the environment its children inherit, so they
+// live here rather than in os.Setenv, and expansion consults them first.
+var shellVariables = map[string]string{}
+
+// shellStatus is the exit status of the most recent command, which is what $?
+// expands to.
+var shellStatus int
+
+// shellVariable resolves a name for expansion: the special parameters first,
+// then the script's own variables, then the environment.
+func shellVariable(name string) string {
+	switch name {
+	case "?":
+		return strconv.Itoa(shellStatus)
+	case "$":
+		return strconv.Itoa(os.Getpid())
+	}
+	if value, ok := shellVariables[name]; ok {
+		return value
+	}
+	return os.Getenv(name)
+}
+
+// setShellVariable assigns a variable. A name that is already exported keeps its
+// place in the environment so child processes see the new value; anything else
+// stays a shell variable, invisible to them.
+func setShellVariable(name, value string) {
+	if _, exported := os.LookupEnv(name); exported {
+		_ = os.Setenv(name, value)
+		return
+	}
+	shellVariables[name] = value
+}
+
+// shellAssignment splits a NAME=VALUE word. The decision is made on the
+// unexpanded word, as a shell does: a value that happens to contain '=' after
+// expansion is still an ordinary argument.
+func shellAssignment(word string) (string, string, bool) {
+	equals := strings.IndexByte(word, '=')
+	if equals <= 0 {
+		return "", "", false
+	}
+	for i := 0; i < equals; i++ {
+		c := word[i]
+		switch {
+		case c == '_' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z':
+		case i > 0 && c >= '0' && c <= '9':
+		default:
+			return "", "", false
+		}
+	}
+	return word[:equals], word[equals+1:], true
+}
+
 func expandShellWord(value string) string {
 	var out strings.Builder
 	for i := 0; i < len(value); i++ {
@@ -716,6 +873,10 @@ func expandShellWord(value string) string {
 		if i >= len(value) {
 			out.WriteByte('$')
 			break
+		}
+		if value[i] == '?' || value[i] == '$' {
+			out.WriteString(shellVariable(value[i : i+1]))
+			continue
 		}
 		name := ""
 		if value[i] == '{' {
@@ -734,7 +895,7 @@ func expandShellWord(value string) string {
 			name = value[start:i]
 			i--
 		}
-		out.WriteString(os.Getenv(name))
+		out.WriteString(shellVariable(name))
 	}
 	return strings.ReplaceAll(out.String(), "\x00dollar\x00", "$")
 }

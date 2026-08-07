@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"unicode"
 )
 
@@ -65,6 +66,7 @@ rest:
 	if fromStdin {
 		files = []string{"-"}
 	}
+	width := wcWidth(files, sel.count())
 
 	out := bufio.NewWriter(os.Stdout)
 
@@ -73,17 +75,17 @@ rest:
 	for _, f := range files {
 		r, err := openInput(f)
 		if err != nil {
-			fatalf("wc", "%s: %v", f, err)
+			fatalf("wc", "%s: %s", f, errText(err))
 			status = 1
 			continue
 		}
 		cnt, readErr := countWc(r)
 		if readErr != nil {
-			fatalf("wc", "%s: %v", f, readErr)
+			fatalf("wc", "%s: %s", f, errText(readErr))
 			status = 1
 		}
 		if closeErr := r.Close(); closeErr != nil {
-			fatalf("wc", "%s: %v", f, closeErr)
+			fatalf("wc", "%s: %s", f, errText(closeErr))
 			status = 1
 		}
 		total.add(cnt)
@@ -92,20 +94,56 @@ rest:
 		if fromStdin {
 			name = ""
 		}
-		writeWcLine(out, cnt, sel, name)
+		writeWcLine(out, cnt, sel, name, width)
 	}
 
 	if len(files) > 1 {
-		writeWcLine(out, total, sel, "total")
+		writeWcLine(out, total, sel, "total", width)
 	}
 	if err := out.Flush(); err != nil {
-		fatalf("wc", "write error: %v", err)
+		fatalf("wc", "write error: %s", errText(err))
 		status = 1
 	}
 	return status
 }
 
 type wcSel struct{ lines, words, bytes, chars bool }
+
+// count reports how many columns this selection prints.
+func (s wcSel) count() int {
+	n := 0
+	for _, selected := range []bool{s.lines, s.words, s.bytes, s.chars} {
+		if selected {
+			n++
+		}
+	}
+	return n
+}
+
+// wcWidth returns the width every count column is padded to. wc sizes the
+// columns from how large the counts could possibly be -- the number of bytes it
+// is about to read -- not from the counts it ends up with, so the width is known
+// before any counting happens. A single count for a single input is printed
+// without padding, and an input whose size cannot be known in advance falls back
+// to seven.
+func wcWidth(files []string, fields int) int {
+	if fields == 1 && len(files) <= 1 {
+		return 1
+	}
+	total := int64(0)
+	for _, name := range files {
+		info, err := os.Stat(name)
+		if name == "-" {
+			// Standard input redirected from a file still has a known size.
+			info, err = os.Stdin.Stat()
+		}
+		if err != nil || !info.Mode().IsRegular() {
+			return 7
+		}
+		total += info.Size()
+	}
+	return len(strconv.FormatInt(total, 10))
+}
 
 type wcCount struct {
 	lines, words, bytes, chars int64
@@ -144,7 +182,7 @@ func countWc(r io.Reader) (wcCount, error) {
 	}
 }
 
-func writeWcLine(out *bufio.Writer, c wcCount, sel wcSel, name string) {
+func writeWcLine(out *bufio.Writer, c wcCount, sel wcSel, name string, width int) {
 	var parts []int64
 	if sel.lines {
 		parts = append(parts, c.lines)
@@ -162,7 +200,7 @@ func writeWcLine(out *bufio.Writer, c wcCount, sel wcSel, name string) {
 		if i > 0 {
 			_ = out.WriteByte(' ') // Flush reports the sticky error.
 		}
-		fmt.Fprintf(out, "%7d", p)
+		fmt.Fprintf(out, "%*d", width, p)
 	}
 	if name != "" {
 		fmt.Fprintf(out, " %s", name)

@@ -69,7 +69,7 @@ func cmdCat(args []string) int {
 	for _, fname := range files {
 		f, err := openInput(fname)
 		if err != nil {
-			fatalf("cat", "%s: %v", fname, err)
+			fatalf("cat", "%s: %s", fname, errText(err))
 			status = 1
 			continue
 		}
@@ -77,11 +77,11 @@ func cmdCat(args []string) int {
 		// Fast path: plain copy with no transformations.
 		if plain {
 			if _, copyErr := io.Copy(out, f); copyErr != nil {
-				fatalf("cat", "%s: %v", fname, copyErr)
+				fatalf("cat", "%s: %s", fname, errText(copyErr))
 				status = 1
 			}
 			if closeErr := f.Close(); closeErr != nil {
-				fatalf("cat", "%s: %v", fname, closeErr)
+				fatalf("cat", "%s: %s", fname, errText(closeErr))
 				status = 1
 			}
 			continue
@@ -92,7 +92,7 @@ func cmdCat(args []string) int {
 			line, err := r.ReadString('\n')
 			if len(line) == 0 && err != nil {
 				if !errors.Is(err, io.EOF) {
-					fatalf("cat", "%s: %v", fname, err)
+					fatalf("cat", "%s: %s", fname, errText(err))
 					status = 1
 				}
 				break
@@ -144,19 +144,19 @@ func cmdCat(args []string) int {
 			}
 			if err != nil {
 				if !errors.Is(err, io.EOF) {
-					fatalf("cat", "%s: %v", fname, err)
+					fatalf("cat", "%s: %s", fname, errText(err))
 					status = 1
 				}
 				break
 			}
 		}
 		if closeErr := f.Close(); closeErr != nil {
-			fatalf("cat", "%s: %v", fname, closeErr)
+			fatalf("cat", "%s: %s", fname, errText(closeErr))
 			status = 1
 		}
 	}
 	if err := out.Flush(); err != nil {
-		fatalf("cat", "write error: %v", err)
+		fatalf("cat", "write error: %s", errText(err))
 		status = 1
 	}
 	return status

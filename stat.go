@@ -58,12 +58,12 @@ func cmdStat(args []string) int {
 			info, err = os.Lstat(file)
 		}
 		if err != nil {
-			fatalf("stat", "cannot stat '%s': %v", file, err)
+			fatalf("stat", "cannot stat '%s': %s", file, errText(err))
 			status = 1
 			continue
 		}
 		if err := writeStat(file, info, format, formatSet); err != nil {
-			fatalf("stat", "write error: %v", err)
+			fatalf("stat", "write error: %s", errText(err))
 			return 1
 		}
 	}

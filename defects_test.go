@@ -321,3 +321,210 @@ func TestShellKeepsBackslashInDoubleQuotes(t *testing.T) {
 		t.Fatalf("status=%d stdout=%q stderr=%q", status, stdout, stderr)
 	}
 }
+
+// A variable assignment is a command in its own right, and a variable set by
+// the script has to be visible to the commands that follow it. Expansion used
+// to happen while the whole source was tokenised, which froze every word at the
+// value it had before the script ran.
+func TestShellAssignsAndReadsBackVariables(t *testing.T) {
+	for _, c := range []struct{ name, source, want string }{
+		{"plain assignment", "z=1; echo $z", "1\n"},
+		{"export then read", "export z=2; echo $z", "2\n"},
+		{"assign from variable", "a=3; b=$a; echo $b", "3\n"},
+		{"value keeps its equals", "a=x=y; echo $a", "x=y\n"},
+		{"quoted value", `a="x y"; echo $a`, "x y\n"},
+		{"reassignment", "z=1; z=2; echo $z", "2\n"},
+		{"unset", "z=1; unset z; echo [$z]", "[]\n"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			status, stdout, stderr := captureApplet(t, cmdSh, []string{"-c", c.source}, "")
+			if status != 0 || stdout != c.want {
+				t.Fatalf("status=%d stdout=%q stderr=%q, want %q", status, stdout, stderr, c.want)
+			}
+		})
+	}
+}
+
+// $? is the exit status of the previous command. It used to expand to a literal
+// "?", so no script could test whether anything had succeeded.
+func TestShellExpandsExitStatus(t *testing.T) {
+	for _, c := range []struct{ source, want string }{
+		{"/bin/true; echo $?", "0\n"},
+		{"/bin/false; echo $?", "1\n"},
+		{"/bin/sh -c 'exit 7'; echo $?", "7\n"},
+	} {
+		status, stdout, stderr := captureApplet(t, cmdSh, []string{"-c", c.source}, "")
+		if status != 0 || stdout != c.want {
+			t.Fatalf("%q: status=%d stdout=%q stderr=%q, want %q", c.source, status, stdout, stderr, c.want)
+		}
+	}
+}
+
+// An assignment written in front of a command belongs to that command alone and
+// must not survive it, while a plain assignment stays a shell variable that
+// child processes never see.
+func TestShellScopesPrefixAssignments(t *testing.T) {
+	status, stdout, _ := captureApplet(t, cmdSh, []string{"-c", "z=1 /bin/true; echo [$z]"}, "")
+	if status != 0 || stdout != "[]\n" {
+		t.Fatalf("prefix assignment leaked: status=%d stdout=%q", status, stdout)
+	}
+	status, stdout, _ = captureApplet(t, cmdSh, []string{"-c", "z=1; /usr/bin/env"}, "")
+	if status != 0 || strings.Contains(stdout, "\nz=1") || strings.HasPrefix(stdout, "z=1") {
+		t.Fatalf("unexported variable reached the environment: status=%d stdout=%q", status, stdout)
+	}
+}
+
+// Diagnostics carry the strerror sentence, not Go's "open f: ..." wording.
+func TestDiagnosticsUseStrerrorText(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "gone")
+	for _, c := range []struct {
+		name string
+		fn   applet
+		args []string
+		want string
+	}{
+		{"cat", cmdCat, []string{missing}, "No such file or directory"},
+		{"head", cmdHead, []string{missing}, "cannot open '" + missing + "' for reading: No such file or directory"},
+		{"wc", cmdWc, []string{missing}, "No such file or directory"},
+		{"sort", cmdSort, []string{missing}, "cannot read: " + missing + ": No such file or directory"},
+		{"cp", cmdCp, []string{missing, dir}, "cannot stat '" + missing + "': No such file or directory"},
+		{"mv", cmdMv, []string{missing, dir}, "cannot stat '" + missing + "': No such file or directory"},
+		{"rm", cmdRm, []string{missing}, "cannot remove '" + missing + "': No such file or directory"},
+		{"ls", cmdLs, []string{missing}, "cannot access '" + missing + "': No such file or directory"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, _, stderr := captureApplet(t, c.fn, c.args, "")
+			if !strings.Contains(stderr, c.want) {
+				t.Fatalf("stderr = %q, want it to contain %q", stderr, c.want)
+			}
+			if strings.Contains(stderr, "no such file or directory") {
+				t.Fatalf("stderr leaks Go's error text: %q", stderr)
+			}
+		})
+	}
+}
+
+// Short options bundle, and a value may be attached to its letter.
+func TestShortOptionsBundle(t *testing.T) {
+	if got := strings.Join(expandShortOptions([]string{"-qn2", "f"}, "nc"), "|"); got != "-q|-n|2|f" {
+		t.Fatalf("expandShortOptions = %q", got)
+	}
+	if got := strings.Join(expandShortOptions([]string{"-sd,", "-f1"}, "bcfd"), "|"); got != "-s|-d|,|-f|1" {
+		t.Fatalf("expandShortOptions = %q", got)
+	}
+	// Long options, "--", "-" and operands are left exactly as they are.
+	if got := strings.Join(expandShortOptions([]string{"--max-args=2", "--", "-abc"}, "n"), "|"); got != "--max-args=2|--|-abc" {
+		t.Fatalf("expandShortOptions = %q", got)
+	}
+
+	dir := t.TempDir()
+	name := filepath.Join(dir, "f")
+	if err := os.WriteFile(name, []byte("a\nb\nc\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	status, stdout, stderr := captureApplet(t, cmdHead, []string{"-qn2", name}, "")
+	if status != 0 || stdout != "a\nb\n" {
+		t.Fatalf("head -qn2: status=%d stdout=%q stderr=%q", status, stdout, stderr)
+	}
+	status, stdout, stderr = captureApplet(t, cmdTail, []string{"-n2", name}, "")
+	if status != 0 || stdout != "b\nc\n" {
+		t.Fatalf("tail -n2: status=%d stdout=%q stderr=%q", status, stdout, stderr)
+	}
+}
+
+// The originals reserve particular exit codes; a script reads them even when a
+// person only reads the message.
+func TestExitCodesMatchTheOriginals(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "gone")
+	for _, c := range []struct {
+		name string
+		fn   applet
+		args []string
+		want int
+	}{
+		{"ls on a missing file", cmdLs, []string{missing}, 2},
+		{"sort on a missing file", cmdSort, []string{missing}, 2},
+		{"env with an unknown option", cmdEnv, []string{"--zzz-nope"}, 125},
+		{"printenv with an unknown option", cmdPrintenv, []string{"--zzz-nope"}, 2},
+		{"pidof with an unknown option", cmdPidof, []string{"--zzz-nope", "init"}, 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if status, _, _ := captureApplet(t, c.fn, c.args, ""); status != c.want {
+				t.Fatalf("status = %d, want %d", status, c.want)
+			}
+		})
+	}
+}
+
+// wc sizes its columns from the number of bytes it is about to read, and prints
+// a single count for a single input with no padding at all.
+func TestWcColumnWidths(t *testing.T) {
+	dir := t.TempDir()
+	small := filepath.Join(dir, "small")
+	if err := os.WriteFile(small, []byte("a\nb\nc\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	big := filepath.Join(dir, "big")
+	if err := os.WriteFile(big, []byte(strings.Repeat("word here\n", 2000)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{small}, "3 3 6 " + small + "\n"},
+		{[]string{"-l", small}, "3 " + small + "\n"},
+		{[]string{"-c", small}, "6 " + small + "\n"},
+		{[]string{"-l", big}, "2000 " + big + "\n"},
+	} {
+		status, stdout, stderr := captureApplet(t, cmdWc, c.args, "")
+		if status != 0 || stdout != c.want {
+			t.Fatalf("wc %v: status=%d stdout=%q stderr=%q, want %q", c.args, status, stdout, stderr, c.want)
+		}
+	}
+}
+
+// ss shows a v6-only listener as [::] and a dual-stack one as *, so the two
+// renderings must both be reachable from the same address field.
+func TestSocketAddressDistinguishesV6Only(t *testing.T) {
+	const wildcard = "00000000000000000000000000000000:6D3C"
+	if got := decodeSocketAddrMode(wildcard, false); got != "*:27964" {
+		t.Errorf("dual-stack wildcard = %q, want %q", got, "*:27964")
+	}
+	if got := decodeSocketAddrMode(wildcard, true); got != "[::]:27964" {
+		t.Errorf("v6-only wildcard = %q, want %q", got, "[::]:27964")
+	}
+	// A real address is unaffected by the flag.
+	const loopback = "0000000000000000FFFF00000100007F:0277"
+	if a, b := decodeSocketAddrMode(loopback, false), decodeSocketAddrMode(loopback, true); a != b {
+		t.Errorf("a specific address changed with the flag: %q vs %q", a, b)
+	}
+}
+
+// cmp counts in "char" for a difference and in bytes for an EOF, and words the
+// EOF differently depending on whether the file stopped on a line boundary.
+func TestCmpMessagesMatchTheOriginal(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, content string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	long := write("long", "abc\ndef\nghi\n")
+	for _, c := range []struct{ name, a, b, want string }{
+		{"difference", write("p", "abc\ndef\n"), write("q", "abc\ndeX\n"), "differ: char "},
+		{"eof on a line boundary", long, write("whole", "abc\ndef\n"), "after byte 8, line 2"},
+		{"eof inside a line", long, write("part", "abc\nde"), "after byte 6, in line 2"},
+		{"empty file", long, write("empty", ""), "which is empty"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			status, stdout, stderr := captureApplet(t, cmdCmp, []string{c.a, c.b}, "")
+			if status != 1 || !strings.Contains(stdout+stderr, c.want) {
+				t.Fatalf("status=%d output=%q, want it to contain %q", status, stdout+stderr, c.want)
+			}
+		})
+	}
+}

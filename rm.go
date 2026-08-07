@@ -91,7 +91,7 @@ rest:
 			if force && errors.Is(err, os.ErrNotExist) {
 				continue
 			}
-			fatalf("rm", "cannot remove '%s': %v", t, err)
+			fatalf("rm", "cannot remove '%s': %s", t, errText(err))
 			status = 1
 			continue
 		}
@@ -105,7 +105,7 @@ rest:
 		if prompt {
 			confirmed, confirmErr := confirm(stdin, fmt.Sprintf("rm: remove '%s'? ", t))
 			if confirmErr != nil {
-				fatalf("rm", "cannot read response: %v", confirmErr)
+				fatalf("rm", "cannot read response: %s", errText(confirmErr))
 				status = 1
 				continue
 			}
@@ -120,13 +120,13 @@ rest:
 			err = os.Remove(t)
 		}
 		if err != nil {
-			fatalf("rm", "cannot remove '%s': %v", t, err)
+			fatalf("rm", "cannot remove '%s': %s", t, errText(err))
 			status = 1
 			continue
 		}
 		if verbose {
 			if _, writeErr := fmt.Fprintf(os.Stdout, "removed '%s'\n", t); writeErr != nil {
-				fatalf("rm", "write error: %v", writeErr)
+				fatalf("rm", "write error: %s", errText(writeErr))
 				status = 1
 			}
 		}

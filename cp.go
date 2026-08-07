@@ -97,7 +97,7 @@ rest:
 			target = filepath.Join(dst, filepath.Base(src))
 		}
 		if err := c.copyPath(src, target); err != nil {
-			fatalf("cp", "%v", err)
+			fatalf("cp", "%s", errText(err))
 			status = 1
 		}
 	}
@@ -116,7 +116,9 @@ type copier struct {
 func (c *copier) copyPath(src, dst string) error {
 	info, err := os.Lstat(src)
 	if err != nil {
-		return err
+		// The caller prints this verbatim, so the sentence is built where the
+		// operation and the operand are both known.
+		return fmt.Errorf("cannot stat '%s': %s", src, errText(err))
 	}
 
 	switch {

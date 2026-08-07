@@ -18,6 +18,7 @@ import (
 // common positive form. With multiple files, each is preceded by a header
 // (unless -q), matching coreutils.
 func cmdHead(args []string) int {
+	args = expandShortOptions(args, "nc")
 	count := int64(10)
 	byMode := false // true => -c bytes, false => -n lines
 	var files []string
@@ -82,7 +83,7 @@ rest:
 	for idx, fname := range files {
 		f, err := openInput(fname)
 		if err != nil {
-			fatalf("head", "cannot open '%s' for reading: %v", fname, err)
+			fatalf("head", "cannot open '%s' for reading: %s", fname, errText(err))
 			status = 1
 			continue
 		}
@@ -98,22 +99,22 @@ rest:
 		}
 		if byMode {
 			if _, copyErr := io.CopyN(out, f, count); copyErr != nil && !errors.Is(copyErr, io.EOF) {
-				fatalf("head", "%s: %v", fname, copyErr)
+				fatalf("head", "error reading '%s': %s", fname, errText(copyErr))
 				status = 1
 			}
 		} else {
 			if readErr := emitFirstLines(out, f, count); readErr != nil {
-				fatalf("head", "%s: %v", fname, readErr)
+				fatalf("head", "error reading '%s': %s", fname, errText(readErr))
 				status = 1
 			}
 		}
 		if closeErr := f.Close(); closeErr != nil {
-			fatalf("head", "%s: %v", fname, closeErr)
+			fatalf("head", "error reading '%s': %s", fname, errText(closeErr))
 			status = 1
 		}
 	}
 	if err := out.Flush(); err != nil {
-		fatalf("head", "write error: %v", err)
+		fatalf("head", "write error: %s", errText(err))
 		status = 1
 	}
 	return status

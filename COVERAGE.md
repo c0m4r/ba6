@@ -6,11 +6,16 @@
 > estimated — see [How this was measured](#how-this-was-measured).
 
 Measured 2026-08-07 against `ba6` at commit `e532a75`, 127 applets, on Manjaro.
-`make verify` passes. The `wget` and `curl` entries were re-measured later the same
-day, after wget was given its own command line instead of sharing curl's, and the
-`rmdir` `ss` `xargs` `free` `df` `ls` `id` `pidof` `dig` `fsck.ext*` `sh` `dirname`
-`seq` `mktemp` `sha256sum` and `printf` entries were re-measured after the defects
-below were fixed.
+`make verify` passes, and `tools/coverage/behaviour_diff.sh` reports 31 of 33 cases
+byte-identical — the two that differ are the documented C-locale date format and
+`find`'s traversal order.
+
+Several entries were re-measured later the same day as fixes landed: `wget` and
+`curl` after wget was given its own command line instead of sharing curl's; then
+`rmdir` `ss` `xargs` `free` `df` `ls` `id` `pidof` `dig` `fsck.ext*` `dirname` `seq`
+`mktemp` `sha256sum` `printf`; then `sh` `cat` `head` `tail` `wc` `sort` `cp` `mv`
+`rm` `mkdir` `stat` `cut` `tee` `base64` `env` `printenv` `blkid` `which`
+`losetup` and `swapoff` after the second round of defects was fixed.
 
 **Short answer to "which are 1:1?"** — 14 applets are genuine drop-ins, 25 more are
 near-complete, 79 are partial or a narrow subset in ways that stay invisible until a
@@ -19,10 +24,10 @@ Notably, the *filesystem* applets score badly on flags but produce images that p
 `e2fsck`, `xfs_repair` and `btrfs check` cleanly — flag count is not the same as
 correctness in either direction.
 
-The 17 behaviour defects the first measurement found are fixed and pinned by
-`defects_test.go`. What remains is tracked in [Open defects](#open-defects) — eight
-of them, three in `sh` alone — and in [cross-cutting gaps](#cross-cutting-gaps),
-plus the missing options listed per applet below.
+All 25 behaviour defects found so far — 17 in the first pass, 8 in the second —
+are fixed and pinned by `defects_test.go`. What remains is absent functionality
+rather than wrong functionality: the [cross-cutting gaps](#cross-cutting-gaps) and
+the missing options listed per applet below.
 
 ## Verdict in one table
 
@@ -36,86 +41,33 @@ plus the missing options listed per applet below.
 
 ## Open defects
 
-Behaviour that differs from the original in a way that is a bug rather than a
-missing feature. Ordered by how much breaks because of it. Each entry was
-reproduced against the real tool on 2026-08-07.
+None. The eight this document listed on 2026-08-07 were fixed the same day and are
+covered by `defects_test.go`:
 
-The seventeen defects the first measurement found — `rmdir` deleting files, `ss`
-printing undecoded hex, `xargs` mis-splitting input, and the rest — were fixed the
-same day and are pinned by `defects_test.go`; see commit history for what they were.
+| Was | Now |
+|---|---|
+| `sh` looked up `z=1` as a command | assignment sets a variable, and a prefix assignment scopes to one command |
+| a variable the script set could not be read back | expansion happens when each command runs, not when the source is tokenised |
+| `$?` expanded to a literal `?` | `$?` is the previous command's status, and `$$` works too |
+| eight applets printed Go's `open f: no such file or directory` | `errText` gives every diagnostic the strerror sentence and the original's wording |
+| ten applets rejected bundled short options | `expandShortOptions` normalises `-qn2` and `-sd,` before each parser runs |
+| seven applets returned the wrong exit code | `ls`/`sort` return 2, `env` 125, `printenv` 2, `blkid` 1, `which` 0, `pidof` 1 |
+| `wc` padded every count to seven columns | the width comes from the bytes about to be read, and a lone count is unpadded |
+| `ss` showed every v6 wildcard as `*` | a netlink `sock_diag` query supplies `IPV6_V6ONLY`, so v6-only listeners read `[::]` |
 
-1. **`sh` does not understand `VAR=value`.** _(run)_ An assignment is looked up as a
-   command:
-   ```
-   $ ba6 sh -c 'z=1; echo $z'
-   sh: exec: "z=1": executable file not found in $PATH
-   ```
-   Nothing that assigns a variable — which is most shell scripts — can run.
-2. **`sh` cannot read back a variable it sets.** _(run)_ `export` works, but the value
-   never reaches a later command:
-   ```
-   $ ba6 sh -c 'export z=1; echo $z'      # prints an empty line
-   $ z=9 ba6 sh -c 'echo $z'              # prints 9
-   ```
-   Expansion happens once, while the whole source is tokenised, so only variables
-   that already existed when the shell started are visible. The fix is to defer
-   expansion to the point where each command runs, which is also what defects 1 and
-   3 need.
-3. **`sh` does not expand `$?`.** _(run)_ `ba6 sh -c 'false; echo $?'` prints `?` —
-   the `$` is consumed and the name is left behind. No script can test whether the
-   previous command succeeded.
-4. **Go error strings leak into diagnostics.** _(run)_ Every applet that formats an
-   `error` with `%v` prints Go's wording, including the operation and a repeat of the
-   path:
+Three neighbouring bugs surfaced while fixing those and were fixed with them:
+`ss -l` hid every UDP/IPv6 listener, because the "no peer" test only recognised the
+eight-digit IPv4 spelling of an all-zero address; `sh` reported a missing command
+with Go's `fork/exec` wording instead of `not found` and 127; and `cmp` said
+`differ: byte N` where the original says `char N`, and collapsed the original's
+three EOF messages into one. The `cmp` entry below had wrongly recorded those as
+matching — they were checked by eye, not diffed, which is the failure mode the
+harness in `tools/coverage/` exists to prevent.
 
-   | | GNU | ba6 |
-   |---|---|---|
-   | `cat nosuch` | `cat: nosuch: No such file or directory` | `cat: nosuch: open nosuch: no such file or directory` |
-   | `rm nosuch` | `rm: cannot remove 'nosuch': No such file or directory` | `… : lstat nosuch: no such file or directory` |
-   | `cp nosuch d` | `cp: cannot stat 'nosuch': No such file or directory` | `cp: lstat nosuch: no such file or directory` |
-
-   Still affected: `cat` `head` `tail` `wc` `sort` `cp` `mv` `rm`. `errText` in
-   `util.go` already maps a wrapped `syscall.Errno` to the strerror sentence and is
-   used by `rmdir` and `df`; the rest need to call it and to adopt the original's
-   surrounding wording.
-5. **Short-option bundling is implemented per applet, so ten of them reject it.**
-   _(run)_ Every original accepts `-qn 2`, `-pm 700`, `-fn`.
-
-   | Bundling works | Bundling fails |
-   |---|---|
-   | `ls -la` `grep -in` `rm -rf` `cp -rp` `mv -fv` `tar -cf` `sort -rn` `cat -nE` `du -sh` `wc -lw` `uniq -ci` `touch -am` `xargs -0r` `umount -lf` `ln -sfT` `ss -tuln` | `head -qn2` `tail -qn2` `cut -sd,` `tee -ai` `mkdir -pm700` `sha256sum -bt` `base64 -dw0` `swapoff -av` `losetup -fr` `fsck.ext4 -fn` |
-
-   Applets that loop over `a[1:]` runes bundle correctly; those that `switch` on the
-   whole argument do not. `optionArgument` in `execution_tools.go` handles the
-   attached, spaced and `=` forms of a value and is the piece to build a shared
-   parser around.
-6. **Exit codes are not always the original's.** _(run)_ The output is right and the
-   status is wrong, which is the kind of difference a script notices and a person
-   does not:
-
-   | | original | ba6 |
-   |---|---|---|
-   | `ls nosuch` | 2 | 1 |
-   | `sort nosuch` | 2 | 1 |
-   | `env --zzz` | 125 | 127 |
-   | `printenv --zzz` | 2 | 1 |
-   | `blkid --zzz` | 1 | 2 |
-   | `which --zzz ls` | 0 | 1 |
-   | `pidof --zzz bash` | 1 | 0 |
-
-   `cat`, `head`, `wc` and `grep` already match. `pidof` is the only applet left that
-   accepts an unknown option and exits 0.
-7. **`wc` pads every count to a fixed width.** _(run)_ GNU sizes the columns to the
-   widest value in the output; ba6 always uses seven, so no invocation lines up with
-   the original:
-   ```
-   $ /usr/bin/wc f      →  2 2 4 f
-   $ ba6 wc f           →        2       2       4 f
-   ```
-8. **`ss` cannot tell a v6-only listener from a dual-stack one.** _(run)_ The original
-   prints `*:PORT` for a socket that accepts both families and `[::]:PORT` for one
-   bound v6-only; ba6 prints `*:PORT` for both, because the distinction is the
-   `IPV6_V6ONLY` socket option and not something `/proc/net/tcp6` records.
+Fixing `ss` meant widening the seccomp policy in `seccomp_amd64.go` to admit
+`NETLINK_SOCK_DIAG` alongside the `NETLINK_ROUTE` and `NETLINK_NETFILTER` already
+allowed. It is the narrowest of the three — sock_diag only reads socket state,
+where the route protocol can reconfigure the network.
 
 ## Cross-cutting gaps
 
@@ -123,8 +75,9 @@ Absent behaviour rather than wrong behaviour, each of which touches many applets
 
 * **No `--version` anywhere.** _(run)_ Every original supports it; ba6 answers
   `unsupported option "--version"`. Scripts and packagers probe this.
-* **No `Try 'x --help' for more information.` line** after a usage error. _(run)_
-  `sha256sum` prints it; nothing else does.
+* **No `Try 'x --help' for more information.` line** after most usage errors. _(run)_
+  `sha256sum`, `env`, `printenv` and `blkid` print it where their originals do;
+  the other applets stop at the diagnostic.
 * **C locale only.** `ls -l` prints `Aug  7 02:46`, `printf %f` prints `3.14`, `seq`
   prints `1.5`. The system tools follow `LC_TIME`/`LC_NUMERIC`. This is a reasonable
   deviation for a static rescue binary — worth one line in each help text.
@@ -153,7 +106,7 @@ Absent behaviour rather than wrong behaviour, each of which touches many applets
 | Applet | Coverage | Missing | Notes |
 |---|---|---|---|
 | `cat` | 6/10 | `-v` `-e` `-t` `-u` | `-n -b -E -T -s -A -- -`, multi-file numbering and missing-newline handling all byte-identical _(run)_ |
-| `wc` | 4/8 | `-L` `--total` `--files0-from` `--debug` | counts are right, but the column width differs on every invocation ([defect 7](#open-defects)) _(run)_ |
+| `wc` | 4/8 | `-L` `--total` `--files0-from` `--debug` | counts, column widths and the `total` line are byte-identical, including stdin and the unpadded single-count form _(run)_ |
 | `head` | 4/5 | `-z`, and **negative counts** (`-n -2`, `-c -3`) | `-n` `-c` `-q` `-v` `-n +N` and multi-file headers match _(run)_ |
 | `tail` | 5/12 | `-F` `--retry` `--pid` `-s` `-z` `--max-unchanged-stats` | `-n` `-c` `-n +N` `-c +N` `-q` `-v` `-f` match _(run)_ |
 | `sha256sum` | 6/10 | `--tag` `-z` `--ignore-missing` `--strict` `-w` | `-c` verification, `-` stdin, the `-b` binary marker and the rejection of `--quiet`/`--status` outside `-c` all match _(run)_ |
@@ -173,7 +126,7 @@ Absent behaviour rather than wrong behaviour, each of which touches many applets
 | `blockdev` | 12/26 | `--getpbsz` `--getiomin` `--getioopt` `--getalignoff` `--setbsz` `--getsize` `--getfra`/`--setfra` `--getdiskseq` `--getzonesz` `-q` `-v` | the 12 present cover the recovery cases _(src)_ |
 | `stat` | `-c` near-complete | `-f` `-t` `--printf`, and `%d %t %T %w %m %C` | **default (no `-c`) layout differs**: quotes the name, no column alignment, `Device: 42` vs `0,42`, no `Birth:` line. `%N` quotes with `"` instead of `'` _(run)_ |
 | `env` | 2/11 | `-0` `-C` `-S` `-a`, signal options | `-i` `-u` and `NAME=VAL` prefixes match _(run)_ |
-| `cmp` | 1/5 | `-b` `-i` `-l` `-n` | `-s`, the differing-byte message, the EOF message and exit codes match _(run)_ |
+| `cmp` | 1/5 | `-b` `-i` `-l` `-n` | `-s`, the `char N, line N` difference message, all three EOF forms (`line`, `in line`, `which is empty`) and the exit codes match _(run)_ |
 | `sync` | 0/2 | `-d` `-f`, and **file operands** | bare `sync` is identical; `sync PATH` is rejected _(run)_ |
 | `dd` | 8/13 operands | `iflag=` `oflag=` `cbs=`, `conv=fsync\|fdatasync\|noerror\|swab\|excl\|ucase\|lcase`, `status=progress` | `if of bs ibs obs count skip seek conv=notrunc,sync status=none` produce byte-identical results to GNU on every combination tested, including stdin/stdout; the summary omits GNU's `, T s, R MB/s` tail _(run)_ |
 
@@ -288,11 +241,12 @@ omits the `[]:` back-file field. Missing `-D -c -j -L -P -b -J -l -O --direct-io
 
 **`mkswap`** — 2/13 _(src)_. `-f -L` present. Missing `-U -p -c -s -v -o --lock`.
 
-**`ss`** — 7/44 _(run)_. Addresses decode correctly and short options bundle.
-Present: `-t -u -x -a -l -n -p`
-(`-n`/`-p` accepted but ignored). No `Recv-Q`/`Send-Q` columns, no service-name
-resolution, no process attribution, and v6-only listeners are not distinguished
-([defect 8](#open-defects)). Missing `-s -e -m -i -o -r -f -K -H -Z --ipv4/--ipv6`.
+**`ss`** — 7/44 _(run)_. Addresses decode correctly, short options bundle, and
+v6-only listeners render as `[::]` against `*` for dual-stack ones, matched against
+the original socket by socket. Present: `-t -u -x -a -l -n -p` (`-n`/`-p` accepted
+but ignored). No `Recv-Q`/`Send-Q` columns, no service-name resolution, no process
+attribution, and the `Netid` column says `tcp6`/`udp6` where the original says `tcp`
+and `udp` for both families. Missing `-s -e -m -i -o -r -f -K -H -Z --ipv4/--ipv6`.
 
 **`ip`** — objects `link`, `addr`, `route`, `neigh`, `rule` _(run)_. `route show` and
 `rule show` match closely; `link show` omits `qdisc`, `mode`, `group`, `qlen` and
@@ -388,18 +342,18 @@ is missing the whole administrative set (`-l -u -d -e -S -n -x -w -i -a -R -s`).
 
 ### Tier D — narrow subset
 
-**`sh`** _(run)_ — the largest gap in the project. Works: simple commands, pipelines,
-`&&`/`||`, `;`, multi-line scripts, quoting (including the backslash rules inside
-double quotes), `$VAR` for variables inherited from the environment,
-`cd`/`pwd`/`export`/`unset`/`read`/`exit`/`:` builtins, and `<`/`>`/`>>` for both
-external commands and builtins. **Does not work: variable assignment
-([defect 1](#open-defects)), reading back a variable the script set
-([defect 2](#open-defects)), `$?` ([defect 3](#open-defects)), `if`, `for`, `while`,
-`case`, functions, subshells `( )`, `$(…)` and backticks, `$((…))`, globbing,
-here-documents, `2>` redirection, `trap`, `set`, `local`.** TODO.md tracks the
-control flow and substitution; the first three are more fundamental than any of it
-and share one root cause — expansion happens while the source is tokenised rather
-than when each command runs.
+**`sh`** _(run)_ — still the largest gap in the project, but it now runs a script
+that keeps state. Works: simple commands, pipelines, `&&`/`||`, `;`, multi-line
+scripts, quoting (including the backslash rules inside double quotes), variable
+assignment and read-back, prefix assignments scoped to one command, `$VAR`, `$?`,
+`$$`, positional `$0`…`$n`, `cd`/`pwd`/`export`/`unset`/`read`/`exit`/`:` builtins,
+and `<`/`>`/`>>` for both external commands and builtins. Words are expanded when
+each command runs, so a variable set earlier in the script is visible to everything
+after it, and an unexported one stays out of the environment children inherit.
+**Does not work: `if`, `for`, `while`, `case`, functions, subshells `( )`, brace
+groups `{ }`, `$(…)` and backticks, `$((…))`, globbing, here-documents, `2>`
+redirection, `trap`, `set`, `local`.** TODO.md tracks the control flow and
+substitution.
 
 **`awk`** _(run)_ — works: `BEGIN`/`END`, `/re/` and `$n ~ /re/` patterns, field and
 record variables (`NR NF FS OFS ORS FNR`), `print`, `printf`, `-F`, `-v`, `exit`,
@@ -459,25 +413,23 @@ only the `dig NAME TYPE` order parses. Missing `-x` (reverse lookup), `-t -c -p 
 
 Ordered by how many applets each item moves, not by effort.
 
-1. **Deferred expansion in `sh`** — one change closes [open defects](#open-defects)
-   1, 2 and 3 at once: expand each command's words when it is about to run instead of
-   while the whole source is tokenised. Until then a script cannot set a variable,
-   read one back, or test `$?`, which is most of what scripts do.
-2. **One `strerror`-style error helper** ([defect 4](#open-defects)) — closes the most
-   visible difference across eight applets and makes ba6's stderr indistinguishable
-   to a script that greps it. `errText` in `util.go` is the helper; `rmdir` and `df`
-   already use it.
-3. **One shared short-option parser** ([defect 5](#open-defects)) — fixes bundling in
-   ten applets and gives `--version` and `Try 'x --help'` to all 127 at once.
-   `optionArgument` in `execution_tools.go` is the natural starting point.
-4. **`chmod` symbolic modes** — `chmod +x` is the most common chmod invocation there
+1. **`sh` control flow** — `if`, `for`, `while` and `$(…)`. Now that assignment,
+   variable read-back and `$?` work, this is what still stops a real script. TODO.md
+   tracks it; `shellCommand` in `execution_tools.go` is where each command is already
+   assembled, so the pieces have somewhere to attach.
+2. **`chmod` symbolic modes** — `chmod +x` is the most common chmod invocation there
    is, and it currently fails outright.
-5. **`sort -k`/`-t`** — field sorting is what sort is for; without it the applet
+3. **`sort -k`/`-t`** — field sorting is what sort is for; without it the applet
    handles only whole-line ordering.
-6. **`touch -d`/`-t`/`-r`** — the only reason to reach for touch besides creating a file.
-7. **`grep -o`/`-A`/`-B`/`-C`** and **`sed -i`** — the highest-frequency missing
+4. **`--version` for all 127** — the last thing every original has and no applet here
+   does. `expandShortOptions` and the per-applet parsers now agree enough on shape
+   that one shared entry point could carry it, along with `Try 'x --help'`.
+5. **`touch -d`/`-t`/`-r`** — the only reason to reach for touch besides creating a file.
+6. **`grep -o`/`-A`/`-B`/`-C`** and **`sed -i`** — the highest-frequency missing
    options in the two most-used text tools.
-8. **`ps aux`** — the invocation everyone types; today it errors out.
+7. **`ps aux`** — the invocation everyone types; today it errors out.
+8. **`ss` `Recv-Q`/`Send-Q`** — the netlink query added for `IPV6_V6ONLY` already
+   returns `idiag_rqueue` and `idiag_wqueue`; only the columns are missing.
 
 ## How this was measured
 

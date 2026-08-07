@@ -90,15 +90,38 @@ func installSeccompFilter() error {
 		sockFilter{bpfRET | bpfK, 0, 0, seccompRetKillProcess},
 		sockFilter{bpfLD | bpfW | bpfABS, 0, 0, 0}, // reload nr after masking
 
-		// ip(8) needs NETLINK_ROUTE and iptables(8) needs NETLINK_NETFILTER.
-		// Allow only those AF_NETLINK protocols; all other newly-created socket
-		// families and netlink protocols are killed.
-		sockFilter{bpfJMP | bpfJEQ | bpfK, 0, 7, sysSocket},
+	)
+
+	// ip(8) needs NETLINK_ROUTE, iptables(8) NETLINK_NETFILTER, and ss(8)
+	// NETLINK_SOCK_DIAG, which is the only interface that reports a socket's
+	// IPV6_V6ONLY flag. All three are narrower than the route protocol already
+	// allowed here: sock_diag only reads socket state. Every other socket
+	// family and netlink protocol is still killed.
+	allowedNetlink := []uint32{
+		uint32(syscall.NETLINK_ROUTE),
+		netlinkNetfilter,
+		netlinkSockDiag,
+	}
+	// Layout from here: [socket?] [load domain] [netlink?] [load protocol]
+	// [one comparison per protocol] [ALLOW] [KILL] [reload nr].
+	comparisons := len(allowedNetlink)
+	prog = append(prog,
+		//nolint:gosec // G115: the jump distances are bounded by len(allowedNetlink).
+		sockFilter{bpfJMP | bpfJEQ | bpfK, 0, byte(comparisons + 5), sysSocket},
 		sockFilter{bpfLD | bpfW | bpfABS, 0, 0, 16}, // args[0]: domain
-		sockFilter{bpfJMP | bpfJEQ | bpfK, 0, 4, uint32(syscall.AF_NETLINK)},
+		//nolint:gosec // G115: see above.
+		sockFilter{bpfJMP | bpfJEQ | bpfK, 0, byte(comparisons + 2), uint32(syscall.AF_NETLINK)},
 		sockFilter{bpfLD | bpfW | bpfABS, 0, 0, 32}, // args[2]: protocol
-		sockFilter{bpfJMP | bpfJEQ | bpfK, 1, 0, uint32(syscall.NETLINK_ROUTE)},
-		sockFilter{bpfJMP | bpfJEQ | bpfK, 0, 1, netlinkNetfilter},
+	)
+	for i, protocol := range allowedNetlink {
+		jt := byte(comparisons - 1 - i) //nolint:gosec // G115: bounded by len(allowedNetlink).
+		jf := byte(0)                   // no match yet: try the next protocol
+		if i == comparisons-1 {
+			jf = 1 // after the last one, step over ALLOW into KILL
+		}
+		prog = append(prog, sockFilter{bpfJMP | bpfJEQ | bpfK, jt, jf, protocol})
+	}
+	prog = append(prog,
 		sockFilter{bpfRET | bpfK, 0, 0, seccompRetAllow},
 		sockFilter{bpfRET | bpfK, 0, 0, seccompRetKillProcess},
 		sockFilter{bpfLD | bpfW | bpfABS, 0, 0, 0}, // reload nr for the denylist

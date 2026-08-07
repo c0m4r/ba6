@@ -219,6 +219,7 @@ type loopInfo64 struct {
 }
 
 func cmdLosetup(args []string) int {
+	args = expandShortOptions(args, "od")
 	find, show, readOnly := false, false, false
 	offset, sizeLimit := uint64(0), uint64(0)
 	var detach string
