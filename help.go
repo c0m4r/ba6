@@ -159,7 +159,8 @@ SIZE, RO, TYPE, MOUNTPOINT, and MOUNTPOINTS.`,
 Display loaded kernel modules from /proc/modules.`,
 	"mktemp": `Usage: mktemp [-d] [-p DIRECTORY] [TEMPLATE]
 Create a securely named temporary file or directory. TEMPLATE must contain a
-run of at least three X characters.`,
+run of at least three X characters, which are replaced -- exactly those, and no
+others -- by random alphanumerics. Text after the run is kept as a suffix.`,
 	"modprobe": `Usage: modprobe [-qv] MODULE [PARAMETER=VALUE]...
        modprobe -r [-qv] MODULE
 Load or remove a module and its dependencies using the running kernel's
@@ -221,7 +222,7 @@ Options:
 
 Short options may be clustered, as in -sSL. Unlike wget, an HTTP error response
 is not by itself a failure; use -f for that.`,
-	"dig": `Usage: dig [@SERVER] NAME [TYPE] [+short] [+tcp] [+time=SECONDS]
+	"dig": `Usage: dig [@SERVER] [TYPE] NAME [+short] [+tcp] [+time=SECONDS]
 Query DNS over UDP with automatic TCP retry for truncated replies. Supported
 types are A, AAAA, CNAME, MX, NS, PTR, SOA, TXT, and ANY. Compressed names and
 response bounds are validated before records are displayed.`,
@@ -282,12 +283,14 @@ Format and print arguments with standard escape sequences.`,
 	"reboot": `Usage: reboot [-nf]
 Ask PID 1 to restart. -f uses the reboot syscall directly and requires
 CAP_SYS_BOOT; -n skips the pre-syscall sync in forced mode.`,
-	"seq": `Usage: seq [-s STRING] [-f FORMAT] [FIRST [INCREMENT]] LAST
-Print a numeric sequence.`,
+	"seq": `Usage: seq [-w] [-s STRING] [-f FORMAT] [FIRST [INCREMENT]] LAST
+Print a numeric sequence. How many decimals each value carries is taken from the
+operands: 0.10 asks for two. -w pads with leading zeros to an equal width.`,
 	"sh": `Usage: sh [-c COMMAND | FILE]
 Run a small shell supporting quoting, expansion, pipelines, redirection, and basic builtins.`,
-	"ss": `Usage: ss [-atuxln]
-Display TCP, UDP, and Unix sockets from /proc.`,
+	"ss": `Usage: ss [-atuxlnp]
+Display TCP, UDP, and Unix sockets from /proc. Short options may be bundled.
+An unset port and an unspecified IPv6 address are shown as *.`,
 	"strings": `Usage: strings [-n LENGTH] [FILE]...
 Print runs of printable bytes.`,
 	"sync": `Usage: sync
@@ -323,13 +326,17 @@ Exit status is 8 when the server answers with an error response.`,
 	"which": `Usage: which [-a] COMMAND...
 Print executable paths found through PATH.`,
 	"xargs": `Usage: xargs [-0r] [-n NUMBER] [-I REPLACE] [COMMAND [ARG]...]
-Build and execute commands from standard input.`,
+Build and execute commands from standard input. Items are separated by blanks
+and newlines; quotes and backslashes group them, and nothing is expanded. With
+-I, each input line is substituted whole into one command. A value may be
+attached to its option (-n1) or given separately (-n 1).`,
 	"df": `Usage: df [OPTION]... [FILE]...
 Show filesystem space usage for FILEs, or all mounted filesystems.
 
 Options:
   -h        human-readable sizes
   -k        display 1K blocks (default)
+  -a        include pseudo-filesystems and duplicate mounts
   -P        portable output layout
   --help    show this help`,
 	"du": `Usage: du [OPTION]... [FILE]...
@@ -438,7 +445,7 @@ Options:
   -c        read checksums from FILEs and verify them
   --quiet   do not print successful verification lines
   --status  produce no verification output
-  -b/-t     binary/text mode (identical on Linux)
+  -b/-t     mark the file as binary (*) or text ( ) in the output
   --help    show this help`,
 	"tar": `Usage: tar -c|-x|-t [-zv] [-f ARCHIVE] [-C DIR] [FILE]...
 Create, extract, or list tar archives. ARCHIVE '-' means stdin/stdout.

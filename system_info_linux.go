@@ -185,6 +185,7 @@ func cmdId(args []string) int {
 	if len(groupIDs) == 0 {
 		groupIDs = []string{identity.Gid}
 	}
+	groupIDs = orderGroupIDs(identity.Gid, groupIDs)
 	switch mode {
 	case 'u':
 		value := identity.Uid
@@ -207,11 +208,6 @@ func cmdId(args []string) int {
 		}
 		fmt.Fprintln(os.Stdout, strings.Join(values, " "))
 	default:
-		sort.Slice(groupIDs, func(i, j int) bool {
-			a, _ := strconv.Atoi(groupIDs[i])
-			b, _ := strconv.Atoi(groupIDs[j])
-			return a < b
-		})
 		groups := make([]string, 0, len(groupIDs))
 		for _, gid := range groupIDs {
 			groups = append(groups, gid+"("+groupNameString(gid)+")")
@@ -220,6 +216,24 @@ func cmdId(args []string) int {
 			identity.Gid, groupNameString(identity.Gid), strings.Join(groups, ","))
 	}
 	return 0
+}
+
+// orderGroupIDs puts the primary group first and the supplementary groups in
+// ascending numeric order behind it. That is the order id(1) prints in both its
+// long form and -G, and the two must agree with each other.
+func orderGroupIDs(primary string, groupIDs []string) []string {
+	rest := make([]string, 0, len(groupIDs))
+	for _, gid := range groupIDs {
+		if gid != primary {
+			rest = append(rest, gid)
+		}
+	}
+	sort.Slice(rest, func(i, j int) bool {
+		a, _ := strconv.Atoi(rest[i])
+		b, _ := strconv.Atoi(rest[j])
+		return a < b
+	})
+	return append([]string{primary}, rest...)
 }
 
 func lookupIdentity(value string) (*user.User, error) {

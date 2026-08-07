@@ -7,6 +7,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -20,8 +21,25 @@ type mountInfo struct {
 	fstype     string
 }
 
+// dfDummyTypes are the pseudo-filesystems df leaves out unless -a is given.
+// They store nothing, so listing them only pushes the real filesystems off the
+// screen.
+var dfDummyTypes = map[string]bool{
+	"autofs": true, "binfmt_misc": true, "bpf": true, "cgroup": true, "cgroup2": true,
+	"configfs": true, "debugfs": true, "devpts": true, "fuse.portal": true,
+	"fusectl": true, "hugetlbfs": true, "mqueue": true, "nsfs": true, "proc": true,
+	"pstore": true, "rpc_pipefs": true, "securityfs": true, "sysfs": true, "tracefs": true,
+}
+
+// dfRow is one line of df output, already formatted. The rows are collected
+// before anything is printed because the column widths come from the widest
+// value in each column.
+type dfRow struct {
+	source, size, used, available, percent, target string
+}
+
 func cmdDf(args []string) int {
-	human := false
+	human, all := false, false
 	var paths []string
 	parsing := true
 	for _, arg := range args {
@@ -30,6 +48,8 @@ func cmdDf(args []string) int {
 			parsing = false
 		case parsing && (arg == "-h" || arg == "--human-readable"):
 			human = true
+		case parsing && (arg == "-a" || arg == "--all"):
+			all = true
 		case parsing && (arg == "-k" || arg == "-P"):
 		case parsing && len(arg) > 1 && arg[0] == '-':
 			fatalf("df", "invalid option %q", arg)
@@ -43,46 +63,88 @@ func cmdDf(args []string) int {
 		fatalf("df", "%v", err)
 		return 1
 	}
-	if human {
-		fmt.Fprintln(os.Stdout, "Filesystem      Size  Used Avail Use% Mounted on")
-	} else {
-		fmt.Fprintln(os.Stdout, "Filesystem     1K-blocks    Used Available Use% Mounted on")
-	}
+	var rows []dfRow
 	status := 0
 	if len(paths) == 0 {
-		seen := make(map[string]bool)
+		seenDevice := make(map[uint64]bool)
 		for _, mount := range mounts {
-			if seen[mount.mountpoint] {
+			if !all && dfDummyTypes[mount.fstype] {
 				continue
 			}
-			seen[mount.mountpoint] = true
-			if err := printFilesystemUsage(mount.mountpoint, mount, human); err != nil {
-				fatalf("df", "%s: %v", mount.mountpoint, err)
-				status = 1
+			row, usageErr := filesystemUsage(mount.mountpoint, mount, human)
+			// A mount the caller cannot stat is skipped rather than reported:
+			// it was not asked for by name.
+			if usageErr != nil || (!all && row.size == "0") {
+				continue
 			}
+			// Bind mounts repeat a filesystem that is already listed.
+			var info syscall.Stat_t
+			if syscall.Stat(mount.mountpoint, &info) == nil {
+				if !all && seenDevice[info.Dev] {
+					continue
+				}
+				seenDevice[info.Dev] = true
+			}
+			row.source = canonicalDevice(row.source)
+			rows = append(rows, row)
 		}
-		return status
+	} else {
+		for _, path := range paths {
+			resolved, resolveErr := filepath.EvalSymlinks(path)
+			if resolveErr != nil {
+				fatalf("df", "%s: %s", path, errText(resolveErr))
+				status = 1
+				continue
+			}
+			absolute, absErr := filepath.Abs(resolved)
+			if absErr != nil {
+				fatalf("df", "%s: %s", path, errText(absErr))
+				status = 1
+				continue
+			}
+			row, usageErr := filesystemUsage(path, findMount(absolute, mounts), human)
+			if usageErr != nil {
+				fatalf("df", "%s: %s", path, errText(usageErr))
+				status = 1
+				continue
+			}
+			rows = append(rows, row)
+		}
 	}
-	for _, path := range paths {
-		resolved, resolveErr := filepath.EvalSymlinks(path)
-		if resolveErr != nil {
-			fatalf("df", "%s: %v", path, resolveErr)
-			status = 1
-			continue
-		}
-		absolute, absErr := filepath.Abs(resolved)
-		if absErr != nil {
-			fatalf("df", "%s: %v", path, absErr)
-			status = 1
-			continue
-		}
-		mount := findMount(absolute, mounts)
-		if err := printFilesystemUsage(path, mount, human); err != nil {
-			fatalf("df", "%s: %v", path, err)
-			status = 1
-		}
+	if err := writeDfRows(os.Stdout, rows, human); err != nil {
+		fatalf("df", "write error: %v", err)
+		return 1
 	}
 	return status
+}
+
+// writeDfRows prints the table with each column as wide as its widest entry.
+// The originals size the columns from the data, so a long device name shifts
+// that row's numbers instead of running into them.
+func writeDfRows(w io.Writer, rows []dfRow, human bool) error {
+	size, available := "1K-blocks", "Available"
+	if human {
+		size, available = "Size", "Avail"
+	}
+	header := dfRow{"Filesystem", size, "Used", available, "Use%", "Mounted on"}
+	// df reserves fourteen columns for the device and five for each amount even
+	// when the values are shorter.
+	widths := []int{14, 5, 5, 5, 4, 0}
+	for _, row := range append([]dfRow{header}, rows...) {
+		for i, field := range []string{row.source, row.size, row.used, row.available, row.percent} {
+			if len(field) > widths[i] {
+				widths[i] = len(field)
+			}
+		}
+	}
+	for _, row := range append([]dfRow{header}, rows...) {
+		if _, err := fmt.Fprintf(w, "%-*s %*s %*s %*s %*s %s\n",
+			widths[0], row.source, widths[1], row.size, widths[2], row.used,
+			widths[3], row.available, widths[4], row.percent, row.target); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func readMountInfo() ([]mountInfo, error) {
@@ -135,16 +197,35 @@ func findMount(path string, mounts []mountInfo) mountInfo {
 	return best
 }
 
-func printFilesystemUsage(path string, mount mountInfo, human bool) error {
+// canonicalDevice resolves a device name to the node the kernel actually uses,
+// so an entry mounted as /dev/mapper/NAME is reported as its /dev/dm-N target.
+// df does this only when listing every filesystem; asked about one path by
+// name, it prints the device exactly as the mount table spells it.
+func canonicalDevice(source string) string {
+	if !strings.HasPrefix(source, "/dev/") {
+		return source
+	}
+	resolved, err := filepath.EvalSymlinks(source)
+	if err != nil {
+		return source
+	}
+	return resolved
+}
+
+// filesystemUsage renders one filesystem's figures. Amounts are reported in
+// whole kibibytes rounded up, as df does, so a partly used block still counts.
+func filesystemUsage(path string, mount mountInfo, human bool) (dfRow, error) {
 	var stat syscall.Statfs_t
 	if err := syscall.Statfs(path, &stat); err != nil {
-		return err
+		return dfRow{}, err
 	}
-	blockSize := uint64(stat.Bsize) //nolint:gosec // Linux statfs block sizes are positive.
-	total := stat.Blocks * blockSize
-	free := stat.Bfree * blockSize
-	available := stat.Bavail * blockSize
-	used := total - free
+	fragment := uint64(stat.Frsize) //nolint:gosec // Linux statfs fragment sizes are positive.
+	if fragment == 0 {
+		fragment = uint64(stat.Bsize) //nolint:gosec // Same.
+	}
+	total := stat.Blocks * fragment
+	available := stat.Bavail * fragment
+	used := total - stat.Bfree*fragment
 	percent := uint64(0)
 	if used+available > 0 {
 		percent = (used*100 + used + available - 1) / (used + available)
@@ -153,14 +234,20 @@ func printFilesystemUsage(path string, mount mountInfo, human bool) error {
 	if source == "" {
 		source = mount.fstype
 	}
-	if human {
-		_, err := fmt.Fprintf(os.Stdout, "%-14s %5s %5s %5s %3d%% %s\n", source,
-			humanSizeUint64(total), humanSizeUint64(used), humanSizeUint64(available), percent, mount.mountpoint)
-		return err
+	amount := func(value uint64) string {
+		if human {
+			return humanSizeUint64(value)
+		}
+		return strconv.FormatUint((value+1023)/1024, 10)
 	}
-	_, err := fmt.Fprintf(os.Stdout, "%-14s %10d %7d %9d %3d%% %s\n", source,
-		(total+1023)/1024, (used+1023)/1024, (available+1023)/1024, percent, mount.mountpoint)
-	return err
+	return dfRow{
+		source:    source,
+		size:      amount(total),
+		used:      amount(used),
+		available: amount(available),
+		percent:   strconv.FormatUint(percent, 10) + "%",
+		target:    mount.mountpoint,
+	}, nil
 }
 
 type duIdentity struct {

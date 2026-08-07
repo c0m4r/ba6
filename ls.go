@@ -432,22 +432,39 @@ func formatLsTime(t time.Time) string {
 }
 
 // humanSize renders a byte count with a binary unit suffix (ls -h style).
+// humanSize renders n the way -h does in ls, du and df: at most three
+// significant characters, always rounded up. The originals round away from zero
+// so a size never reads smaller than it is -- 3000 bytes is 3.0K, not 2.9K --
+// and a value that rounds up to a whole 1024 moves to the next unit.
 func humanSize(n int64) string {
 	const unit = 1024
 	if n < unit {
 		return strconv.FormatInt(n, 10)
 	}
 	units := []string{"K", "M", "G", "T", "P", "E"}
-	f := float64(n)
-	i := -1
-	for f >= unit && i < len(units)-1 {
-		f /= unit
-		i++
+	value, divisor, index := uint64(n), uint64(unit), 0
+	for value/divisor >= unit && index < len(units)-1 {
+		divisor *= unit
+		index++
 	}
-	if f < 10 {
-		return fmt.Sprintf("%.1f%s", f, units[i])
+	for {
+		whole, remainder := value/divisor, value%divisor
+		if whole < 10 {
+			// One decimal below ten, and the tenth is rounded up too.
+			tenths := whole*10 + (remainder*10+divisor-1)/divisor
+			if tenths < 100 {
+				return fmt.Sprintf("%d.%d%s", tenths/10, tenths%10, units[index])
+			}
+			whole = tenths / 10
+		} else if remainder > 0 {
+			whole++
+		}
+		if whole < unit || index == len(units)-1 {
+			return fmt.Sprintf("%d%s", whole, units[index])
+		}
+		divisor *= unit
+		index++
 	}
-	return fmt.Sprintf("%.0f%s", f, units[i])
 }
 
 // renderColumns lays names out in down-then-across columns fitting width.

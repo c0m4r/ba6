@@ -126,26 +126,30 @@ func cmdXargs(args []string) int {
 	replace := ""
 	commandArgs := []string{}
 	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "-0", "--null":
-			null = true
-		case "-r", "--no-run-if-empty":
-			noRun = true
-		case "-n", "--max-args":
-			i++
-			if i >= len(args) {
-				return 1
-			}
-			maxArgs, _ = strconv.Atoi(args[i])
-		case "-I":
-			i++
-			if i >= len(args) {
-				return 1
-			}
-			replace = args[i]
-		case "--":
+		arg := args[i]
+		switch {
+		case arg == "--":
 			commandArgs = append(commandArgs, args[i+1:]...)
 			i = len(args)
+		case arg == "-0" || arg == "--null":
+			null = true
+		case arg == "-r" || arg == "--no-run-if-empty":
+			noRun = true
+		case strings.HasPrefix(arg, "-n") || strings.HasPrefix(arg, "--max-args"):
+			text, next, ok := optionArgument(args, i, "-n", "--max-args")
+			count, convErr := strconv.Atoi(text)
+			if !ok || convErr != nil || count < 1 {
+				fatalf("xargs", "invalid argument count %q", text)
+				return 1
+			}
+			maxArgs, i = count, next
+		case strings.HasPrefix(arg, "-I") || strings.HasPrefix(arg, "--replace"):
+			text, next, ok := optionArgument(args, i, "-I", "--replace")
+			if !ok || text == "" {
+				fatalf("xargs", "option requires an argument -- 'I'")
+				return 1
+			}
+			replace, i = text, next
 		default:
 			commandArgs = append(commandArgs, args[i:]...)
 			i = len(args)
@@ -155,19 +159,32 @@ func cmdXargs(args []string) int {
 	if err != nil {
 		return 1
 	}
-	items := []string{}
-	if null {
+	var items []string
+	switch {
+	case null:
 		for _, v := range strings.Split(string(data), "\x00") {
 			if v != "" {
 				items = append(items, v)
 			}
 		}
-	} else {
-		items, err = shellWords(string(data))
+	case replace != "":
+		// -I substitutes a whole line at a time, so blanks inside a line do not
+		// separate items.
+		for _, line := range strings.Split(string(data), "\n") {
+			if trimmed := strings.Trim(line, " \t"); trimmed != "" {
+				items = append(items, trimmed)
+			}
+		}
+	default:
+		items, err = splitXargsInput(string(data))
 		if err != nil {
 			fatalf("xargs", "%v", err)
 			return 1
 		}
+	}
+	if replace != "" {
+		// One command per line, which is what -I means.
+		maxArgs = 1
 	}
 	if len(commandArgs) == 0 {
 		commandArgs = []string{"echo"}
@@ -206,6 +223,73 @@ func cmdXargs(args []string) int {
 		}
 	}
 	return status
+}
+
+// optionArgument returns the value belonging to an option, which may be written
+// attached to it (-n1), as the next argument (-n 1), or after an equals sign
+// (--max-args=1). It also reports the index the caller should continue from.
+func optionArgument(args []string, index int, forms ...string) (string, int, bool) {
+	arg := args[index]
+	for _, form := range forms {
+		switch {
+		case arg == form:
+			if index+1 < len(args) {
+				return args[index+1], index + 1, true
+			}
+			return "", index, false
+		case strings.HasPrefix(form, "--"):
+			if value, found := strings.CutPrefix(arg, form+"="); found {
+				return value, index, true
+			}
+		default:
+			if value, found := strings.CutPrefix(arg, form); found {
+				return value, index, true
+			}
+		}
+	}
+	return "", index, false
+}
+
+// splitXargsInput splits standard input the way xargs does: on blanks and
+// newlines alike, honouring quotes and backslash escapes. It is deliberately
+// not the shell's splitter, because xargs performs no expansion -- a literal
+// $HOME stays a literal $HOME.
+func splitXargsInput(data string) ([]string, error) {
+	var items []string
+	var word strings.Builder
+	started := false
+	flush := func() {
+		if started {
+			items = append(items, word.String())
+			word.Reset()
+			started = false
+		}
+	}
+	for i := 0; i < len(data); i++ {
+		c := data[i]
+		switch {
+		case c == ' ' || c == '\t' || c == '\n':
+			flush()
+		case c == '\'' || c == '"':
+			started = true
+			quote := c
+			for i++; i < len(data) && data[i] != quote; i++ {
+				word.WriteByte(data[i])
+			}
+			if i >= len(data) {
+				return nil, fmt.Errorf("unterminated %c quote in input; use -0 for data that contains them", quote)
+			}
+		case c == '\\' && i+1 < len(data):
+			i++
+			word.WriteByte(data[i])
+			started = true
+		default:
+			word.WriteByte(c)
+			started = true
+		}
+	}
+	flush()
+	return items, nil
 }
 
 func cmdSh(args []string) int {
@@ -318,8 +402,19 @@ func runShellPipeline(tokens []string) (int, bool) {
 			parts[len(parts)-1] = append(parts[len(parts)-1], token)
 		}
 	}
+	// A builtin runs in this process, so its redirections have to be applied
+	// here. Passing the raw tokens straight to the builtin would make "echo hi
+	// > f" print "hi > f" and create no file.
 	if len(parts) == 1 {
-		if status, ok, exit := runShellBuiltin(parts[0]); ok {
+		argv, input, output, appendMode, err := shellRedirections(parts[0])
+		if err == nil && len(argv) > 0 && isShellBuiltin(argv[0]) {
+			restore, redirectErr := redirectStandardFiles(input, output, appendMode)
+			if redirectErr != nil {
+				fatalf("sh", "%v", redirectErr)
+				return 1, false
+			}
+			status, _, exit := runShellBuiltin(argv)
+			restore()
 			return status, exit
 		}
 	}
@@ -406,6 +501,55 @@ func shellRedirections(tokens []string) ([]string, string, string, bool, error) 
 	}
 	return argv, input, output, appendMode, nil
 }
+
+// isShellBuiltin reports whether a command runs inside the shell itself rather
+// than as a separate process. The list has to agree with runShellBuiltin.
+func isShellBuiltin(name string) bool {
+	switch name {
+	case "echo", "printf", "read", "cd", "pwd", "export", "unset", "exit", ":":
+		return true
+	}
+	return false
+}
+
+// redirectStandardFiles points os.Stdin and os.Stdout at the redirection
+// targets for the duration of a builtin, and returns the function that puts
+// them back. The builtins write through those variables, so swapping them is
+// this shell's equivalent of the dup2 a real one performs.
+func redirectStandardFiles(input, output string, appendMode bool) (func(), error) {
+	savedIn, savedOut := os.Stdin, os.Stdout
+	var opened []*os.File
+	restore := func() {
+		os.Stdin, os.Stdout = savedIn, savedOut
+		for _, file := range opened {
+			_ = file.Close()
+		}
+	}
+	if input != "" {
+		file, err := os.Open(input)
+		if err != nil {
+			restore()
+			return nil, err
+		}
+		opened = append(opened, file)
+		os.Stdin = file
+	}
+	if output != "" {
+		flag := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
+		if appendMode {
+			flag = os.O_CREATE | os.O_WRONLY | os.O_APPEND
+		}
+		file, err := os.OpenFile(output, flag, 0o666) //nolint:gosec // G302: shell redirection follows the process umask.
+		if err != nil {
+			restore()
+			return nil, err
+		}
+		opened = append(opened, file)
+		os.Stdout = file
+	}
+	return restore, nil
+}
+
 func runShellBuiltin(args []string) (int, bool, bool) {
 	if len(args) == 0 {
 		return 0, true, false
@@ -483,18 +627,6 @@ func runShellBuiltin(args []string) (int, bool, bool) {
 	return 0, false, false
 }
 
-func shellWords(source string) ([]string, error) {
-	tokens, err := shellTokens(source)
-	if err != nil {
-		return nil, err
-	}
-	for _, t := range tokens {
-		if len(t) == 1 && strings.ContainsRune(";|<>", rune(t[0])) {
-			return nil, fmt.Errorf("operators are not valid in input")
-		}
-	}
-	return tokens, nil
-}
 func shellTokens(source string) ([]string, error) {
 	tokens := []string{}
 	var word strings.Builder
@@ -514,7 +646,11 @@ func shellTokens(source string) ([]string, error) {
 				quote = 0
 			} else if quote == '\'' && c == '$' {
 				word.WriteString("\x00dollar\x00")
-			} else if c == '\\' && quote == '"' && i+1 < len(source) {
+			} else if c == '\\' && quote == '"' && i+1 < len(source) &&
+				strings.IndexByte("$`\"\\\n", source[i+1]) >= 0 {
+				// Inside double quotes a backslash escapes only these; before
+				// anything else it stays literal, so "%s\n" reaches printf with
+				// its backslash intact.
 				i++
 				word.WriteByte(source[i])
 			} else {

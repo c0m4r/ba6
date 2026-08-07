@@ -221,17 +221,25 @@ func icmpChecksum(data []byte) uint16 {
 func cmdSs(args []string) int {
 	tcp, udp, unix, listen, all := false, false, false, false, false
 	for _, a := range args {
-		if a == "-a" || a == "--all" {
+		switch {
+		case a == "--all":
 			all = true
-			continue
-		}
-		if a == "-l" || a == "--listening" {
+		case a == "--listening":
 			listen = true
-			continue
-		}
-		if strings.HasPrefix(a, "-") {
-			for _, f := range strings.TrimPrefix(a, "-") {
+		case a == "--tcp":
+			tcp = true
+		case a == "--udp":
+			udp = true
+		case a == "--unix":
+			unix = true
+		// Short options bundle, so -tuln is the same as -t -u -l -n.
+		case len(a) > 1 && a[0] == '-':
+			for _, f := range a[1:] {
 				switch f {
+				case 'a':
+					all = true
+				case 'l':
+					listen = true
 				case 't':
 					tcp = true
 				case 'u':
@@ -239,12 +247,15 @@ func cmdSs(args []string) int {
 				case 'x':
 					unix = true
 				case 'n', 'p':
+					// Addresses are always numeric here, and process
+					// information is never shown.
 				default:
 					fatalf("ss", "unsupported option -%c", f)
 					return 1
 				}
 			}
-		} else {
+		default:
+			fatalf("ss", "unsupported operand %q", a)
 			return 1
 		}
 	}
@@ -291,17 +302,43 @@ func socketState(s string) string {
 	}
 	return s
 }
+
+// decodeSocketAddr renders one ADDRESS:PORT field from /proc/net the way ss
+// prints it. Both the IPv4 and IPv6 tables store the address as little-endian
+// 32-bit words, so each group of eight hex digits has to be put back into
+// network byte order; printing the digits as they appear gives an address that
+// is not merely unformatted but wrong.
 func decodeSocketAddr(value string) string {
-	parts := strings.Split(value, ":")
-	if len(parts) != 2 {
+	separator := strings.LastIndexByte(value, ':')
+	if separator < 0 {
 		return value
 	}
-	port, _ := strconv.ParseUint(parts[1], 16, 16)
-	raw, err := strconv.ParseUint(parts[0], 16, 32)
-	if err == nil && len(parts[0]) == 8 {
-		return fmt.Sprintf("%d.%d.%d.%d:%d", raw&0xff, raw>>8&0xff, raw>>16&0xff, raw>>24&0xff, port)
+	digits := value[:separator]
+	if len(digits)%8 != 0 || len(digits) == 0 {
+		return value
 	}
-	return "[" + parts[0] + "]:" + strconv.FormatUint(port, 10)
+	address := make(net.IP, 0, len(digits)/2)
+	for start := 0; start < len(digits); start += 8 {
+		word, err := strconv.ParseUint(digits[start:start+8], 16, 32)
+		if err != nil {
+			return value
+		}
+		//nolint:gosec // The word is 32 bits and each conversion takes one byte of it.
+		address = append(address, byte(word), byte(word>>8), byte(word>>16), byte(word>>24))
+	}
+	// An unset port is a wildcard, and so is an unspecified IPv6 address.
+	port := "*"
+	if number, err := strconv.ParseUint(value[separator+1:], 16, 16); err == nil && number != 0 {
+		port = strconv.FormatUint(number, 10)
+	}
+	switch {
+	case len(address) == net.IPv6len && address.IsUnspecified():
+		return "*:" + port
+	case len(address) == net.IPv6len:
+		return "[" + address.String() + "]:" + port
+	default:
+		return address.String() + ":" + port
+	}
 }
 func readUnixSockets(listen, all bool) {
 	data, e := os.ReadFile("/proc/net/unix")

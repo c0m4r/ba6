@@ -12,8 +12,26 @@ import (
 	"os"
 	"syscall"
 	"time"
+	"unicode"
+	"unicode/utf8"
 	"unsafe"
 )
+
+// errText renders err the way the C tools do: the strerror(3) sentence on its
+// own. Go wraps syscall errors in *os.PathError and friends, which prepend the
+// operation and the path ("lstat f: no such file or directory"); the originals
+// print their own wording around a bare, capitalised message instead.
+func errText(err error) string {
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		text := errno.Error()
+		if r, size := utf8.DecodeRuneInString(text); size > 0 && unicode.IsLower(r) {
+			return string(unicode.ToUpper(r)) + text[size:]
+		}
+		return text
+	}
+	return err.Error()
+}
 
 func humanSizeUint64(value uint64) string {
 	if value > math.MaxInt64 {

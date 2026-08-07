@@ -87,10 +87,33 @@ func cmdDirname(args []string) int {
 		return 1
 	}
 	for _, name := range names {
-		if _, err := fmt.Fprintln(os.Stdout, filepath.Dir(name)); err != nil {
+		if _, err := fmt.Fprintln(os.Stdout, parentPath(name)); err != nil {
 			fatalf("dirname", "write error: %v", err)
 			return 1
 		}
 	}
 	return 0
+}
+
+// parentPath strips the last component of name the way dirname(1) and POSIX
+// define it. filepath.Dir cleans the path first, so it answers "/a/b" for
+// "/a/b/" where dirname answers "/a": trailing slashes belong to the component
+// being removed, and interior slashes are left exactly as given.
+func parentPath(name string) string {
+	trimmed := strings.TrimRight(name, "/")
+	if trimmed == "" {
+		if name == "" {
+			return "."
+		}
+		return "/"
+	}
+	cut := strings.LastIndexByte(trimmed, '/')
+	if cut < 0 {
+		return "."
+	}
+	parent := strings.TrimRight(trimmed[:cut], "/")
+	if parent == "" {
+		return "/"
+	}
+	return parent
 }

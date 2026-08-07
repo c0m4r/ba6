@@ -300,7 +300,7 @@ func (ctx *awkContext) awkPrintf(expressions string) error {
 		}
 		values = append(values, value.text)
 	}
-	_, err := writePrintf(os.Stdout, values[0], values[1:])
+	_, _, err := writePrintf(os.Stdout, values[0], values[1:])
 	return err
 }
 

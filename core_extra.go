@@ -8,10 +8,12 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 func cmdPrintf(args []string) int {
@@ -21,8 +23,12 @@ func cmdPrintf(args []string) int {
 	}
 	format := decodeEscapes(args[0], false)
 	values := args[1:]
+	status := 0
 	for {
-		used, err := writePrintf(os.Stdout, format, values)
+		used, bad, err := writePrintf(os.Stdout, format, values)
+		if bad {
+			status = 1
+		}
 		if err != nil {
 			fatalf("printf", "%v", err)
 			return 1
@@ -32,26 +38,31 @@ func cmdPrintf(args []string) int {
 		}
 		values = values[used:]
 	}
-	return 0
+	return status
 }
 
-func writePrintf(w io.Writer, format string, args []string) (int, error) {
+// writePrintf expands one pass of format over args, returning how many operands
+// it consumed and whether any of them failed to convert. A bad numeric operand
+// is not fatal: like printf(1) it is reported, treated as zero, and the exit
+// status becomes 1 once the whole format has been written.
+func writePrintf(w io.Writer, format string, args []string) (int, bool, error) {
 	used := 0
+	bad := false
 	for i := 0; i < len(format); i++ {
 		if format[i] != '%' {
 			if _, err := io.WriteString(w, format[i:i+1]); err != nil {
-				return used, err
+				return used, bad, err
 			}
 			continue
 		}
 		i++
 		if i >= len(format) {
-			return used, fmt.Errorf("invalid trailing %%")
+			return used, bad, fmt.Errorf("invalid trailing %%")
 		}
 		if format[i] == '%' {
 			_, err := io.WriteString(w, "%")
 			if err != nil {
-				return used, err
+				return used, bad, err
 			}
 			continue
 		}
@@ -60,12 +71,15 @@ func writePrintf(w io.Writer, format string, args []string) (int, error) {
 			i++
 		}
 		if i >= len(format) {
-			return used, fmt.Errorf("incomplete conversion")
+			return used, bad, fmt.Errorf("incomplete conversion")
 		}
 		spec := format[i]
 		directive := "%" + format[start:i+1]
 		value := ""
-		if used < len(args) {
+		// A conversion with no operand left is a plain zero or empty string;
+		// only an operand that is present and unconvertible is an error.
+		present := used < len(args)
+		if present {
 			value = args[used]
 		}
 		used++
@@ -80,23 +94,129 @@ func writePrintf(w io.Writer, format string, args []string) (int, error) {
 				out = value[:1]
 			}
 		case 'd', 'i':
-			n, _ := strconv.ParseInt(value, 0, 64)
+			n, failed := printfSigned(value, present)
+			bad = bad || failed
 			directive = directive[:len(directive)-1] + "d"
 			out = fmt.Sprintf(directive, n)
 		case 'u', 'o', 'x', 'X':
-			n, _ := strconv.ParseUint(value, 0, 64)
+			n, failed := printfUnsigned(value, present)
+			bad = bad || failed
 			out = fmt.Sprintf(directive, n)
-		case 'f', 'e', 'E', 'g', 'G':
-			n, _ := strconv.ParseFloat(value, 64)
+		case 'f', 'F', 'e', 'E', 'g', 'G':
+			n, failed := printfFloat(value, present)
+			bad = bad || failed
 			out = fmt.Sprintf(directive, n)
 		default:
-			return used, fmt.Errorf("unsupported conversion %%%c", spec)
+			return used, bad, fmt.Errorf("unsupported conversion %%%c", spec)
 		}
 		if _, err := io.WriteString(w, out); err != nil {
-			return used, err
+			return used, bad, err
 		}
 	}
-	return used, nil
+	return used, bad, nil
+}
+
+// charConstant decodes printf(1)'s character-constant operand: a leading quote
+// makes "'A" mean 65. Trailing characters are ignored with a warning that does
+// not affect the exit status.
+func charConstant(value string) (int64, bool) {
+	if len(value) < 2 || (value[0] != '\'' && value[0] != '"') {
+		return 0, false
+	}
+	r, size := utf8.DecodeRuneInString(value[1:])
+	if rest := value[1+size:]; rest != "" {
+		fatalf("printf", "warning: %s: character(s) following character constant have been ignored", rest)
+	}
+	return int64(r), true
+}
+
+// numericPrefix returns the longest leading run of value that parse accepts,
+// mirroring what strtol(3) consumes before printf(1) reports that a value was
+// not completely converted.
+func numericPrefix(value string, parse func(string) bool) string {
+	for end := len(value); end > 0; end-- {
+		if parse(value[:end]) {
+			return value[:end]
+		}
+	}
+	return ""
+}
+
+// reportOperand emits printf(1)'s diagnostic for an operand that did not
+// convert, and reports that the exit status must become 1.
+func reportOperand(value, prefix string) bool {
+	if prefix == "" {
+		fatalf("printf", "'%s': expected a numeric value", value)
+	} else {
+		fatalf("printf", "'%s': value not completely converted", value)
+	}
+	return true
+}
+
+func printfSigned(value string, present bool) (int64, bool) {
+	if !present {
+		return 0, false
+	}
+	if n, ok := charConstant(value); ok {
+		return n, false
+	}
+	text := strings.TrimSpace(value)
+	accepts := func(s string) bool { _, err := strconv.ParseInt(s, 0, 64); return err == nil }
+	if accepts(text) {
+		n, _ := strconv.ParseInt(text, 0, 64)
+		return n, false
+	}
+	prefix := numericPrefix(text, accepts)
+	n, _ := strconv.ParseInt(prefix, 0, 64)
+	return n, reportOperand(value, prefix)
+}
+
+func printfUnsigned(value string, present bool) (uint64, bool) {
+	if !present {
+		return 0, false
+	}
+	if n, ok := charConstant(value); ok {
+		return uint64(n), false //nolint:gosec // A character constant is a code point, never negative.
+	}
+	text := strings.TrimSpace(value)
+	// A negative operand is accepted and wraps, as it does in C.
+	accepts := func(s string) bool {
+		if _, err := strconv.ParseUint(s, 0, 64); err == nil {
+			return true
+		}
+		_, err := strconv.ParseInt(s, 0, 64)
+		return err == nil
+	}
+	convert := func(s string) uint64 {
+		if n, err := strconv.ParseUint(s, 0, 64); err == nil {
+			return n
+		}
+		n, _ := strconv.ParseInt(s, 0, 64)
+		return uint64(n) //nolint:gosec // Wrapping a negative operand is what C's %x does.
+	}
+	if accepts(text) {
+		return convert(text), false
+	}
+	prefix := numericPrefix(text, accepts)
+	return convert(prefix), reportOperand(value, prefix)
+}
+
+func printfFloat(value string, present bool) (float64, bool) {
+	if !present {
+		return 0, false
+	}
+	if n, ok := charConstant(value); ok {
+		return float64(n), false
+	}
+	text := strings.TrimSpace(value)
+	accepts := func(s string) bool { _, err := strconv.ParseFloat(s, 64); return err == nil }
+	if accepts(text) {
+		n, _ := strconv.ParseFloat(text, 64)
+		return n, false
+	}
+	prefix := numericPrefix(text, accepts)
+	n, _ := strconv.ParseFloat(prefix, 64)
+	return n, reportOperand(value, prefix)
 }
 
 func decodeEscapes(value string, stop bool) string {
@@ -181,6 +301,7 @@ func cmdPrintenv(args []string) int {
 
 func cmdSeq(args []string) int {
 	separator, format := "\n", ""
+	equalWidth := false
 	for len(args) > 0 && strings.HasPrefix(args[0], "-") {
 		switch args[0] {
 		case "-s":
@@ -195,6 +316,8 @@ func cmdSeq(args []string) int {
 				return 1
 			}
 			format, args = args[1], args[2:]
+		case "-w", "--equal-width":
+			equalWidth, args = true, args[1:]
 		case "--":
 			args = args[1:]
 			goto parsed
@@ -224,27 +347,82 @@ parsed:
 		fatalf("seq", "invalid numeric operand")
 		return 1
 	}
-	count := 0
-	for v := first; count < 10000000 && (step > 0 && v <= last+step/1e12 || step < 0 && v >= last+step/1e12); v += step {
-		if count > 0 {
+
+	// Every value is computed as first+i*step from an up-front count, never by
+	// repeated addition: adding 0.1 three times gives 0.30000000000000004 and
+	// would also decide the endpoint test wrongly.
+	precision := 0
+	for _, operand := range args {
+		if places := decimalPlaces(operand); places > precision {
+			precision = places
+		}
+	}
+	span := (last - first) / step
+	count := int64(0)
+	if span >= 0 {
+		count = int64(span+math.Abs(span)*1e-12+1e-9) + 1
+	}
+	width := 0
+	if equalWidth && count > 0 {
+		width = len(strconv.FormatFloat(first, 'f', precision, 64))
+		if end := len(strconv.FormatFloat(first+float64(count-1)*step, 'f', precision, 64)); end > width {
+			width = end
+		}
+	}
+
+	for i := int64(0); i < count; i++ {
+		if i > 0 {
 			if _, err := io.WriteString(os.Stdout, separator); err != nil {
 				fatalf("seq", "write error: %v", err)
 				return 1
 			}
 		}
+		value := first + float64(i)*step
 		if format != "" {
-			fmt.Fprintf(os.Stdout, format, v)
-		} else if v == float64(int64(v)) {
-			fmt.Fprintf(os.Stdout, "%d", int64(v))
+			fmt.Fprintf(os.Stdout, format, value)
 		} else {
-			fmt.Fprintf(os.Stdout, "%g", v)
+			fmt.Fprint(os.Stdout, padNumber(strconv.FormatFloat(value, 'f', precision, 64), width))
 		}
-		count++
 	}
 	if count > 0 {
 		fmt.Fprintln(os.Stdout)
 	}
 	return 0
+}
+
+// decimalPlaces reports how many digits after the point an operand asks seq(1)
+// to print. The operand's spelling decides it, not its value: "0.10" means two
+// places, and an exponent shifts the point ("1e2" means none).
+func decimalPlaces(operand string) int {
+	mantissa, exponent := operand, 0
+	if marker := strings.IndexAny(operand, "eE"); marker >= 0 {
+		value, err := strconv.Atoi(operand[marker+1:])
+		if err != nil {
+			return 0
+		}
+		mantissa, exponent = operand[:marker], value
+	}
+	places := 0
+	if point := strings.IndexByte(mantissa, '.'); point >= 0 {
+		places = len(mantissa) - point - 1
+	}
+	if places -= exponent; places < 0 {
+		return 0
+	}
+	return places
+}
+
+// padNumber left-pads text with zeros to width for seq -w, keeping any sign in
+// front of the padding.
+func padNumber(text string, width int) string {
+	if len(text) >= width {
+		return text
+	}
+	sign := ""
+	if strings.HasPrefix(text, "-") || strings.HasPrefix(text, "+") {
+		sign, text = text[:1], text[1:]
+	}
+	return sign + strings.Repeat("0", width-len(sign)-len(text)) + text
 }
 
 func cmdCmp(args []string) int {

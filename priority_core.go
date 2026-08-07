@@ -6,6 +6,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -403,33 +404,39 @@ func cmdMktemp(args []string) int {
 			baseDirectory = os.TempDir()
 		}
 	}
-	dir, pattern, err := mktempPattern(baseDirectory, template)
+	prefix, placeholders, suffix, err := mktempPattern(baseDirectory, template)
 	if err != nil {
 		fatalf("mktemp", "%v", err)
 		return 1
 	}
-	var name string
-	if directory {
-		name, err = os.MkdirTemp(dir, pattern)
-	} else {
-		var file *os.File
-		file, err = os.CreateTemp(dir, pattern)
-		if err == nil {
-			name = file.Name()
-			err = file.Close()
-		}
-	}
+	name, err := createTemp(prefix, suffix, placeholders, directory)
 	if err != nil {
-		fatalf("mktemp", "%v", err)
+		kind := "file"
+		if directory {
+			kind = "directory"
+		}
+		fatalf("mktemp", "failed to create %s via template '%s%s%s': %s",
+			kind, prefix, strings.Repeat("X", placeholders), suffix, errText(err))
 		return 1
 	}
 	fmt.Println(name)
 	return 0
 }
 
-func mktempPattern(baseDirectory, template string) (string, string, error) {
+// mktempPattern splits a template into the text before the run of X's, the
+// number of X's, and the text after. mktemp(1) replaces exactly those X's, so
+// the count has to survive into the name that is created.
+func mktempPattern(baseDirectory, template string) (string, int, string, error) {
 	dir, name := filepath.Dir(template), filepath.Base(template)
-	if dir == "." && baseDirectory != "" {
+	switch {
+	case baseDirectory == "":
+		// The template carries its own directory, if any.
+		if dir == "." && !strings.HasPrefix(template, "./") {
+			dir = ""
+		}
+	case strings.HasSuffix(baseDirectory, "/"):
+		dir = strings.TrimSuffix(baseDirectory, "/")
+	default:
 		dir = baseDirectory
 	}
 	end := strings.LastIndex(name, "X") + 1
@@ -438,9 +445,50 @@ func mktempPattern(baseDirectory, template string) (string, string, error) {
 		start--
 	}
 	if end-start < 3 {
-		return "", "", fmt.Errorf("template must end with at least 3 consecutive Xs")
+		return "", 0, "", fmt.Errorf("too few X's in template '%s'", template)
 	}
-	return dir, name[:start] + "*" + name[end:], nil
+	prefix := name[:start]
+	if dir != "" {
+		prefix = dir + "/" + prefix
+	}
+	return prefix, end - start, name[end:], nil
+}
+
+// tempNameAlphabet is the character set mkstemp(3) draws from.
+const tempNameAlphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+// createTemp creates a file or directory whose name is prefix, exactly count
+// random characters, then suffix. os.CreateTemp cannot do this: it substitutes
+// a decimal number of whatever length it needs, so "XXXX" would become a name
+// like "3160348960" that no longer matches the template.
+func createTemp(prefix, suffix string, count int, directory bool) (string, error) {
+	random := make([]byte, count)
+	for attempt := 0; ; attempt++ {
+		if _, err := rand.Read(random); err != nil {
+			return "", err
+		}
+		name := make([]byte, count)
+		for i, b := range random {
+			name[i] = tempNameAlphabet[int(b)%len(tempNameAlphabet)]
+		}
+		path := prefix + string(name) + suffix
+		var err error
+		if directory {
+			err = os.Mkdir(path, 0o700)
+		} else {
+			var file *os.File
+			if file, err = os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600); err == nil {
+				err = file.Close()
+			}
+		}
+		if err == nil {
+			return path, nil
+		}
+		// Collisions are expected with a short template; anything else is real.
+		if !errors.Is(err, os.ErrExist) || attempt >= 100 {
+			return "", err
+		}
+	}
 }
 
 func cmdTimeout(args []string) int {

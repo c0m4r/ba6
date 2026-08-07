@@ -299,12 +299,19 @@ func cmdDig(args []string) int {
 		case strings.HasPrefix(arg, "+"):
 			fatalf("dig", "unsupported option %q", arg)
 			return 1
-		case name == "":
-			name = arg
-		case !typeSet:
-			queryType = strings.ToUpper(arg)
-			typeSet = true
+		// Operands are recognised by what they are, not by their position:
+		// dig accepts the name and the record type in either order, so
+		// "dig +short A example.com" and "dig example.com A" are the same query.
 		default:
+			upper := strings.ToUpper(arg)
+			if _, known := dnsTypeCode(upper); known && !typeSet {
+				queryType, typeSet = upper, true
+				continue
+			}
+			if name == "" {
+				name = arg
+				continue
+			}
 			fatalf("dig", "unexpected operand %q", arg)
 			return 1
 		}

@@ -7,86 +7,118 @@
 
 Measured 2026-08-07 against `ba6` at commit `e532a75`, 127 applets, on Manjaro.
 `make verify` passes. The `wget` and `curl` entries were re-measured later the same
-day, after wget was given its own command line instead of sharing curl's.
+day, after wget was given its own command line instead of sharing curl's, and the
+`rmdir` `ss` `xargs` `free` `df` `ls` `id` `pidof` `dig` `fsck.ext*` `sh` `dirname`
+`seq` `mktemp` `sha256sum` and `printf` entries were re-measured after the defects
+below were fixed.
 
-**Short answer to "which are 1:1?"** — 12 applets are genuine drop-ins, 26 more are
-near-complete, 80 are partial or a narrow subset in ways that stay invisible until a
+**Short answer to "which are 1:1?"** — 14 applets are genuine drop-ins, 25 more are
+near-complete, 79 are partial or a narrow subset in ways that stay invisible until a
 script reaches for a flag, and 9 have no upstream counterpart to compare against.
-There are also 17 outright behaviour defects,
-one of them destructive ([`rmdir` deletes regular files](#defects-found-while-measuring)).
 Notably, the *filesystem* applets score badly on flags but produce images that pass
 `e2fsck`, `xfs_repair` and `btrfs check` cleanly — flag count is not the same as
 correctness in either direction.
+
+All 17 behaviour defects this measurement found have since been fixed and are
+covered by regression tests in `defects_test.go`; they are kept below as a record
+of what was wrong and what the originals actually do. The
+[cross-cutting gaps](#cross-cutting-gaps) and the missing options are still open.
 
 ## Verdict in one table
 
 | Tier | Meaning | Applets |
 |---|---|---|
-| **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `pwd` `echo` `basename` `tr` `base64` `uname` `whoami` `true` `false` `printenv` `sleep` `mknod` |
-| **B — near-complete** | Common paths match; a handful of real gaps | `cat` `wc` `head` `tail` `rm` `mkdir` `tee` `test` `[` `expr` `printf` `id` `mktemp` `kill` `timeout` `chroot` `blockdev` `stat` `env` `cmp` `sync` `dd` `sha256sum` `which` `seq` `dirname` |
-| **C — partial** | Everyday cases work, well-known flags or output details missing | `ls` `cp` `mv` `ln` `touch` `rmdir` `sort` `uniq` `cut` `grep` `find` `du` `df` `date` `readlink` `realpath` `strings` `tar` `gzip` `gunzip` `chown` `chgrp` `free` `uptime` `hostname` `top` `wget` `lsof` `lsblk` `blkid` `mount` `umount` `losetup` `swapon` `swapoff` `mkswap` `ss` `ip` `iptables` `ping` `traceroute` `mtr` `nc` `nslookup` `curl` `iftop` `pgrep` `pkill` `pidof` `modprobe` `insmod` `rmmod` `lsmod` `fdisk` `sfdisk` `mkfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkfs.btrfs` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `login` `passwd` |
+| **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `pwd` `echo` `basename` `tr` `base64` `uname` `whoami` `true` `false` `printenv` `sleep` `mknod` `seq` `dirname` |
+| **B — near-complete** | Common paths match; a handful of real gaps | `cat` `wc` `head` `tail` `rm` `mkdir` `tee` `test` `[` `expr` `printf` `id` `mktemp` `kill` `timeout` `chroot` `blockdev` `stat` `env` `cmp` `sync` `dd` `sha256sum` `which` `rmdir` |
+| **C — partial** | Everyday cases work, well-known flags or output details missing | `ls` `cp` `mv` `ln` `touch` `sort` `uniq` `cut` `grep` `find` `du` `df` `date` `readlink` `realpath` `strings` `tar` `gzip` `gunzip` `chown` `chgrp` `free` `uptime` `hostname` `top` `wget` `lsof` `lsblk` `blkid` `mount` `umount` `losetup` `swapon` `swapoff` `mkswap` `ss` `ip` `iptables` `ping` `traceroute` `mtr` `nc` `nslookup` `curl` `iftop` `pgrep` `pkill` `pidof` `modprobe` `insmod` `rmmod` `lsmod` `fdisk` `sfdisk` `mkfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkfs.btrfs` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `login` `passwd` |
 | **D — narrow subset** | A slice of the original; do not treat as a replacement | `sh` `awk` `sed` `chmod` `od` `hexdump` `file` `diff` `xargs` `ps` `dig` `nano` `dmesg` |
 | **N/A** | ba6-specific, no upstream counterpart | `help` `man` `completion` `init` `halt` `reboot` `poweroff` `switch_root` `udhcpc` |
 
 ## Defects found while measuring
 
-These are behaviour bugs, not missing features. Ordered by severity.
+These were behaviour bugs, not missing features — ordered by severity as they were
+found. **All 17 are now fixed**, each verified against the original tool and pinned
+by a test in `defects_test.go`. The descriptions below are kept because they record
+what the originals do, which is the part that is easy to get wrong again.
 
-1. **`rmdir FILE` deletes the file.** _(run)_ `rmdir` calls `os.Remove`, which unlinks
-   regular files too. GNU fails with `Not a directory`, exit 1; ba6 removes the file
-   and exits 0.
+1. ~~**`rmdir FILE` deletes the file.**~~ _(fixed)_ `rmdir` called `os.Remove`, which
+   unlinks regular files too. It now calls `rmdir(2)` directly and fails with
+   `rmdir: failed to remove 'F': Not a directory`, exit 1, as GNU does.
    ```
    $ echo data > F; ba6 rmdir F; ls F
-   ls: cannot access 'F': No such file or directory
+   ls: cannot access 'F': No such file or directory      # before
+   rmdir: failed to remove 'F': Not a directory          # now
    ```
-2. **`ss` prints raw hex for IPv6 addresses.** _(run)_ `[410F002A7852B11C6D3D9142BC68F380]:59252`
-   instead of `[2a00:f41:1cb1:5278:4291:3d6d:80f3:68bc]:59252` — the `/proc/net/tcp6`
-   word order is never decoded.
-3. **`ss` rejects bundled short options.** _(run)_ `ss -l` works, `ss -tuln` fails with
-   `unsupported option -l`: `-l` is matched only as a whole argument, and the
-   bundle loop has no `l` case.
-4. **`xargs` does not split newline-separated input the way the original does.** _(run)_
-   `printf 'a\nb\n' | xargs echo` gives `a b` on GNU and `a \n b \n` on ba6. Bundled
-   `-n1` / `-I{}` are also unsupported (only the spaced `-n 1`, `-I {}` forms parse).
-5. **`free` computes "used" with a different formula.** _(run)_ On one sample procps
-   printed 8560267264 and ba6 6566064128. procps uses `MemTotal - MemAvailable`;
-   ba6 uses `MemTotal - MemFree - buff/cache`. Both are defensible, but the number
-   people read off `free` is procps'. The header row is also indented one column short.
-6. **`df` lists pseudo-filesystems that `df` hides** _(run)_ — `/proc`, `/sys`, `/dev/pts`,
-   `/run/snapd/ns`, … 36 rows vs 19 — and it does not pad the `Filesystem` column, so
-   long device names shift the whole row.
-7. **`ls -lh` rounds down where GNU rounds up.** _(run)_ 3000 bytes prints `2.9K`;
-   GNU prints `3.0K`.
-8. **`id` orders groups differently, and inconsistently between its own forms.** _(run)_
-   GNU always lists the primary group first, then the supplementary ones ascending:
-   `groups=1001(c0m4r),944(lxd),951(docker),957(ollama),998(wheel)`, `id -G` →
-   `1001 944 951 957 998`. ba6 puts the primary group **last** in the long form
-   (`944,951,957,998,1001`) but **first, then descending**, for `-G`/`-Gn`
-   (`1001 998 957 951 944`).
-9. **`pidof` returns PIDs in ascending order**; the original prints newest first. _(run)_
-10. **`dig` mis-parses the common argument order.** _(run)_ `dig +short A example.com`
-    fails with `unsupported query type "EXAMPLE.COM"`.
-11. **`fsck.ext3` and `fsck.ext4` identify themselves as `fsck.ext2`.** _(run)_ All
-    three share one entry point and the diagnostic prefix is hard-coded, so error
-    output names an applet the user never invoked
-    (`$ ba6 fsck.ext4 --bogus` → `fsck.ext2: unsupported option "--bogus"`).
-12. **`sh` builtins ignore redirection.** _(run)_ `sh -c 'echo hi > o'` prints
-    `hi > o` and creates no file, because `echo`/`printf`/`pwd` are dispatched
-    before `shellRedirections` runs.
-13. **`dirname` mishandles a trailing slash.** _(run)_ `dirname /a/b/` returns `/a/b`;
-    GNU (and POSIX) return `/a`.
-14. **`seq` accumulates floating-point error.** _(run)_ `seq 0.1 0.1 0.3` prints
-    `0.1 0.2 0.30000000000000004`. GNU computes `first + i*step` and formats to the
-    operands' precision.
-15. **`mktemp` ignores the template.** _(run)_ `mktemp -d -p . XXXX` created
-    `./3160348960` — a decimal random number of arbitrary length — instead of
-    replacing exactly the trailing `X`s with random alphanumerics (`./L20R`).
-16. **`sha256sum -b` is accepted and ignored.** _(run)_ GNU marks binary mode with
-    `*` before the filename (`<hash> *f`); ba6 always prints two spaces, so its
-    output cannot be told apart from text mode. `--quiet` is likewise swallowed
-    (GNU rejects it outside `-c`).
-17. **`printf '%d' abc` silently prints `0` and exits 0.** _(run)_ GNU reports
-    `expected a numeric value` and exits 1.
+2. ~~**`ss` prints raw hex for IPv6 addresses.**~~ _(fixed)_ It printed
+   `[410F002A7852B11C6D3D9142BC68F380]:59252` instead of
+   `[2a00:f41:1cb1:5278:4291:3d6d:80f3:68bc]:59252`. Both the IPv4 and IPv6 tables
+   in `/proc/net` store the address as little-endian 32-bit words, so each group of
+   eight hex digits is now put back into network order. An unset port and an
+   unspecified IPv6 address print as `*`, as in the original.
+3. ~~**`ss` rejects bundled short options.**~~ _(fixed)_ `ss -tuln` failed with
+   `unsupported option -l` because `-l` and `-a` were matched only as whole
+   arguments. All short options now go through the same bundle loop.
+4. ~~**`xargs` does not split newline-separated input the way the original does.**~~
+   _(fixed)_ `printf 'a\nb\n' | xargs echo` gave `a \n b \n`; it now gives `a b`.
+   Input splitting no longer goes through the shell's tokeniser, so `$HOME` stays a
+   literal `$HOME`. `-n1`, `-I{}` and `--replace={}` parse, and `-I` substitutes one
+   whole line per command as GNU does.
+5. ~~**`free` computes "used" with a different formula.**~~ _(fixed)_ procps uses
+   `MemTotal - MemAvailable`; ba6 used `MemTotal - MemFree - buff/cache`. Both are
+   defensible, but the number people read off `free` is procps'. The columns were
+   also one short of procps' twenty-character first field, and `-h` printed
+   coreutils-style `27G` where procps prints `27Gi`. `free` and `free -h` are now
+   byte-identical to procps.
+6. ~~**`df` lists pseudo-filesystems that `df` hides**~~ _(fixed)_ — 36 rows against
+   GNU's 19. It now drops the dummy filesystem types, anything reporting zero
+   blocks, mounts it cannot stat, and bind mounts that repeat a device already
+   listed; `-a` keeps them. Columns are sized from the data, block counts use
+   `f_frsize`, and the device is canonicalised (`/dev/mapper/…` → `/dev/dm-0`) only
+   in the full listing, which is where GNU does it. `df`, `df -h`, `df -k` and the
+   explicit-path forms all match.
+7. ~~**`ls -lh` rounds down where GNU rounds up.**~~ _(fixed)_ 3000 bytes printed
+   `2.9K` instead of `3.0K`. The helper is shared, so `du -h` and `df -h` were wrong
+   the same way; it now rounds up in exact integer arithmetic, and a value that
+   rounds up to a whole 1024 moves to the next unit (`1047553` → `1.0M`).
+8. ~~**`id` orders groups differently, and inconsistently between its own forms.**~~
+   _(fixed)_ It put the primary group last in the long form and first-then-descending
+   for `-G`. Both forms now list the primary group first and the supplementary ones
+   ascending, as GNU does.
+9. ~~**`pidof` returns PIDs in ascending order**~~ _(fixed)_; it now prints newest
+   first, like the original.
+10. ~~**`dig` mis-parses the common argument order.**~~ _(fixed)_ `dig +short A
+    example.com` failed with `unsupported query type "EXAMPLE.COM"`. Operands are now
+    recognised by what they are rather than by position, so the name and the record
+    type may be given in either order.
+11. ~~**`fsck.ext3` and `fsck.ext4` identify themselves as `fsck.ext2`.**~~ _(fixed)_
+    The three names now have their own entry points and report themselves. The checks
+    behind them are still shared, which is also true of e2fsck's three names.
+12. ~~**`sh` builtins ignore redirection.**~~ _(fixed)_ `sh -c 'echo hi > o'` printed
+    `hi > o` and created no file. Redirections are now parsed before a builtin is
+    dispatched, and `os.Stdin`/`os.Stdout` are swapped for the duration of the call —
+    this shell's equivalent of the `dup2` a real one performs. Fixing this exposed a
+    second bug in the tokeniser: inside double quotes a backslash escapes only
+    ``$ ` " \`` and newline, so `printf "%s\n"` now reaches printf intact.
+13. ~~**`dirname` mishandles a trailing slash.**~~ _(fixed)_ `dirname /a/b/` returned
+    `/a/b`; GNU and POSIX return `/a`. `filepath.Dir` cleans the path first, which is
+    the wrong operation here.
+14. ~~**`seq` accumulates floating-point error.**~~ _(fixed)_ `seq 0.1 0.1 0.3` printed
+    `0.30000000000000004`. Values now come from `first + i*step` with the count
+    computed up front, and the precision comes from how the operands are spelled
+    (`0.10` asks for two decimals). `-w` was added along the way.
+15. ~~**`mktemp` ignores the template.**~~ _(fixed)_ `mktemp -d -p . XXXX` created
+    `./3160348960`, because `os.CreateTemp` substitutes a decimal number of whatever
+    length it needs. It now replaces exactly the run of `X`s with random alphanumerics
+    and reports `too few X's in template` when there are under three.
+16. ~~**`sha256sum -b` is accepted and ignored.**~~ _(fixed)_ Binary mode now prints
+    the `*` marker that distinguishes it from text mode in a checksum file, and
+    `--quiet`/`--status` outside `-c` (and `-b`/`-t` with it) are rejected the way GNU
+    rejects them.
+17. ~~**`printf '%d' abc` silently prints `0` and exits 0.**~~ _(fixed)_ It now reports
+    `expected a numeric value`, or `value not completely converted` for a partial
+    number, prints the value anyway and exits 1 — while a *missing* operand stays a
+    silent zero. Character constants (`'A` → 65) and negative operands to `%x` work
+    too.
 
 ## Cross-cutting gaps
 
@@ -143,6 +175,8 @@ Fixing these lifts many applets at once.
 | `printenv` | 0/1 | `-0` | identical _(run)_ |
 | `sleep` | n/a | — | suffixes, fractions and multiple operands behave like GNU; only the error wording differs _(run)_ |
 | `mknod` | 1/3 | `-Z` `--context` | `-m` present; FIFO creation identical, device nodes need root _(run)_ |
+| `seq` | 3/3 | — | `-f` `-s` `-w`, integer, float, reverse and large ranges all match, including GNU's operand-driven decimal precision _(run)_ |
+| `dirname` | 0/1 | `-z` | byte-identical on every path tested, including trailing, doubled and leading double slashes _(run)_ |
 
 ### Tier B — near-complete
 
@@ -152,18 +186,17 @@ Fixing these lifts many applets at once.
 | `wc` | 4/8 | `-L` `--total` `--files0-from` `--debug` | **column width differs on every invocation**, including stdin: ba6 pads every count to 7, GNU sizes to the widest value (`3 3 9` vs `      3       3       9`) _(run)_ |
 | `head` | 4/5 | `-z`, and **negative counts** (`-n -2`, `-c -3`) | `-n` `-c` `-q` `-v` `-n +N` and multi-file headers match _(run)_ |
 | `tail` | 5/12 | `-F` `--retry` `--pid` `-s` `-z` `--max-unchanged-stats` | `-n` `-c` `-n +N` `-c +N` `-q` `-v` `-f` match _(run)_ |
-| `sha256sum` | 5/10 | `--tag` `-z` `--ignore-missing` `--strict` `-w` | `-c` verification and `-` stdin match; `-b`/`--quiet` accepted but ignored (defect 16) _(run)_ |
+| `sha256sum` | 6/10 | `--tag` `-z` `--ignore-missing` `--strict` `-w` | `-c` verification, `-` stdin, the `-b` binary marker and the rejection of `--quiet`/`--status` outside `-c` all match _(run)_ |
 | `which` | 1/10 | the `--skip-*`/`--show-*` family | found-path output identical; on a miss GNU prints `no X in (PATH)` to stderr, ba6 prints nothing (exit 1 either way) _(run)_ |
-| `seq` | 2/3 | `-w` | `-f` `-s`, integer, reverse and large ranges match; floats hit defect 14 and lack GNU's uniform decimal padding _(run)_ |
-| `dirname` | 0/1 | `-z` | matches except for the trailing-slash defect 13 _(run)_ |
 | `rm` | 8/10 | `-I` `--one-file-system` | `-rv` prints only the top directory, GNU prints every entry; `-i` prompt reads `remove 'I'?` vs GNU `remove regular empty file 'I'?` _(run)_ |
 | `mkdir` | 2/5 | `-v` `-Z` | `-p` `-m` match, errors match apart from the Go string _(run)_ |
+| `rmdir` | 2/3 | `-v` | `-p`, the non-empty error and the refusal to remove a non-directory all match _(run)_ |
 | `tee` | 2/4 | `-p` `--output-error` | `-a` `-i` present, output identical _(run)_ |
 | `test` / `[` | 15/21 operators | `-u` `-g` `-k` `-O` `-G` `-N`, `( )` grouping | everything else including `-nt -ot -ef -a -o !` matches GNU exit codes exactly _(run)_ |
 | `expr` | arithmetic complete | `:` (regex match), `length` `substr` `index` `match` | `+ - * / % < <= = != >= > & \|` all match _(run)_ |
-| `printf` | all conversions but one | `%q`, the "ignoring excess arguments" warning | `%s %d %i %f %e %g %x %X %o %c %b %%`, widths, precision, `\x \0 \e` escapes all match _(run)_ |
-| `id` | 4/8 | `-r` `-z` `-Z` | group order wrong (see defect 8) _(run)_ |
-| `mktemp` | 3/6 | `-u` `-q` `--suffix` | `-d` `-p` `-t` work but the template is ignored (defect 15) _(run)_ |
+| `printf` | all conversions but one | `%q`, the "ignoring excess arguments" warning | `%s %d %i %f %e %g %x %X %o %c %b %%`, widths, precision, `\x \0 \e` escapes, character constants and the numeric-operand diagnostics all match _(run)_ |
+| `id` | 4/8 | `-r` `-z` `-Z` | long form, `-u` `-g` `-G` `-Gn` and the group order all match _(run)_ |
+| `mktemp` | 3/6 | `-u` `-q` `--suffix` | `-d` `-p` `-t` and the template match, including the suffix form and the too-few-X error _(run)_ |
 | `kill` | 2/10 | `-a` `-q` `-p` `-L` `-r` `--timeout` | `kill -l` prints a bare space-separated list of 18 names; GNU prints a numbered table of 64 _(run)_ |
 | `timeout` | 2/5 | `-f` `-p` `-v` | `-s` `-k` and the 124 exit code match _(run)_ |
 | `chroot` | 0/3 | `--userspec` `--groups` `--skip-chdir` | core behaviour present _(src)_ |
@@ -179,7 +212,7 @@ Fixing these lifts many applets at once.
 **`ls`** — 9/56 options _(run)_. Present: `-l -a -A -d -h -r -t -S -R -F -1`.
 Missing everything else, notably `-i` `-c` `-u` `-U` `-v` `-C` `-x` `-m` `-n` `-g` `-o`
 `-p` `-s` `-Q` `-w` `--color` `--time-style` `--group-directories-first` `--sort`.
-`-lh` rounds down (defect 7). Long format, symlink arrows, `total`, multi-directory
+`-lh` matches GNU's rounding. Long format, symlink arrows, `total`, multi-directory
 headers and C-locale sort order all match.
 
 **`cp`** — 7/34 _(run)_. Present: `-r/-R -a -p -f -i -v`. Missing `-d -L -P -H -n -u
@@ -194,8 +227,6 @@ Hard and symbolic links match.
 
 **`touch`** — 3/8 _(src, run)_. Present: `-a -c -m`. **Missing `-d` `-t` `-r` `-h` `-f`**
 — i.e. every way of setting a timestamp other than "now".
-
-**`rmdir`** — 2/3 plus defect 1. Missing `-v`. `-p` and the non-empty error match.
 
 **`sort`** — 7/27 _(run)_. Present: `-n -r -u -b -f -c -h`. **Missing `-k` and `-t`**
 (no field sorting at all), plus `-o -m -s -g -M -R -z -T --parallel`.
@@ -223,7 +254,8 @@ from the original's directory order.
 -L -S -t --exclude --time --inodes`. Totals match on the tested trees.
 
 **`df`** — 2/15 _(run)_. Present: `-h -k`. Missing `-i -T -a -l -t -x -B -H --total
---output`. Plus defect 6 (no pseudo-fs filtering, no column padding).
+--output`. `df`, `df -h`, `df -k`, `df -a` and explicit paths are byte-identical to
+GNU, including which filesystems are listed and how the columns are sized.
 
 **`date`** — 6/10 flags _(run)_. **Missing `-d`/`--date` and `-s`/`--set`** — no date
 parsing or setting at all — plus `-R` `--rfc-3339` `-f` `--resolution`. Format
@@ -253,7 +285,7 @@ changes produced identical results to coreutils. Missing `-c -f -v --reference
 --from --dereference -H -L -P --preserve-root`.
 
 **`free`** — 4/19 _(run)_. Present: `-b -k -m -h`(sizes). Missing `-t -s -c -w -l -v
---si --kilo/--mega/…`. Plus defect 5.
+--si --kilo/--mega/…`. `free` and `free -h` are byte-identical to procps.
 
 **`uptime`** — 1/4 _(run)_. Missing `-p` `-s` `-r` `-c`, and the default line omits the
 user count: `02:47:09 up 01:23, load average: …` vs `02:47:09 up 1:23, 1 user, load average: …`.
@@ -286,7 +318,8 @@ omits the `[]:` back-file field. Missing `-D -c -j -L -P -b -J -l -O --direct-io
 
 **`mkswap`** — 2/13 _(src)_. `-f -L` present. Missing `-U -p -c -s -v -o --lock`.
 
-**`ss`** — 7/44 _(run)_ plus defects 2 and 3. Present: `-t -u -x -a -l -n -p`
+**`ss`** — 7/44 _(run)_. Addresses decode correctly and short options bundle.
+Present: `-t -u -x -a -l -n -p`
 (`-n`/`-p` accepted but ignored). No `Recv-Q`/`Send-Q` columns, no service-name
 resolution, no process attribution. Missing `-s -e -m -i -o -r -f -K -H -Z --ipv4/--ipv6`.
 
@@ -341,7 +374,8 @@ wget. Missing the recursive mirror (`-r -m -np -l -k -N`), rate limiting, cookie
 **`pgrep` / `pkill`** — 3/31 and 2/29 _(run)_. `-f -x -v` and `-SIGNAL` present.
 Missing **`-l` `-a` `-u`/`-U` `-P` `-n` `-o` `-c` `-d` `-i` `-t` `-g`/`-G` `--ns`**.
 
-**`pidof`** — no options _(run)_, plus defect 9. Missing `-s -o -x -c -q -w -t -S`.
+**`pidof`** — no options _(run)_. Ordering matches (newest first). Missing `-s -o -x
+-c -q -w -t -S`.
 
 **`modprobe` / `insmod` / `rmmod` / `lsmod`** — 3/27, 0/3, 1/3, 0/2 _(src, run)_.
 Load/unload work; `lsmod` output matches except one column of padding. Missing
@@ -423,7 +457,8 @@ No `-i`/`--mime`, `-z`, `-L`, `-s`, `-f`, `-m`.
 **`diff`** _(run)_ — unified output only (`-u`). Missing normal/context/side-by-side
 output, `-q -s -r -N -i -w -b -B -E -Z -y -W -a -X -x --color --label` — 1 of 48 options.
 
-**`xargs`** _(run)_ — see defect 4. Present: `-0 -r -n -I`. Missing `-a -d -E -e -L -P
+**`xargs`** _(run)_ — input splitting, quoting and `-I` semantics match GNU.
+Present: `-0 -r -n -I` (attached, spaced and `=` forms). Missing `-a -d -E -e -L -P
 -p -s -t -x --process-slot-var`.
 
 **`nano`** _(run, help)_ — 6/50 options; a minimal full-screen editor, not GNU nano's
@@ -436,7 +471,8 @@ procps prints `PID TTY TIME CMD` for the caller's terminal only; `-ef` prints a 
 layout (`USER PID PPID VSZ RSS STAT COMMAND`), unpadded. Working: `-e`/`-A`, `-p`,
 `-o`/`--format`. Missing: `-u -U -C -t -s -G --sort --forest --no-headers -L -H -j -l -w`.
 
-**`dig`** _(run)_ — no flags at all, plus defect 10: `dig +short A example.com` fails,
+**`dig`** _(run)_ — no flags at all; the name and type may now be given in either
+order. Formerly `dig +short A example.com` failed,
 only the `dig NAME TYPE` order parses. Missing `-x` (reverse lookup), `-t -c -p -b -f
 -q -y`, every `+option` except `+short`, and the full answer/authority section layout.
 
@@ -445,26 +481,30 @@ only the `dig NAME TYPE` order parses. Missing `-x` (reverse lookup), `-t -c -p 
 
 ## What to fix first
 
-Ordered by how many applets each item moves, not by effort.
+Ordered by how many applets each item moves, not by effort. The two items that were
+defects — `rmdir` deleting files and `ss` printing undecoded hex — are done; what
+remains is missing functionality.
 
-1. **`rmdir` deleting files** (defect 1) — one-line fix, prevents data loss.
-2. **One `strerror`-style error helper** — closes the single most visible difference
+1. **One `strerror`-style error helper** — closes the single most visible difference
    across ~15 applets, and makes ba6's output indistinguishable in scripts that grep
-   stderr.
-3. **One shared short-option parser** — fixes bundling in 11 applets and gives
-   `--version` and `Try 'x --help'` to all 127 at once.
-4. **`chmod` symbolic modes** — `chmod +x` is the most common chmod invocation there
+   stderr. `errText` in `util.go` is that helper; `rmdir` and `df` use it, the rest
+   still print Go's `open f: no such file or directory` form.
+2. **One shared short-option parser** — fixes bundling in the remaining applets and
+   gives `--version` and `Try 'x --help'` to all 127 at once. `optionArgument` in
+   `execution_tools.go` already handles the attached/spaced/`=` forms and is the
+   natural starting point.
+3. **`chmod` symbolic modes** — `chmod +x` is the most common chmod invocation there
    is, and it currently fails outright.
-5. **`sort -k`/`-t`** — field sorting is what sort is for; without it the applet
+4. **`sort -k`/`-t`** — field sorting is what sort is for; without it the applet
    handles only whole-line ordering.
-6. **`sh` variable assignment and `$?`** — more fundamental than the control flow
-   already tracked in TODO.md; a script cannot do anything useful without them.
-7. **`ss` IPv6 decoding** (defect 2) — currently prints unreadable hex, which makes
-   the applet actively misleading during a network rescue.
-8. **`touch -d`/`-t`/`-r`** — the only reason to reach for touch besides creating a file.
-9. **`grep -o`/`-A`/`-B`/`-C`** and **`sed -i`** — the highest-frequency missing
+5. **`sh` variable assignment and `$?`** — expansion currently happens once, while the
+   whole source is tokenised, so `export z=1; echo $z` prints nothing: a variable set
+   by the script cannot be read back. Deferring expansion to command execution is the
+   fix, and it is more fundamental than the control flow already tracked in TODO.md.
+6. **`touch -d`/`-t`/`-r`** — the only reason to reach for touch besides creating a file.
+7. **`grep -o`/`-A`/`-B`/`-C`** and **`sed -i`** — the highest-frequency missing
    options in the two most-used text tools.
-10. **`ps aux`** — the invocation everyone types; today it errors out.
+8. **`ps aux`** — the invocation everyone types; today it errors out.
 
 ## How this was measured
 

@@ -350,27 +350,53 @@ func cmdFree(args []string) int {
 	}
 	total, free := values["MemTotal"], values["MemFree"]
 	cache := values["Buffers"] + values["Cached"] + values["SReclaimable"]
+	available := values["MemAvailable"]
+	// "used" is what people read off free, so it has to be the same subtraction
+	// the original makes: everything the kernel says is not available, not just
+	// what is neither free nor reclaimable cache.
 	used := uint64(0)
-	if total > free+cache {
+	switch {
+	case available > 0 && total > available:
+		used = total - available
+	case total > free+cache:
 		used = total - free - cache
 	}
-	available := values["MemAvailable"]
 	swapTotal, swapFree := values["SwapTotal"], values["SwapFree"]
+	// Each column is twelve wide and the first ends at column twenty, which is
+	// what lines the header up with the numbers underneath it.
 	printMemory := func(label string, row []uint64) {
-		fmt.Fprintf(os.Stdout, "%-7s", label)
+		fmt.Fprintf(os.Stdout, "%-8s", label)
 		for _, value := range row {
 			if human {
-				fmt.Fprintf(os.Stdout, " %11s", humanSizeUint64(value))
+				fmt.Fprintf(os.Stdout, "%12s", scaleMemory(value))
 			} else {
-				fmt.Fprintf(os.Stdout, " %11d", value/unit)
+				fmt.Fprintf(os.Stdout, "%12d", value/unit)
 			}
 		}
 		fmt.Fprintln(os.Stdout)
 	}
-	fmt.Fprintln(os.Stdout, "              total        used        free      shared  buff/cache   available")
+	fmt.Fprintf(os.Stdout, "%-8s%12s%12s%12s%12s%12s%12s\n", "",
+		"total", "used", "free", "shared", "buff/cache", "available")
 	printMemory("Mem:", []uint64{total, used, free, values["Shmem"], cache, available})
 	printMemory("Swap:", []uint64{swapTotal, swapTotal - swapFree, swapFree})
 	return 0
+}
+
+// scaleMemory formats a byte count for free -h. It deliberately does not use
+// humanSize: free labels its units IEC-style (Ki, Mi, Gi) and truncates whole
+// numbers where the coreutils tools round up, so 11.7 GiB reads as 11Gi.
+func scaleMemory(value uint64) string {
+	suffixes := []string{"B", "Ki", "Mi", "Gi", "Ti", "Pi", "Ei"}
+	divisor := uint64(1)
+	index := 0
+	for index < len(suffixes)-1 && value/divisor >= 1024 {
+		divisor *= 1024
+		index++
+	}
+	if whole := value / divisor; whole < 10 && index > 0 {
+		return fmt.Sprintf("%.1f%s", float64(value)/float64(divisor), suffixes[index])
+	}
+	return fmt.Sprintf("%d%s", value/divisor, suffixes[index])
 }
 
 func readMeminfo() (map[string]uint64, error) {

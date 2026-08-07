@@ -1244,9 +1244,12 @@ func cmdFsck(args []string) int {
 	return fsckExt("fsck", forward, filesystem)
 }
 
-func cmdFsckExt(args []string) int {
-	return fsckExt("fsck.ext2", args, "")
-}
+// Each fsck.extN name is its own entry point so that diagnostics are attributed
+// to the applet the user actually invoked. The checks themselves are shared and
+// do not depend on the name, exactly as e2fsck's three names behave.
+func cmdFsckExt2(args []string) int { return fsckExt("fsck.ext2", args, "") }
+func cmdFsckExt3(args []string) int { return fsckExt("fsck.ext3", args, "") }
+func cmdFsckExt4(args []string) int { return fsckExt("fsck.ext4", args, "") }
 
 func fsckExt(prog string, args []string, requestedType string) int {
 	var devices []string

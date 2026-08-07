@@ -5,7 +5,6 @@ package main
 
 import (
 	"errors"
-	"os"
 	"path/filepath"
 	"syscall"
 )
@@ -60,15 +59,18 @@ rest:
 	return status
 }
 
+// removeOneDir removes d with rmdir(2) rather than os.Remove, which falls back
+// to unlink(2) and would silently delete a regular file named on the command
+// line. rmdir(1) must fail with ENOTDIR instead.
 func removeOneDir(d string, ignoreNonEmpty bool) bool {
-	err := os.Remove(d)
+	err := syscall.Rmdir(d)
 	if err == nil {
 		return true
 	}
 	if ignoreNonEmpty && isNotEmpty(err) {
 		return true
 	}
-	fatalf("rmdir", "failed to remove '%s': %v", d, err)
+	fatalf("rmdir", "failed to remove '%s': %s", d, errText(err))
 	return false
 }
 

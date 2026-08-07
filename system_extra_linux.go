@@ -172,7 +172,10 @@ func cmdPidof(args []string) int {
 	status := 1
 	for _, name := range args {
 		matches := []string{}
-		for _, p := range processes {
+		// readProcesses returns ascending PIDs; pidof prints the newest match
+		// first, so walk the list backwards.
+		for i := len(processes) - 1; i >= 0; i-- {
+			p := processes[i]
 			if p.comm == name || filepath.Base(strings.Fields(p.args)[0]) == name {
 				matches = append(matches, strconv.Itoa(p.pid))
 			}
