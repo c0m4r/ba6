@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 c0m4r
+
 package main
 
 import (
@@ -13,8 +16,8 @@ Perform a focused Linux block-device ioctl.
 
 Operations:
   --getro/--setro/--setrw  query or change read-only state
-  --getsize64              print device size in bytes
-  --getsz                  print device size in 512-byte sectors
+  --getsize64              report the device size in bytes
+  --getsz                  report the size in 512-byte sectors
   --getss/--getbsz         print logical sector/I/O block size
   --getra/--setra SECTORS  query or set readahead
   --flushbufs/--rereadpt   flush buffers or reread the partition table
@@ -186,13 +189,38 @@ Encode or decode base64 data.`,
 	"blkid": `Usage: blkid [DEVICE]...
 Probe common filesystem signatures, labels, and UUIDs.`,
 	"cmp": `Usage: cmp [-s] FILE1 FILE2
-Compare two files byte by byte.`,
+Report the offset and line number where two files first differ.
+
+Options:
+  -s        report nothing; signal the result through the exit status
+  --help    show this help`,
 	"completion": `Usage: completion bash
 Generate a Bash completion script for ba6 on standard output. The script
 completes global options, applets, documented applet options, and paths.`,
-	"curl": `Usage: curl [-svL] [-o FILE] [-X METHOD] [-d DATA] URL
-Transfer an HTTP or HTTPS resource. -v writes connection details and request
-and response headers to standard error while preserving the response body.`,
+	"curl": `Usage: curl [OPTION]... URL...
+Transfer HTTP or HTTPS resources to standard output. Redirects are followed only
+with -L.
+
+Options:
+  -o FILE   write to FILE
+  -O        write to a file named after the remote path
+  -s        no progress or error chatter
+  -v        trace the connection, request and response on standard error
+  -i        include the response headers in the output
+  -I        fetch headers only
+  -L        follow redirects
+  -f        no output on an HTTP error, and exit 22
+  -k        skip TLS certificate verification
+  -A AGENT  set User-Agent
+  -u USER[:PASS]  HTTP basic credentials
+  -X METHOD use METHOD instead of GET
+  -d DATA   send DATA as the request body, implying POST
+  -H "NAME: VALUE"  add a request header
+  --max-time SEC    time limit for the transfer
+  --help    show this help
+
+Short options may be clustered, as in -sSL. Unlike wget, an HTTP error response
+is not by itself a failure; use -f for that.`,
 	"dig": `Usage: dig [@SERVER] NAME [TYPE] [+short] [+tcp] [+time=SECONDS]
 Query DNS over UDP with automatic TCP retry for truncated replies. Supported
 types are A, AAAA, CNAME, MX, NS, PTR, SOA, TXT, and ANY. Compressed names and
@@ -269,8 +297,29 @@ Unmount filesystems. -a processes all mounted filesystems and -r remounts
 busy filesystems read-only.`,
 	"uptime": `Usage: uptime [-p]
 Display system uptime and load averages.`,
-	"wget": `Usage: wget [-q] [-O FILE] URL
-Download an HTTP or HTTPS resource.`,
+	"wget": `Usage: wget [OPTION]... URL...
+Download HTTP or HTTPS resources. Redirects are followed and each URL is saved
+under a name taken from its path; an existing name gains a .1, .2 suffix.
+
+Options:
+  -O FILE   write to FILE instead ("-" for standard output)
+  -P DIR    place downloads under DIR
+  -c        resume a partial download with a range request
+  -nc       leave an existing file alone instead of downloading again
+  -q        say nothing; -nv keeps only the closing summary
+  -S        print the response headers
+  -T SEC    time limit for the transfer
+  -t N      attempts before giving up (0 means keep trying)
+  -U AGENT  set User-Agent
+  --user/--password USER,PASS   HTTP basic credentials
+  --header "NAME: VALUE"        add a request header
+  --method VERB                 use VERB instead of GET
+  --post-data STR/--post-file F send a request body
+  --spider  check the resource without downloading it
+  --no-check-certificate        skip TLS certificate verification
+  --help    show this help
+
+Exit status is 8 when the server answers with an error response.`,
 	"which": `Usage: which [-a] COMMAND...
 Print executable paths found through PATH.`,
 	"xargs": `Usage: xargs [-0r] [-n NUMBER] [-I REPLACE] [COMMAND [ARG]...]
@@ -288,7 +337,7 @@ Estimate allocated disk usage recursively.
 
 Options:
   -a        print sizes for files as well as directories
-  -s        print only a total for each operand
+  -s        report one total per operand
   -h        human-readable sizes
   -k        display 1K blocks (default)
   --help    show this help`,
@@ -424,19 +473,19 @@ Options:
 	"[": `Usage: [ EXPRESSION ]
 Evaluate a conditional expression. See "test --help" for operators.`,
 	"basename": `Usage: basename NAME [SUFFIX]
-       basename OPTION... NAME...
-Print NAME with leading directory components removed.
+       basename -a [-s SUFFIX] NAME...
+Print the final component of each NAME.
 
 Options:
-  -a        support multiple NAME operands
-  -s SUFFIX remove a trailing SUFFIX; implies -a
+  -a        accept more than one NAME
+  -s SUFFIX strip SUFFIX from the end of each NAME (turns on -a)
   --help    show this help`,
 	"chgrp": `Usage: chgrp [OPTION]... GROUP FILE...
-Change the group of each FILE. GROUP may be a name or numeric ID.
+Set the owning group of each FILE. GROUP may be a name or numeric ID.
 
 Options:
   -R        operate recursively
-  -h        affect symbolic links instead of their referents
+  -h        act on symlinks themselves, not on what they point to
   --help    show this help`,
 	"chmod": `Usage: chmod [OPTION]... OCTAL_MODE FILE...
 Change file permissions using an octal mode from 0000 through 7777.
@@ -445,11 +494,11 @@ Options:
   -R        operate recursively
   --help    show this help`,
 	"chown": `Usage: chown [OPTION]... OWNER[:GROUP] FILE...
-Change file ownership. OWNER and GROUP may be names or numeric IDs.
+Set file ownership. OWNER and GROUP accept names or numeric IDs.
 
 Options:
   -R        operate recursively
-  -h        affect symbolic links instead of their referents
+  -h        act on symlinks themselves, not on what they point to
   --help    show this help`,
 	"date": `Usage: date [OPTION]... [+FORMAT]
 Display the current time; this applet does not set the system clock.
@@ -462,7 +511,7 @@ Options:
 FORMAT accepts common strftime directives including %F, %T, %Y, %m, %d,
 %H, %M, %S, %s, %N, %z, and %Z.`,
 	"dirname": `Usage: dirname NAME...
-Print each NAME with its last non-slash component removed.
+Print the leading path of each NAME, dropping the final component.
 
 Options:
   --help    show this help`,
@@ -473,7 +522,7 @@ Options:
   --help    show this help`,
 	"ln": `Usage: ln [OPTION]... TARGET [LINK_NAME]
        ln [OPTION]... TARGET... DIRECTORY
-Create hard links by default, or symbolic links with -s.
+Create hard links, or symbolic links with -s.
 
 Options:
   -s        make symbolic links
@@ -541,16 +590,16 @@ Options:
   -b        number nonempty lines (overrides -n)
   -E        display '$' at newline boundaries
   -s        squeeze repeated empty lines
-  -T        display TAB characters as ^I
+  -T        show tab characters as ^I
   -A        equivalent to -ET
   --help    show this help`,
 	"echo": `Usage: echo [-neE] [ARG]...
 Write ARGs separated by spaces.
 
 Options:
-  -n        do not output the trailing newline
-  -e        enable backslash escapes
-  -E        disable backslash escapes
+  -n        suppress the newline that normally ends the output
+  -e        interpret backslash escapes in ARGs
+  -E        take backslash escapes literally (default)
   --help    show this help`,
 	"grep": `Usage: grep [OPTION]... PATTERN [FILE]...
 Print lines that match PATTERN.
@@ -570,11 +619,11 @@ Options:
   -m NUM    stop after NUM matches per file
   --help    show this help`,
 	"head": `Usage: head [OPTION]... [FILE]...
-Print the first part of each FILE.
+Print the beginning of each FILE.
 
 Options:
-  -n NUM    print the first NUM lines (default 10)
-  -c NUM    print the first NUM bytes
+  -n NUM    output NUM leading lines (default 10)
+  -c NUM    output NUM leading bytes
   -q/-v     suppress/force headers
   --help    show this help`,
 	"tail": `Usage: tail [OPTION]... [FILE]

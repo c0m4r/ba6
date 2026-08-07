@@ -14,7 +14,7 @@ LDFLAGS     := -s -w
 BUILD_ENV   := CGO_ENABLED=0 GOOS=linux GOARCH=amd64
 GO_BUILD_FLAGS := -buildvcs=false
 
-.PHONY: all build lint vet fmt fmt-check test verify clean
+.PHONY: all build lint vet fmt fmt-check test provenance coverage verify clean
 
 all: build
 
@@ -40,8 +40,22 @@ test:
 lint:
 	PATH="$(PATH):$(GOPATH_BIN)" golangci-lint run ./...
 
-# Aggregate gate: formatting, vet, and the full linter incl. gosec.
-verify: fmt-check test vet lint build
+# Fails if any applet's help text reuses wording from the original's man page.
+# Reads man pages only; it never runs a tool to ask for its help, because the
+# applet list contains halt, poweroff, reboot and init. See PROVENANCE.md.
+provenance:
+	@python3 tools/coverage/text_overlap.py
+
+# Regenerate the per-applet comparison behind COVERAGE.md.
+coverage: build
+	@cd tools/coverage \
+		&& python3 ref_options.py > ref.json \
+		&& python3 ba6_options.py > ba6.json \
+		&& python3 compare.py ref.json ba6.json
+
+# Aggregate gate: formatting, vet, the full linter incl. gosec, and the
+# verbatim-text check.
+verify: fmt-check test vet lint build provenance
 	@echo "all checks passed"
 
 clean:

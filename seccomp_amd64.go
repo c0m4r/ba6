@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 c0m4r
+
 //go:build linux && amd64
 
 package main

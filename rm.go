@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 c0m4r
+
 package main
 
 import (
@@ -78,8 +81,8 @@ rest:
 	status := 0
 	for _, t := range targets {
 		if recursive && preserveRoot && isRootPath(t) {
-			fatalf("rm", "it is dangerous to operate recursively on '%s'", t)
-			fatalf("rm", "use --no-preserve-root to override this failsafe")
+			fatalf("rm", "refusing to recurse into the filesystem root %q", t)
+			fatalf("rm", "pass --no-preserve-root if that is genuinely intended")
 			status = 1
 			continue
 		}

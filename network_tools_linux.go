@@ -1,9 +1,13 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 c0m4r
+
 //go:build linux
 
 package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -324,8 +328,358 @@ func readUnixSockets(listen, all bool) {
 	}
 }
 
-func cmdWget(args []string) int { return httpFetch("wget", args) }
-func cmdCurl(args []string) int { return httpFetch("curl", args) }
+// fetchOptions is the union of what curl and wget need from their very different
+// command lines. Each applet parses its own flags into this struct and hands it to
+// runFetch, so the two tools stay independent at the surface while sharing one
+// transfer implementation.
+type fetchOptions struct {
+	method      string
+	body        string
+	headers     http.Header
+	output      string // "" derive a name, "-" standard output
+	directory   string // wget -P
+	quiet       bool
+	noVerbose   bool // wget -nv
+	trace       bool // curl -v, wget -d
+	showHeaders bool // wget -S, curl -i
+	follow      bool
+	maxRedirect int
+	headOnly    bool
+	failOnError bool // curl -f
+	spider      bool // wget --spider
+	resume      bool // wget -c
+	noClobber   bool // wget -nc
+	insecure    bool
+	timeout     time.Duration
+	tries       int
+	userAgent   string
+	user        string
+	password    string
+	toFile      bool // save under a derived name when no -O was given
+	progress    bool
+}
+
+func newFetchOptions() *fetchOptions {
+	return &fetchOptions{method: "GET", headers: http.Header{}, maxRedirect: 20, tries: 1,
+		timeout: 60 * time.Second}
+}
+
+// cmdCurl writes to standard output and does not follow redirects unless asked,
+// matching curl's defaults.
+func cmdCurl(args []string) int {
+	o := newFetchOptions()
+	remoteName := false
+	targets := []string{}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		// curl accepts clustered short flags such as -sSL.
+		if len(a) > 2 && strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") {
+			cluster := true
+			for _, flag := range a[1:] {
+				switch flag {
+				case 's':
+					o.quiet = true
+				case 'v':
+					o.trace = true
+				case 'L':
+					o.follow = true
+				case 'f':
+					o.failOnError = true
+				case 'i':
+					o.showHeaders = true
+				case 'k':
+					o.insecure = true
+				case 'I':
+					// curl -I reports the headers it fetched.
+					o.headOnly, o.showHeaders, o.method = true, true, "HEAD"
+				case 'O':
+					remoteName = true
+				default:
+					cluster = false
+				}
+			}
+			if cluster {
+				continue
+			}
+		}
+		next := func() (string, bool) {
+			i++
+			if i >= len(args) {
+				fatalf("curl", "option %q requires an argument", a)
+				return "", false
+			}
+			return args[i], true
+		}
+		switch a {
+		case "-o", "--output":
+			v, ok := next()
+			if !ok {
+				return 2
+			}
+			o.output = v
+		case "-O", "--remote-name":
+			remoteName = true
+		case "-s", "--silent":
+			o.quiet = true
+		case "-v", "--verbose":
+			o.trace = true
+		case "-i", "--show-headers", "--include":
+			o.showHeaders = true
+		case "-f", "--fail":
+			o.failOnError = true
+		case "-k", "--insecure":
+			o.insecure = true
+		case "-L", "--location":
+			o.follow = true
+		case "-I", "--head":
+			o.headOnly, o.showHeaders, o.method = true, true, "HEAD"
+		case "-A", "--user-agent":
+			v, ok := next()
+			if !ok {
+				return 2
+			}
+			o.userAgent = v
+		case "-u", "--user":
+			v, ok := next()
+			if !ok {
+				return 2
+			}
+			o.user, o.password = splitCredentials(v)
+		case "--max-time", "--connect-timeout":
+			v, ok := next()
+			if !ok {
+				return 2
+			}
+			seconds, err := strconv.ParseFloat(v, 64)
+			if err != nil {
+				fatalf("curl", "invalid time %q", v)
+				return 2
+			}
+			o.timeout = time.Duration(seconds * float64(time.Second))
+		case "-X", "--request":
+			v, ok := next()
+			if !ok {
+				return 2
+			}
+			o.method = v
+		case "-d", "--data":
+			v, ok := next()
+			if !ok {
+				return 2
+			}
+			o.body = v
+			if o.method == "GET" {
+				o.method = "POST"
+			}
+		case "-H", "--header":
+			v, ok := next()
+			if !ok {
+				return 2
+			}
+			addHeaderLine(o.headers, v)
+		case "--":
+			targets = append(targets, args[i+1:]...)
+			i = len(args)
+		default:
+			if strings.HasPrefix(a, "-") {
+				fatalf("curl", "unsupported option %q", a)
+				return 2
+			}
+			targets = append(targets, a)
+		}
+	}
+	if len(targets) == 0 {
+		fatalf("curl", "no URL specified")
+		return 2
+	}
+	if remoteName {
+		o.toFile = true
+	}
+	return runFetchAll("curl", o, targets)
+}
+
+// cmdWget follows redirects, saves to a file named after the URL, and reports
+// progress on standard error, matching wget's defaults.
+func cmdWget(args []string) int {
+	o := newFetchOptions()
+	o.follow, o.toFile, o.progress = true, true, true
+	o.tries = 20
+	targets := []string{}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		next := func() (string, bool) {
+			i++
+			if i >= len(args) {
+				fatalf("wget", "option %q requires an argument", a)
+				return "", false
+			}
+			return args[i], true
+		}
+		// wget spells most long options --name=value.
+		name, value := a, ""
+		if strings.HasPrefix(a, "--") {
+			if eq := strings.Index(a, "="); eq > 0 {
+				name, value = a[:eq], a[eq+1:]
+			}
+		}
+		inline := func() (string, bool) {
+			if value != "" {
+				return value, true
+			}
+			return next()
+		}
+		switch name {
+		case "-O", "--output-document":
+			v, ok := inline()
+			if !ok {
+				return 2
+			}
+			o.output, o.toFile = v, false
+		case "-P", "--directory-prefix":
+			v, ok := inline()
+			if !ok {
+				return 2
+			}
+			o.directory = v
+		case "-q", "--quiet":
+			o.quiet = true
+		case "-nv", "--no-verbose":
+			o.noVerbose = true
+		case "-v", "--verbose":
+			o.quiet, o.noVerbose = false, false
+		case "-d", "--debug":
+			o.trace = true
+		case "-S", "--server-response":
+			o.showHeaders = true
+		case "-c", "--continue":
+			o.resume = true
+		case "-nc", "--no-clobber":
+			o.noClobber = true
+		case "--spider":
+			o.spider, o.method = true, "HEAD"
+		case "--no-check-certificate":
+			o.insecure = true
+		case "-T", "--timeout", "--connect-timeout", "--read-timeout", "--dns-timeout":
+			v, ok := inline()
+			if !ok {
+				return 2
+			}
+			seconds, err := strconv.ParseFloat(v, 64)
+			if err != nil {
+				fatalf("wget", "invalid timeout %q", v)
+				return 2
+			}
+			o.timeout = time.Duration(seconds * float64(time.Second))
+		case "-t", "--tries":
+			v, ok := inline()
+			if !ok {
+				return 2
+			}
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 0 {
+				fatalf("wget", "invalid number of tries %q", v)
+				return 2
+			}
+			if n == 0 {
+				n = 1 << 20 // wget spells "retry forever" as 0 or inf.
+			}
+			o.tries = n
+		case "--max-redirect":
+			v, ok := inline()
+			if !ok {
+				return 2
+			}
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 0 {
+				fatalf("wget", "invalid redirect count %q", v)
+				return 2
+			}
+			o.maxRedirect = n
+			o.follow = n > 0
+		case "-U", "--user-agent":
+			v, ok := inline()
+			if !ok {
+				return 2
+			}
+			o.userAgent = v
+		case "--user":
+			v, ok := inline()
+			if !ok {
+				return 2
+			}
+			o.user = v
+		case "--password":
+			v, ok := inline()
+			if !ok {
+				return 2
+			}
+			o.password = v
+		case "--header":
+			v, ok := inline()
+			if !ok {
+				return 2
+			}
+			addHeaderLine(o.headers, v)
+		case "--method":
+			v, ok := inline()
+			if !ok {
+				return 2
+			}
+			o.method = strings.ToUpper(v)
+		case "--post-data", "--body-data":
+			v, ok := inline()
+			if !ok {
+				return 2
+			}
+			o.body = v
+			if o.method == "GET" {
+				o.method = "POST"
+			}
+		case "--post-file", "--body-file":
+			v, ok := inline()
+			if !ok {
+				return 2
+			}
+			content, err := os.ReadFile(v)
+			if err != nil {
+				fatalf("wget", "%v", err)
+				return 2
+			}
+			o.body = string(content)
+			if o.method == "GET" {
+				o.method = "POST"
+			}
+		case "--":
+			targets = append(targets, args[i+1:]...)
+			i = len(args)
+		default:
+			if strings.HasPrefix(a, "-") {
+				fatalf("wget", "unsupported option %q", a)
+				return 2
+			}
+			targets = append(targets, a)
+		}
+	}
+	if len(targets) == 0 {
+		fatalf("wget", "missing URL")
+		return 2
+	}
+	return runFetchAll("wget", o, targets)
+}
+
+func splitCredentials(value string) (string, string) {
+	if colon := strings.Index(value, ":"); colon >= 0 {
+		return value[:colon], value[colon+1:]
+	}
+	return value, ""
+}
+
+func addHeaderLine(headers http.Header, line string) {
+	p := strings.SplitN(line, ":", 2)
+	if len(p) == 2 {
+		headers.Add(strings.TrimSpace(p[0]), strings.TrimSpace(p[1]))
+	}
+}
 
 type downloadProgress struct {
 	destination io.Writer
@@ -368,199 +722,6 @@ func (p *downloadProgress) report(final bool) {
 		fmt.Fprintln(p.output)
 	}
 	p.lastUpdate = time.Now()
-}
-
-func httpFetch(prog string, args []string) int {
-	output, method, data := "", "GET", ""
-	headers := http.Header{}
-	head, quiet, verbose, follow := false, false, false, prog == "wget"
-	target := ""
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		if prog == "curl" && len(a) > 2 && strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") {
-			validCluster := true
-			for _, flag := range a[1:] {
-				switch flag {
-				case 's':
-					quiet = true
-				case 'v':
-					verbose = true
-				case 'L':
-					follow = true
-				case 'I':
-					head, method = true, "HEAD"
-				default:
-					validCluster = false
-				}
-			}
-			if validCluster {
-				continue
-			}
-		}
-		switch a {
-		case "-O", "-o", "--output":
-			i++
-			if i >= len(args) {
-				return 2
-			}
-			output = args[i]
-		case "-q", "--quiet", "-s", "--silent":
-			quiet = true
-		case "-v", "--verbose":
-			if prog != "curl" {
-				fatalf(prog, "unsupported option %q", a)
-				return 2
-			}
-			verbose = true
-		case "-L", "--location":
-			follow = true
-		case "-I", "--head":
-			head = true
-			method = "HEAD"
-		case "-X", "--request":
-			i++
-			if i >= len(args) {
-				return 2
-			}
-			method = args[i]
-		case "-d", "--data":
-			i++
-			if i >= len(args) {
-				return 2
-			}
-			data = args[i]
-			if method == "GET" {
-				method = "POST"
-			}
-		case "-H", "--header":
-			i++
-			if i >= len(args) {
-				return 2
-			}
-			p := strings.SplitN(args[i], ":", 2)
-			if len(p) == 2 {
-				headers.Add(strings.TrimSpace(p[0]), strings.TrimSpace(p[1]))
-			}
-		case "--":
-			if i+1 < len(args) {
-				target = args[i+1]
-			}
-			i = len(args)
-		default:
-			if strings.HasPrefix(a, "-") {
-				fatalf(prog, "unsupported option %q", a)
-				return 2
-			}
-			target = a
-		}
-	}
-	if target == "" {
-		fatalf(prog, "missing URL")
-		return 2
-	}
-	if !strings.Contains(target, "://") {
-		target = "http://" + target
-	}
-	req, err := http.NewRequest(method, target, strings.NewReader(data)) //nolint:gosec // G704: fetching a user-selected URL is this applet's purpose.
-	if err != nil {
-		fatalf(prog, "%v", err)
-		return 2
-	}
-	req.Header = headers
-	if verbose {
-		trace := &httptrace.ClientTrace{
-			ConnectStart: func(network, address string) {
-				fmt.Fprintf(os.Stderr, "* Connecting to %s over %s\n", address, network)
-			},
-			GotConn: func(info httptrace.GotConnInfo) {
-				fmt.Fprintf(os.Stderr, "* Connected to %s from %s\n", info.Conn.RemoteAddr(), info.Conn.LocalAddr())
-			},
-		}
-		req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
-		path := req.URL.RequestURI()
-		if path == "" {
-			path = "/"
-		}
-		host := req.Host
-		if host == "" {
-			host = req.URL.Host
-		}
-		fmt.Fprintf(os.Stderr, "> %s %s HTTP/1.1\n> Host: %s\n", req.Method, path, host)
-		for name, values := range req.Header {
-			for _, value := range values {
-				fmt.Fprintf(os.Stderr, "> %s: %s\n", name, value)
-			}
-		}
-		fmt.Fprintln(os.Stderr, ">")
-	}
-	client := &http.Client{Timeout: 60 * time.Second}
-	if !follow {
-		client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
-	}
-	resp, err := client.Do(req) //nolint:gosec // G704: fetching a user-selected URL is this applet's purpose.
-	if err != nil {
-		fatalf(prog, "%v", err)
-		return 1
-	}
-	defer resp.Body.Close()
-	if verbose {
-		fmt.Fprintf(os.Stderr, "< %s %s\n", resp.Proto, resp.Status)
-		for name, values := range resp.Header {
-			for _, value := range values {
-				fmt.Fprintf(os.Stderr, "< %s: %s\n", name, value)
-			}
-		}
-		fmt.Fprintln(os.Stderr, "<")
-	} else if !quiet {
-		fmt.Fprintf(os.Stderr, "%s: %s\n", prog, resp.Status)
-	}
-	if head {
-		if err := resp.Header.Write(os.Stdout); err != nil {
-			return 1
-		}
-		return 0
-	}
-	var w io.Writer = os.Stdout
-	var file *os.File
-	if output != "" && output != "-" {
-		file, err = os.Create(output)
-		if err != nil {
-			fatalf(prog, "%v", err)
-			return 1
-		}
-		defer file.Close()
-		w = file
-	} else if output == "" && prog == "wget" {
-		parsed, _ := url.Parse(target)
-		name := strings.TrimSuffix(parsed.Path, "/")
-		name = name[strings.LastIndex(name, "/")+1:]
-		if name == "" {
-			name = "index.html"
-		}
-		file, err = os.Create(name)
-		if err != nil {
-			return 1
-		}
-		defer file.Close()
-		w = file
-	}
-	var progress *downloadProgress
-	if prog == "wget" && !quiet {
-		progress = newDownloadProgress(w, os.Stderr, resp.ContentLength)
-		w = progress
-	}
-	_, err = io.Copy(w, io.LimitReader(resp.Body, 1<<34))
-	if progress != nil {
-		progress.finish()
-	}
-	if err != nil {
-		fatalf(prog, "%v", err)
-		return 1
-	}
-	if resp.StatusCode >= 400 {
-		return 1
-	}
-	return 0
 }
 
 func cmdNc(args []string) int {
@@ -681,4 +842,293 @@ func isTimeout(err error) bool {
 // resolver call.
 func timeoutContext(d time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), d)
+}
+
+// runFetchAll performs one transfer per URL. A -O/-o destination is opened once so
+// that several URLs concatenate into it, which is what both tools do.
+func runFetchAll(prog string, o *fetchOptions, targets []string) int {
+	var shared *os.File
+	if o.output != "" && o.output != "-" {
+		f, err := os.Create(o.output) //nolint:gosec // G304: writing the user-named output file is the applet's purpose.
+		if err != nil {
+			fatalf(prog, "%v", err)
+			return 1
+		}
+		defer f.Close()
+		shared = f
+	}
+	status := 0
+	for _, target := range targets {
+		if rc := runFetch(prog, o, target, shared); rc != 0 {
+			status = rc
+		}
+	}
+	return status
+}
+
+// fetchDestination decides where a transfer is written and, for wget, applies the
+// -P prefix, -nc skipping and the .1/.2 uniquifying that wget does by default.
+func fetchDestination(prog string, o *fetchOptions, target string) (name string, skip bool) {
+	parsed, err := url.Parse(target)
+	if err != nil {
+		return "", false
+	}
+	name = strings.TrimSuffix(parsed.Path, "/")
+	name = name[strings.LastIndex(name, "/")+1:]
+	if name == "" {
+		name = "index.html"
+	}
+	if o.directory != "" {
+		name = o.directory + "/" + name
+	}
+	if _, err := os.Stat(name); err != nil {
+		return name, false
+	}
+	if o.noClobber {
+		if !o.quiet {
+			fmt.Fprintf(os.Stderr, "%s: file %q already there; not retrieving\n", prog, name)
+		}
+		return name, true
+	}
+	if o.resume {
+		return name, false
+	}
+	for i := 1; ; i++ {
+		candidate := fmt.Sprintf("%s.%d", name, i)
+		if _, err := os.Stat(candidate); err != nil {
+			return candidate, false
+		}
+	}
+}
+
+// runFetch carries out a single transfer, retrying transport failures up to
+// o.tries times the way wget does.
+func runFetch(prog string, o *fetchOptions, target string, shared *os.File) int {
+	if !strings.Contains(target, "://") {
+		target = "http://" + target
+	}
+
+	destination := ""
+	if shared == nil && o.output != "-" && o.toFile {
+		skip := false
+		destination, skip = fetchDestination(prog, o, target)
+		if skip {
+			return 0
+		}
+	}
+
+	client := &http.Client{Timeout: o.timeout}
+	if o.insecure {
+		client.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // G402: --no-check-certificate/-k is an explicit request to skip verification.
+		}
+	}
+	redirects := o.maxRedirect
+	if !o.follow {
+		redirects = 0
+	}
+	client.CheckRedirect = func(_ *http.Request, via []*http.Request) error {
+		if len(via) >= redirects {
+			return http.ErrUseLastResponse
+		}
+		return nil
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= o.tries; attempt++ {
+		if prog == "wget" && !o.quiet && !o.noVerbose {
+			fmt.Fprintf(os.Stderr, "--%s--  %s\n", time.Now().Format("2006-01-02 15:04:05"), target)
+		}
+		status, err := fetchOnce(prog, o, target, destination, shared, client)
+		if err == nil {
+			return status
+		}
+		lastErr = err
+		if attempt < o.tries && !o.quiet {
+			fmt.Fprintf(os.Stderr, "%s: retrying (%d/%d): %v\n", prog, attempt, o.tries, err)
+		}
+	}
+	fatalf(prog, "%v", lastErr)
+	return 1
+}
+
+// fetchOnce runs one request. A transport-level failure is returned as an error so
+// the caller can retry; an HTTP error response is a final answer and returns a status.
+func fetchOnce(prog string, o *fetchOptions, target, destination string, shared *os.File,
+	client *http.Client) (int, error) {
+	req, err := http.NewRequest(o.method, target, strings.NewReader(o.body)) //nolint:gosec // G704: fetching a user-selected URL is this applet's purpose.
+	if err != nil {
+		return 2, err
+	}
+	req.Header = o.headers.Clone()
+	if o.userAgent != "" {
+		req.Header.Set("User-Agent", o.userAgent)
+	}
+	if o.user != "" {
+		req.SetBasicAuth(o.user, o.password)
+	}
+	if o.body != "" && req.Header.Get("Content-Type") == "" {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+
+	// wget -c asks the server to send only the part we are missing.
+	var resumeAt int64
+	if o.resume && destination != "" {
+		if info, statErr := os.Stat(destination); statErr == nil && info.Size() > 0 {
+			resumeAt = info.Size()
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", resumeAt))
+		}
+	}
+
+	if o.trace {
+		traceRequest(req)
+	}
+	resp, err := client.Do(req) //nolint:gosec // G704: fetching a user-selected URL is this applet's purpose.
+	if err != nil {
+		return 1, err
+	}
+	defer resp.Body.Close()
+
+	if o.trace {
+		fmt.Fprintf(os.Stderr, "< %s %s\n", resp.Proto, resp.Status)
+		for name, values := range resp.Header {
+			for _, value := range values {
+				fmt.Fprintf(os.Stderr, "< %s: %s\n", name, value)
+			}
+		}
+		fmt.Fprintln(os.Stderr, "<")
+	}
+	if prog == "wget" && !o.quiet && !o.noVerbose {
+		fmt.Fprintf(os.Stderr, "HTTP request sent, awaiting response... %s\n", resp.Status)
+		if resp.ContentLength >= 0 {
+			kind := resp.Header.Get("Content-Type")
+			if cut := strings.Index(kind, ";"); cut >= 0 {
+				kind = kind[:cut]
+			}
+			// wget only adds the human-readable size once it is worth reading.
+			size := strconv.FormatInt(resp.ContentLength, 10)
+			if resp.ContentLength >= 1024 {
+				size = fmt.Sprintf("%d (%s)", resp.ContentLength, humanSize(resp.ContentLength))
+			}
+			fmt.Fprintf(os.Stderr, "Length: %s [%s]\n", size, kind)
+		} else {
+			fmt.Fprintln(os.Stderr, "Length: unspecified")
+		}
+	}
+	if o.showHeaders {
+		out := os.Stderr
+		if prog == "curl" {
+			out = os.Stdout
+		}
+		fmt.Fprintf(out, "%s %s\n", resp.Proto, resp.Status)
+		if err := resp.Header.Write(out); err != nil {
+			return 1, nil
+		}
+		fmt.Fprintln(out)
+	}
+
+	failed := resp.StatusCode >= 400
+	if o.spider || o.headOnly {
+		if failed {
+			return serverErrorStatus(prog, o), nil
+		}
+		return 0, nil
+	}
+	if failed && o.failOnError {
+		return 22, nil // curl -f reports 22 and discards the body.
+	}
+
+	w, file, err := openFetchTarget(prog, o, destination, shared, resp, resumeAt)
+	if err != nil {
+		fatalf(prog, "%v", err)
+		return 1, nil
+	}
+	if file != nil {
+		defer file.Close()
+	}
+
+	var progress *downloadProgress
+	if o.progress && !o.quiet && !o.noVerbose {
+		if destination != "" {
+			fmt.Fprintf(os.Stderr, "Saving to: %q\n\n", destination)
+		}
+		progress = newDownloadProgress(w, os.Stderr, resp.ContentLength)
+		w = progress
+	}
+	written, err := io.Copy(w, io.LimitReader(resp.Body, 1<<34))
+	if progress != nil {
+		progress.finish()
+	}
+	if err != nil {
+		return 1, err
+	}
+	if prog == "wget" && !o.quiet && destination != "" {
+		fmt.Fprintf(os.Stderr, "%q saved [%d]\n", destination, resumeAt+written)
+	}
+	if failed {
+		return serverErrorStatus(prog, o), nil
+	}
+	return 0, nil
+}
+
+// openFetchTarget resolves the writer for a transfer, honouring an already-open
+// -O destination, a resumed download, or plain standard output.
+func openFetchTarget(prog string, o *fetchOptions, destination string, shared *os.File,
+	resp *http.Response, resumeAt int64) (io.Writer, *os.File, error) {
+	if shared != nil {
+		return shared, nil, nil
+	}
+	if destination == "" {
+		return os.Stdout, nil, nil
+	}
+	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
+	if resumeAt > 0 && resp.StatusCode == http.StatusPartialContent {
+		flags = os.O_CREATE | os.O_WRONLY | os.O_APPEND
+	} else if resumeAt > 0 && !o.quiet {
+		fmt.Fprintf(os.Stderr, "%s: server ignored the range request; restarting\n", prog)
+	}
+	file, err := os.OpenFile(destination, flags, 0o666) //nolint:gosec // G302,G304: the download follows the process umask and the user names the file.
+	if err != nil {
+		return nil, nil, err
+	}
+	return file, file, nil
+}
+
+// serverErrorStatus maps an HTTP error response onto each tool's exit code: wget
+// reports 8 for a server error, curl reports success unless -f was given.
+func serverErrorStatus(prog string, o *fetchOptions) int {
+	if prog == "wget" {
+		return 8
+	}
+	if o.failOnError {
+		return 22
+	}
+	return 0
+}
+
+func traceRequest(req *http.Request) {
+	trace := &httptrace.ClientTrace{
+		ConnectStart: func(network, address string) {
+			fmt.Fprintf(os.Stderr, "* Connecting to %s over %s\n", address, network)
+		},
+		GotConn: func(info httptrace.GotConnInfo) {
+			fmt.Fprintf(os.Stderr, "* Connected to %s from %s\n", info.Conn.RemoteAddr(), info.Conn.LocalAddr())
+		},
+	}
+	*req = *req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
+	path := req.URL.RequestURI()
+	if path == "" {
+		path = "/"
+	}
+	host := req.Host
+	if host == "" {
+		host = req.URL.Host
+	}
+	fmt.Fprintf(os.Stderr, "> %s %s HTTP/1.1\n> Host: %s\n", req.Method, path, host)
+	for name, values := range req.Header {
+		for _, value := range values {
+			fmt.Fprintf(os.Stderr, "> %s: %s\n", name, value)
+		}
+	}
+	fmt.Fprintln(os.Stderr, ">")
 }

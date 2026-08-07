@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 c0m4r
+
 // ba6 is a multicall binary: a single static executable that bundles several
 // basic Unix utilities. The applet to run is selected either by the basename
 // of argv[0] (when invoked through a symlink, e.g. /bin/cat -> ba6) or by the

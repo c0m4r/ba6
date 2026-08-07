@@ -220,3 +220,37 @@ redirections, and the `cd`, `pwd`, `echo`, `printf`, `read`, `export`, `unset`,
 it intentionally omits a programming language (`if`, loops, functions, and
 command substitution). Destructive commands include same-file, self-copy, and
 filesystem-root safeguards.
+
+See [COVERAGE.md](COVERAGE.md) for a measured, per-applet comparison against the
+original tools, and [PROVENANCE.md](PROVENANCE.md) for how the applets were written.
+
+## License
+
+Copyright (C) 2026 c0m4r.
+
+`ba6` is free software: you may redistribute it and/or modify it under the terms
+of the GNU General Public License as published by the Free Software Foundation,
+either version 3 of the License, or (at your option) any later version.
+
+It is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
+without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+PURPOSE. See the [GNU General Public License](LICENSE) for more details.
+
+Every source file carries an `SPDX-License-Identifier: GPL-3.0-or-later` tag.
+The binary bundles no third-party code: `go.mod` declares no dependencies, and
+the build links only the Go standard library.
+
+## Trademarks
+
+The applet names are the names of the commands `ba6` aims to be compatible with,
+used to identify those interfaces so that scripts and muscle memory keep working.
+They are not claims of origin.
+
+`ba6` is not affiliated with, endorsed by, or derived from the GNU Project, the
+Free Software Foundation, BusyBox, util-linux, procps-ng, iproute2, the netfilter
+project, the curl project, ISC, or any other upstream. All trademarks are the
+property of their respective owners.
+
+Applets differ from the originals in coverage and in behaviour; `COVERAGE.md`
+documents where. If you need the original tool's exact semantics, run the
+original tool.

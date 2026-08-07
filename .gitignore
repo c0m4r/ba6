@@ -1,1 +1,3 @@
 /ba6
+tools/coverage/*.json
+__pycache__
