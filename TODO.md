@@ -46,18 +46,18 @@ validation, fixture-based tests, and clearly documented filesystem support.
 - [ ] `nice`
 - [ ] `renice`
 - [ ] `nohup`
-- [ ] `watch`
+- [x] `watch`
 
 ## Kernel and system management
 
-- [ ] `sysctl`
+- [x] `sysctl`
 - [ ] `hwclock`
 - [ ] `lsusb`
 - [ ] `lspci`
 - [x] `passwd`
-- [ ] `useradd`
-- [ ] `groupadd`
-- [ ] `adduser`
+- [x] `useradd`
+- [x] `groupadd`
+- [x] `adduser`
 
 ## Diagnostics
 
@@ -83,15 +83,18 @@ validation, fixture-based tests, and clearly documented filesystem support.
 
 ## Archives, compression, and checksums
 
-- [ ] `cpio`
-- [ ] `unzip`
-- [ ] `zip`
-- [ ] `xz` and `unxz`
-- [ ] `bzip2` and `bunzip2`
-- [ ] `zstd` and `unzstd`
-- [ ] `md5sum`
-- [ ] `sha1sum`
-- [ ] `sha512sum`
+- [x] `cpio`
+- [x] `unzip`
+- [x] `zip`
+- [x] `xz` and `unxz`
+- [x] `bzip2` and `bunzip2`
+- [x] `zstd` and `unzstd`
+- [x] `md5sum`
+- [x] `sha1sum`
+- [x] `sha512sum`
+
+The self-contained XZ and Zstandard implementations use interoperable raw
+blocks (plus Zstandard RLE blocks), not the full compressed-block decoders.
 
 ## Existing applet improvements
 

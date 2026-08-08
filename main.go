@@ -23,17 +23,21 @@ type applet func(args []string) int
 
 var applets = map[string]applet{
 	"[":           cmdBracket,
+	"adduser":     cmdAdduser,
 	"awk":         cmdAwk,
 	"base64":      cmdBase64,
 	"basename":    cmdBasename,
 	"blkid":       cmdBlkid,
 	"blockdev":    cmdBlockdev,
+	"bunzip2":     cmdBunzip2,
+	"bzip2":       cmdBzip2,
 	"cat":         cmdCat,
 	"chgrp":       cmdChgrp,
 	"chmod":       cmdChmod,
 	"chown":       cmdChown,
 	"chroot":      cmdChroot,
 	"cp":          cmdCp,
+	"cpio":        cmdCpio,
 	"cmp":         cmdCmp,
 	"completion":  cmdCompletion,
 	"curl":        cmdCurl,
@@ -59,6 +63,7 @@ var applets = map[string]applet{
 	"fsck.ext4":   cmdFsckExt4,
 	"free":        cmdFree,
 	"grep":        cmdGrep,
+	"groupadd":    cmdGroupadd,
 	"gunzip":      cmdGunzip,
 	"gzip":        cmdGzip,
 	"halt":        cmdHalt,
@@ -90,6 +95,7 @@ var applets = map[string]applet{
 	"mkfs.xfs":    cmdMkfsXfs,
 	"mkswap":      cmdMkswap,
 	"mktemp":      cmdMktemp,
+	"md5sum":      cmdMd5sum,
 	"mknod":       cmdMknod,
 	"modprobe":    cmdModprobe,
 	"mtr":         cmdMtr,
@@ -121,6 +127,8 @@ var applets = map[string]applet{
 	"seq":         cmdSeq,
 	"sfdisk":      cmdSfdisk,
 	"sha256sum":   cmdSha256sum,
+	"sha1sum":     cmdSha1sum,
+	"sha512sum":   cmdSha512sum,
 	"sh":          cmdSh,
 	"sleep":       cmdSleep,
 	"sort":        cmdSort,
@@ -128,6 +136,7 @@ var applets = map[string]applet{
 	"stat":        cmdStat,
 	"strings":     cmdStrings,
 	"sync":        cmdSync,
+	"sysctl":      cmdSysctl,
 	"switch_root": cmdSwitchRoot,
 	"swapoff":     cmdSwapoff,
 	"swapon":      cmdSwapon,
@@ -142,16 +151,25 @@ var applets = map[string]applet{
 	"traceroute":  cmdTraceroute,
 	"tree":        cmdTree,
 	"true":        cmdTrue,
+	"tty":         cmdTty,
 	"uname":       cmdUname,
 	"udhcpc":      cmdUdhcpc,
 	"uniq":        cmdUniq,
 	"umount":      cmdUmount,
+	"unxz":        cmdUnxz,
+	"unzip":       cmdUnzip,
+	"unzstd":      cmdUnzstd,
 	"uptime":      cmdUptime,
+	"useradd":     cmdUseradd,
+	"watch":       cmdWatch,
 	"wc":          cmdWc,
 	"wget":        cmdWget,
 	"which":       cmdWhich,
 	"whoami":      cmdWhoami,
 	"xargs":       cmdXargs,
+	"xz":          cmdXz,
+	"zip":         cmdZip,
+	"zstd":        cmdZstd,
 }
 
 func main() {
@@ -210,7 +228,7 @@ func main() {
 func appletNeedsUnrestrictedSyscalls(name string) bool {
 	switch name {
 	case "chroot", "curl", "dig", "env", "init", "insmod", "login", "modprobe", "mount", "mtr", "nc", "nslookup", "ping",
-		"rmmod", "sh", "switch_root", "timeout", "traceroute", "udhcpc", "umount", "wget", "xargs":
+		"rmmod", "sh", "switch_root", "timeout", "traceroute", "udhcpc", "umount", "watch", "wget", "xargs":
 		return true
 	}
 	return false

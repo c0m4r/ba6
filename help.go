@@ -12,6 +12,16 @@ import (
 )
 
 var appletHelp = map[string]string{ //nolint:gosec // G101: command help contains words such as "prefix", not credentials.
+	"adduser": `Usage: adduser [USERADD_OPTION] USER
+       adduser USER GROUP
+Create a locked account with a private group and home directory, or add an
+existing account to GROUP. It accepts the documented useradd options.`,
+	"bzip2": `Usage: bzip2 [-cdkf] [FILE]...
+Compress files as bzip2 streams. -d decompresses, -c uses standard output, -k
+keeps inputs, and -f replaces an existing output.`,
+	"bunzip2": `Usage: bunzip2 [-ckf] [FILE]...
+Decompress bzip2 streams. -c uses standard output, -k keeps inputs, and -f
+replaces an existing output.`,
 	"blockdev": `Usage: blockdev OPERATION [VALUE] DEVICE
 Perform a focused Linux block-device ioctl.
 
@@ -46,6 +56,14 @@ Read-only structural validation for ext2, ext3, and ext4 filesystems.`,
 Read-only structural validation for ext2, ext3, and ext4 filesystems.`,
 	"fsck.ext4": `Usage: fsck.ext4 [-nfpav] DEVICE...
 Read-only structural validation for ext2, ext3, and ext4 filesystems.`,
+	"groupadd": `Usage: groupadd [-g GID] GROUP
+Create a local group in /etc/group. Requires root.`,
+	"cpio": `Usage: cpio -o|-i|-t [-v] [-F ARCHIVE] [-H newc]
+Create, extract, or list newc cpio archives. Create mode reads one input path
+per line from standard input; extraction rejects escaping paths.`,
+	"md5sum": `Usage: md5sum [OPTION]... [FILE]...
+Compute or check MD5 digests. -c verifies checksum files; -b/-t select the
+printed marker; --quiet and --status control verification output.`,
 	"mkfs": `Usage: mkfs -t ext2|ext3|ext4|xfs|btrfs [OPTION]... DEVICE [BLOCKS]
 Create a filesystem by dispatching to the matching bundled formatter. Each one
 writes a single carefully bounded profile rather than a configurable layout.`,
@@ -110,6 +128,9 @@ statistics, q quit.`,
 	"swapon": `Usage: swapon [-a] [-p PRIORITY] [DEVICE]...
 Enable swap devices using the Linux swapon syscall. -a reads swap entries from
 /etc/fstab. Requires CAP_SYS_ADMIN.`,
+	"sysctl": `Usage: sysctl [-an] [-w] NAME[=VALUE]...
+Read or write Linux /proc/sys settings. -a lists all settings, -n prints values
+without names, and -w requires assignments.`,
 	"swapoff": `Usage: swapoff [-a] [DEVICE]...
 Disable swap devices using the Linux swapoff syscall. -a reads /proc/swaps.
 Requires CAP_SYS_ADMIN.`,
@@ -360,6 +381,18 @@ Options:
   --help    show this help
 
 Exit status is 8 when the server answers with an error response.`,
+	"watch": `Usage: watch [-n SECONDS] [-t] COMMAND [ARG]...
+Run a command repeatedly. -n sets the interval (at least 0.1 seconds) and -t
+suppresses the title line.`,
+	"xz": `Usage: xz [-cdkfq] [FILE]...
+Encode the stream-compatible raw-LZMA2 XZ subset. -d decodes, -c uses standard
+output, -k keeps inputs, and -f replaces an existing output.`,
+	"zip": `Usage: zip [-r] [-0] ARCHIVE FILE...
+Create ZIP archives. -r descends into directories and -0 stores rather than
+deflates regular file data.`,
+	"zstd": `Usage: zstd [-cdkfq] [FILE]...
+Encode Zstandard raw blocks (and RLE blocks for uniform data). -d decodes, -c
+uses standard output, -k keeps inputs, and -f replaces an existing output.`,
 	"which": `Usage: which [-a] COMMAND...
 Print executable paths found through PATH.`,
 	"xargs": `Usage: xargs [-0r] [-n NUMBER] [-I REPLACE] [COMMAND [ARG]...]
@@ -483,6 +516,9 @@ Options:
 
 Supported commands are s/// with g, p, and i flags, d, p, q, and =.
 Line-number, $, /REGEX/, and two-address ranges are supported.`,
+	"sha1sum": `Usage: sha1sum [OPTION]... [FILE]...
+Compute or check SHA-1 digests. -c verifies checksum files; -b/-t select the
+printed marker; --quiet and --status control verification output.`,
 	"sha256sum": `Usage: sha256sum [OPTION]... [FILE]...
 Compute or check SHA-256 digests. FILE '-' means standard input.
 
@@ -492,6 +528,9 @@ Options:
   --status  produce no verification output
   -b/-t     mark the file as binary (*) or text ( ) in the output
   --help    show this help`,
+	"sha512sum": `Usage: sha512sum [OPTION]... [FILE]...
+Compute or check SHA-512 digests. -c verifies checksum files; -b/-t select the
+printed marker; --quiet and --status control verification output.`,
 	"tar": `Usage: tar -c|-x|-t [-zv] [-f ARCHIVE] [-C DIR] [FILE]...
 Create, extract, or list tar archives. ARCHIVE '-' means stdin/stdout.
 Extraction rejects escaping paths and is limited to 64 GiB of regular data.
@@ -828,6 +867,20 @@ Options:
   --dirsfirst  list directories before files
   --noreport   omit the closing count
   --help    show this help`,
+	"tty": `Usage: tty
+Report stdin's terminal path, or print "not a tty".`,
+	"unxz": `Usage: unxz [-ckf] [FILE]...
+Decode BA6's stream-compatible XZ raw-LZMA2 subset. -c uses standard output,
+-k keeps inputs, and -f replaces an existing output.`,
+	"unzip": `Usage: unzip [-l] [-d DIRECTORY] ARCHIVE [MEMBER]...
+List or safely extract ZIP archives. -l prints member names; extraction
+rejects paths and symbolic links that escape DIRECTORY.`,
+	"unzstd": `Usage: unzstd [-ckf] [FILE]...
+Decode Zstandard raw and RLE blocks. -c uses standard output, -k keeps inputs,
+and -f replaces an existing output.`,
+	"useradd": `Usage: useradd [-mM] [-u UID] [-g GROUP] [-G GROUP,...] [-d HOME] [-s SHELL] [-c COMMENT] USER
+Create a locked local account. Without -g it also creates a private group; -m
+creates HOME, while -M suppresses home creation. Requires root.`,
 	"ip": `Usage: ip [OPTION]... OBJECT COMMAND [ARG]...
 Show or change Linux links, addresses, neighbors, routes, and rules using rtnetlink.
 

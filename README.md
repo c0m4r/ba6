@@ -12,14 +12,15 @@ or `ba6 COMMAND --help` for the same documentation.
 The binary currently includes:
 
 ```text
-[ awk base64 basename blkid blockdev cat chgrp chmod chown chroot cmp completion cp curl cut date dd df diff dig
-dirname dmesg du echo env expr false fdisk file find free fsck fsck.ext2 fsck.ext3 fsck.ext4 grep
-gunzip gzip halt head help hexdump hostname id iftop init insmod ip iptables kill ln login losetup ls
-lsblk lsmod lsof man mkdir mkfs mkfs.btrfs mkfs.ext2 mkfs.ext3 mkfs.ext4 mkfs.xfs mkswap mktemp mknod
-modprobe mount mtr mv nano nc ncdu netstat nslookup
-od passwd pgrep pidof ping pkill poweroff printenv printf ps pwd readlink realpath reboot rm rmdir rmmod sed
-seq sfdisk sh sha256sum sleep sort ss stat strings swapoff swapon switch_root sync tail tar tee test
-timeout top touch tr traceroute tree true udhcpc umount uname uniq uptime wc wget which whoami xargs
+[ adduser awk base64 basename blkid blockdev bunzip2 bzip2 cat chgrp chmod chown chroot cmp completion cp
+cpio curl cut date dd df diff dig dirname dmesg du echo env expr false fdisk file find free fsck fsck.ext2
+fsck.ext3 fsck.ext4 grep groupadd gunzip gzip halt head help hexdump hostname id iftop init insmod ip iptables
+kill ln login losetup ls lsblk lsmod lsof man md5sum mkdir mkfs mkfs.btrfs mkfs.ext2 mkfs.ext3 mkfs.ext4
+mkfs.xfs mknod mkswap mktemp modprobe mount mtr mv nano nc ncdu netstat nslookup od passwd pgrep pidof ping
+pkill poweroff printenv printf ps pwd readlink realpath reboot rm rmdir rmmod sed seq sfdisk sh sha1sum
+sha256sum sha512sum sleep sort ss stat strings swapoff swapon switch_root sync sysctl tail tar tee test
+timeout top touch tr traceroute tree true tty udhcpc umount uname uniq unxz unzip unzstd uptime useradd watch
+wc wget which whoami xargs xz zip zstd
 ```
 
 ## Bash completion
@@ -87,6 +88,10 @@ unmirrored block groups from 128 MiB up. Their images are checked against
 system `e2fsck`, `xfs_repair`, and `btrfs check` in development. Text
 recovery gains focused AWK processing, block copying, file identification,
 secure temporary files, command timeouts, and process snapshots.
+Archive recovery now also includes safe ZIP and newc CPIO extraction, bzip2,
+and MD5/SHA-1/SHA-512 verification. The self-contained `xz` and `zstd`
+applets write interoperable raw-block streams (and Zstandard RLE blocks), so
+they deliberately do not implement general compressed-block decoding.
 `nano` is a compact full-screen editor with
 navigation, insertion/deletion, line cutting, saving (`Ctrl-S`), and guarded
 exit (`Ctrl-X`).

@@ -520,7 +520,7 @@ func TestEditorRefreshDoesNotWrapScreenRows(t *testing.T) {
 }
 
 func TestUnrestrictedAppletClassification(t *testing.T) {
-	for _, name := range []string{"sh", "init", "xargs", "mount", "ping", "wget", "nc"} {
+	for _, name := range []string{"sh", "init", "xargs", "mount", "ping", "watch", "wget", "nc"} {
 		if !appletNeedsUnrestrictedSyscalls(name) {
 			t.Errorf("%s should bypass seccomp", name)
 		}

@@ -311,29 +311,99 @@ func cmdMount(args []string) int {
 		fatalf("mount", "expected DEVICE DIRECTORY")
 		return 1
 	}
-	for _, o := range strings.Split(options, ",") {
-		switch o {
-		case "ro":
-			flags |= syscall.MS_RDONLY
-		case "rw", "defaults", "":
-		case "bind":
-			flags |= syscall.MS_BIND
-		case "remount":
-			flags |= syscall.MS_REMOUNT
-		case "nosuid":
-			flags |= syscall.MS_NOSUID
-		case "nodev":
-			flags |= syscall.MS_NODEV
-		case "noexec":
-			flags |= syscall.MS_NOEXEC
-		}
-	}
-	if err := syscall.Mount(operands[0], operands[1], fstype, flags, options); err != nil {
+	optionFlags, data := parseMountOptions(options)
+	flags |= optionFlags
+	if err := syscall.Mount(operands[0], operands[1], fstype, flags, data); err != nil {
 		fatalf("mount", "%v", err)
 		return 1
 	}
 	return 0
 }
+
+// MS_NOSYMFOLLOW is available in Linux, but syscall does not expose it on all
+// supported Go architectures.
+const msNoSymFollow = uintptr(0x100)
+
+// parseMountOptions separates VFS mount flags from filesystem-specific data.
+// Only valueless, recognized flag options are consumed; options with values
+// remain filesystem data verbatim so a future filesystem option cannot be
+// mistaken for a mount flag.
+func parseMountOptions(options string) (uintptr, string) {
+	flags := uintptr(0)
+	data := []string{}
+	for _, option := range strings.Split(options, ",") {
+		key, _, hasValue := strings.Cut(option, "=")
+		if hasValue {
+			data = append(data, option)
+			continue
+		}
+		switch key {
+		case "", "defaults":
+		case "ro":
+			flags |= syscall.MS_RDONLY
+		case "rw":
+			flags &^= syscall.MS_RDONLY
+		case "bind":
+			flags |= syscall.MS_BIND
+		case "rbind":
+			flags |= syscall.MS_BIND | syscall.MS_REC
+		case "remount":
+			flags |= syscall.MS_REMOUNT
+		case "nosuid":
+			flags |= syscall.MS_NOSUID
+		case "suid":
+			flags &^= syscall.MS_NOSUID
+		case "nodev":
+			flags |= syscall.MS_NODEV
+		case "dev":
+			flags &^= syscall.MS_NODEV
+		case "noexec":
+			flags |= syscall.MS_NOEXEC
+		case "exec":
+			flags &^= syscall.MS_NOEXEC
+		case "sync":
+			flags |= syscall.MS_SYNCHRONOUS
+		case "dirsync":
+			flags |= syscall.MS_DIRSYNC
+		case "noatime":
+			flags |= syscall.MS_NOATIME
+		case "atime":
+			flags &^= syscall.MS_NOATIME
+		case "nodiratime":
+			flags |= syscall.MS_NODIRATIME
+		case "diratime":
+			flags &^= syscall.MS_NODIRATIME
+		case "relatime":
+			flags |= syscall.MS_RELATIME
+		case "strictatime":
+			flags |= syscall.MS_STRICTATIME
+		case "nosymfollow":
+			flags |= msNoSymFollow
+		case "silent":
+			flags |= syscall.MS_SILENT
+		case "private":
+			flags |= syscall.MS_PRIVATE
+		case "rprivate":
+			flags |= syscall.MS_PRIVATE | syscall.MS_REC
+		case "shared":
+			flags |= syscall.MS_SHARED
+		case "rshared":
+			flags |= syscall.MS_SHARED | syscall.MS_REC
+		case "slave":
+			flags |= syscall.MS_SLAVE
+		case "rslave":
+			flags |= syscall.MS_SLAVE | syscall.MS_REC
+		case "unbindable":
+			flags |= syscall.MS_UNBINDABLE
+		case "runbindable":
+			flags |= syscall.MS_UNBINDABLE | syscall.MS_REC
+		default:
+			data = append(data, option)
+		}
+	}
+	return flags, strings.Join(data, ",")
+}
+
 func listMounts() int {
 	data, err := os.ReadFile("/proc/self/mounts")
 	if err != nil {
