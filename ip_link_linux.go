@@ -62,10 +62,32 @@ type linkSetSpec struct {
 }
 
 func ipLink(args []string) error {
-	if len(args) == 0 || args[0] == "show" || args[0] == "list" {
-		if len(args) > 0 {
-			args = args[1:]
+	if len(args) == 0 {
+		return showLinks("", false)
+	}
+	// ip(8) tests "set" before "show" for this object, so "ip l s eth0 up"
+	// configures the link and only "ip l sh" lists them.
+	switch {
+	case ipMatches(args[0], "add"):
+		spec, err := parseLinkAdd(args[1:])
+		if err != nil {
+			return err
 		}
+		return addLink(spec)
+	case ipMatches(args[0], "set", "change"):
+		spec, err := parseLinkSet(args[1:])
+		if err != nil {
+			return err
+		}
+		return setLink(spec)
+	case ipMatches(args[0], "delete"):
+		name, err := parseLinkName(args[1:])
+		if err != nil {
+			return err
+		}
+		return deleteLink(name)
+	case ipMatches(args[0], "show", "list", "lst"):
+		args = args[1:]
 		// "ip link show [dev IFACE] [up]" restricts the listing to running
 		// interfaces; the filter always comes last.
 		up := false
@@ -77,26 +99,6 @@ func ipLink(args []string) error {
 			return err
 		}
 		return showLinks(dev, up)
-	}
-	switch args[0] {
-	case "add":
-		spec, err := parseLinkAdd(args[1:])
-		if err != nil {
-			return err
-		}
-		return addLink(spec)
-	case "delete", "del":
-		name, err := parseLinkName(args[1:])
-		if err != nil {
-			return err
-		}
-		return deleteLink(name)
-	case "set":
-		spec, err := parseLinkSet(args[1:])
-		if err != nil {
-			return err
-		}
-		return setLink(spec)
 	default:
 		return fmt.Errorf("unknown link command %q", args[0])
 	}
@@ -194,16 +196,17 @@ func parseBondMode(value string) (uint8, error) {
 }
 
 func parseLinkName(args []string) (string, error) {
-	if len(args) == 2 && args[0] == "dev" {
+	if len(args) > 1 && args[0] == "dev" {
 		args = args[1:]
 	}
 	if len(args) != 1 {
 		return "", fmt.Errorf("expected one link name")
 	}
-	if err := validateLinkName(args[0]); err != nil {
+	name := args[0]
+	if err := validateLinkName(name); err != nil {
 		return "", err
 	}
-	return args[0], nil
+	return name, nil
 }
 
 func parseLinkSet(args []string) (linkSetSpec, error) {
@@ -399,14 +402,19 @@ type linkDetails struct {
 	alias    string
 }
 
-func showLinks(dev string, up bool) error {
+// readLinks dumps every interface through rtnetlink, ordered by index. It also
+// returns the index-to-name map the display needs for parent and master links.
+// The flags it reports are the ones the kernel exposes to userspace, so unlike
+// the sysfs "flags" file they include IFF_RUNNING and hide the internal
+// promiscuity counters.
+func readLinks() ([]linkDetails, map[int]string, error) {
 	rib, err := syscall.NetlinkRIB(syscall.RTM_GETLINK, syscall.AF_UNSPEC)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	messages, err := syscall.ParseNetlinkMessage(rib)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	var links []linkDetails
 	names := make(map[int]string)
@@ -416,7 +424,7 @@ func showLinks(dev string, up bool) error {
 		}
 		link, parseErr := parseLinkDetails(message.Data)
 		if parseErr != nil {
-			return parseErr
+			return nil, nil, parseErr
 		}
 		if link.name == "" {
 			continue
@@ -425,6 +433,14 @@ func showLinks(dev string, up bool) error {
 		links = append(links, link)
 	}
 	sort.Slice(links, func(i, j int) bool { return links[i].index < links[j].index })
+	return links, names, nil
+}
+
+func showLinks(dev string, up bool) error {
+	links, names, err := readLinks()
+	if err != nil {
+		return err
+	}
 	out := bufio.NewWriter(os.Stdout)
 	matched := false
 	for _, link := range links {

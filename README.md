@@ -16,10 +16,10 @@ The binary currently includes:
 dirname dmesg du echo env expr false fdisk file find free fsck fsck.ext2 fsck.ext3 fsck.ext4 grep
 gunzip gzip halt head help hexdump hostname id iftop init insmod ip iptables kill ln login losetup ls
 lsblk lsmod lsof man mkdir mkfs mkfs.btrfs mkfs.ext2 mkfs.ext3 mkfs.ext4 mkfs.xfs mkswap mktemp mknod
-modprobe mount mtr mv nano nc nslookup
+modprobe mount mtr mv nano nc ncdu netstat nslookup
 od passwd pgrep pidof ping pkill poweroff printenv printf ps pwd readlink realpath reboot rm rmdir rmmod sed
 seq sfdisk sh sha256sum sleep sort ss stat strings swapoff swapon switch_root sync tail tar tee test
-timeout top touch tr traceroute true udhcpc umount uname uniq uptime wc wget which whoami xargs
+timeout top touch tr traceroute tree true udhcpc umount uname uniq uptime wc wget which whoami xargs
 ```
 
 ## Bash completion
@@ -60,7 +60,14 @@ them and falling back to the UDP error queue otherwise. `mtr` refreshes a
 full-screen display on a terminal and prints an mtr-compatible report when its
 output is redirected or `-r` is given. `iftop` is a bounded batch sampler of
 per-interface `/proc/net/dev` counters rather than an interactive per-flow
-display.
+display. `netstat` reports sockets, the IPv4 routing table, and interface
+counters in the net-tools layout; it never resolves names, so `-r` shows numeric
+addresses apart from the default route. `ncdu` scans a directory and browses it
+on a full-screen display, strictly read-only: it can neither delete files nor
+spawn a shell. `tree` draws an indented directory listing.
+`ip` accepts abbreviated objects and commands the way the original resolves
+them, so `ip r s` lists routes and `ip l s eth0 up` brings a link up. `ps`
+accepts the dashless BSD options, including `ps aux` and `ps axu`.
 `init` provides a PID-1/container supervisor with process-group signal
 forwarding, orphan reaping, descendant cleanup, and exit-status propagation.
 Storage recovery includes filesystem signature probing, node creation, mounting,

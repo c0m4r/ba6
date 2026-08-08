@@ -58,19 +58,22 @@ object:
 		return 1
 	}
 	var err error
-	switch args[0] {
-	case "addr", "address", "a":
+	// The objects are tested in the order ip(8) lists them, because an
+	// abbreviation selects the first name it prefixes: "ip r" is route rather
+	// than rule, and "ip n" is neigh.
+	switch object := args[0]; {
+	case ipMatches(object, "address"):
 		err = ipAddress(family, args[1:])
-	case "link", "l":
-		err = ipLink(args[1:])
-	case "neighbor", "neighbour", "neigh", "n":
-		err = ipNeighbor(family, args[1:])
-	case "route", "r":
+	case ipMatches(object, "route"):
 		err = ipRoute(family, args[1:])
-	case "rule", "ru":
+	case ipMatches(object, "rule"):
 		err = ipRule(family, args[1:])
+	case ipMatches(object, "neighbor", "neighbour"):
+		err = ipNeighbor(family, args[1:])
+	case ipMatches(object, "link"):
+		err = ipLink(args[1:])
 	default:
-		fatalf("ip", "unknown object %q", args[0])
+		fatalf("ip", "unknown object %q", object)
 		return 1
 	}
 	if err != nil {
@@ -80,8 +83,26 @@ object:
 	return 0
 }
 
+// ipMatches reports whether word abbreviates one of the given names the way
+// ip(8) resolves its object and command words: any non-empty prefix selects the
+// first name it matches, so "ip r s" means "ip route show". Callers therefore
+// have to test names in the order iproute2 does, which is also why "ip l s" is
+// "link set" while "ip a s" is "addr show" -- the two objects list their
+// commands in a different order.
+func ipMatches(word string, names ...string) bool {
+	if word == "" {
+		return false
+	}
+	for _, name := range names {
+		if len(word) <= len(name) && name[:len(word)] == word {
+			return true
+		}
+	}
+	return false
+}
+
 func ipAddress(family int, args []string) error {
-	if len(args) == 0 || args[0] == "show" || args[0] == "list" || args[0] == "s" {
+	if len(args) == 0 || ipMatches(args[0], "show", "list", "lst") {
 		if len(args) > 0 {
 			args = args[1:]
 		}
@@ -91,11 +112,13 @@ func ipAddress(family int, args []string) error {
 		}
 		return showAddresses(family, dev)
 	}
-	operation := args[0]
-	if operation == "remove" {
+	var operation string
+	switch {
+	case ipMatches(args[0], "add"):
+		operation = "add"
+	case ipMatches(args[0], "delete"), args[0] == "remove":
 		operation = "del"
-	}
-	if operation != "add" && operation != "del" {
+	default:
 		return fmt.Errorf("unknown address command %q", args[0])
 	}
 	if len(args) < 4 || args[2] != "dev" || len(args) != 4 {
@@ -226,7 +249,7 @@ type routeSpec struct {
 }
 
 func ipRoute(family int, args []string) error {
-	if len(args) == 0 || args[0] == "show" || args[0] == "list" {
+	if len(args) == 0 || ipMatches(args[0], "show", "list", "lst") {
 		if len(args) > 0 {
 			args = args[1:]
 		}
@@ -236,14 +259,15 @@ func ipRoute(family int, args []string) error {
 		}
 		return showRoutes(family, dev)
 	}
-	if args[0] == "get" {
-		return routeGet(family, args[1:])
-	}
-	operation := args[0]
-	if operation == "remove" {
+	var operation string
+	switch {
+	case ipMatches(args[0], "add"):
+		operation = "add"
+	case ipMatches(args[0], "delete"), args[0] == "remove":
 		operation = "del"
-	}
-	if operation != "add" && operation != "del" {
+	case ipMatches(args[0], "get"):
+		return routeGet(family, args[1:])
+	default:
 		return fmt.Errorf("unknown route command %q", args[0])
 	}
 	spec, err := parseRouteSpec(family, args[1:])

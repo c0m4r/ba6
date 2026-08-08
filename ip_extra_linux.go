@@ -55,7 +55,7 @@ type neighborSpec struct {
 }
 
 func ipNeighbor(family int, args []string) error {
-	if len(args) == 0 || args[0] == "show" || args[0] == "list" {
+	if len(args) == 0 || ipMatches(args[0], "show", "list", "lst") {
 		if len(args) > 0 {
 			args = args[1:]
 		}
@@ -65,11 +65,15 @@ func ipNeighbor(family int, args []string) error {
 		}
 		return showNeighbors(family, dev)
 	}
-	operation := args[0]
-	if operation == "remove" {
+	var operation string
+	switch {
+	case ipMatches(args[0], "add"):
+		operation = "add"
+	case ipMatches(args[0], "replace"):
+		operation = "replace"
+	case ipMatches(args[0], "delete"), args[0] == "remove":
 		operation = "del"
-	}
-	if operation != "add" && operation != "replace" && operation != "del" {
+	default:
 		return fmt.Errorf("unknown neighbor command %q", args[0])
 	}
 	spec, err := parseNeighborSpec(family, args[1:])
@@ -238,18 +242,20 @@ type ruleSpec struct {
 }
 
 func ipRule(family int, args []string) error {
-	if len(args) == 0 || args[0] == "show" || args[0] == "list" {
+	if len(args) == 0 || ipMatches(args[0], "show", "list", "lst") {
 		if len(args) > 1 {
 			return fmt.Errorf("rule show takes no arguments")
 		}
 		return showRules(family)
 	}
-	operation := args[0]
-	if operation == "remove" {
+	var operation string
+	switch {
+	case ipMatches(args[0], "add"):
+		operation = "add"
+	case ipMatches(args[0], "delete"), args[0] == "remove":
 		operation = "del"
-	}
-	if operation != "add" && operation != "del" {
-		return fmt.Errorf("unknown rule command %q", operation)
+	default:
+		return fmt.Errorf("unknown rule command %q", args[0])
 	}
 	spec, err := parseRuleSpec(family, args[1:])
 	if err != nil {

@@ -438,29 +438,46 @@ func decodeSocketAddr(value string) string {
 	return decodeSocketAddrMode(value, false)
 }
 
-// decodeSocketAddrMode renders an address field, showing the IPv6 wildcard as
-// "[::]" when the socket is v6-only and as "*" when it also accepts IPv4.
-func decodeSocketAddrMode(value string, v6only bool) string {
+// parseProcSocketAddress splits one "ADDRESS:PORT" field of /proc/net into its
+// two parts. Both the IPv4 and IPv6 tables store the address as little-endian
+// 32-bit words, so each group of eight hex digits has to be put back into
+// network byte order; reading the digits as they appear gives an address that
+// is not merely unformatted but wrong.
+func parseProcSocketAddress(value string) (net.IP, uint64, bool) {
 	separator := strings.LastIndexByte(value, ':')
 	if separator < 0 {
-		return value
+		return nil, 0, false
 	}
 	digits := value[:separator]
 	if len(digits)%8 != 0 || len(digits) == 0 {
-		return value
+		return nil, 0, false
 	}
 	address := make(net.IP, 0, len(digits)/2)
 	for start := 0; start < len(digits); start += 8 {
 		word, err := strconv.ParseUint(digits[start:start+8], 16, 32)
 		if err != nil {
-			return value
+			return nil, 0, false
 		}
 		//nolint:gosec // The word is 32 bits and each conversion takes one byte of it.
 		address = append(address, byte(word), byte(word>>8), byte(word>>16), byte(word>>24))
 	}
+	port, err := strconv.ParseUint(value[separator+1:], 16, 16)
+	if err != nil {
+		return nil, 0, false
+	}
+	return address, port, true
+}
+
+// decodeSocketAddrMode renders an address field, showing the IPv6 wildcard as
+// "[::]" when the socket is v6-only and as "*" when it also accepts IPv4.
+func decodeSocketAddrMode(value string, v6only bool) string {
+	address, number, ok := parseProcSocketAddress(value)
+	if !ok {
+		return value
+	}
 	// An unset port is a wildcard, and so is an unspecified IPv6 address.
 	port := "*"
-	if number, err := strconv.ParseUint(value[separator+1:], 16, 16); err == nil && number != 0 {
+	if number != 0 {
 		port = strconv.FormatUint(number, 10)
 	}
 	switch {

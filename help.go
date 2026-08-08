@@ -292,6 +292,42 @@ Run a small shell supporting quoting, expansion, pipelines, redirection, and bas
 	"ss": `Usage: ss [-atuxlnp]
 Display TCP, UDP, and Unix sockets from /proc. Short options may be bundled.
 An unset port and an unspecified IPv6 address are shown as *.`,
+	"netstat": `Usage: netstat [-tuwxlanp] [-r] [-i]
+Display sockets, the routing table, or interface counters from /proc, in the
+net-tools layout. Short options may be bundled, so -tulpn is -t -u -l -p -n.
+
+Options:
+  -t/-u/-w/-x   select TCP, UDP, raw, or Unix sockets (default: all four)
+  -l            list only listening sockets
+  -a            list listening and connected sockets
+  -n            numeric output; addresses are never resolved
+  -p            show the PID and program holding each socket
+  -r            display the IPv4 routing table instead
+  -i            display the interface table instead
+  --help        show this help
+
+-p can only name processes the caller owns, unless netstat runs as root.`,
+	"ncdu": `Usage: ncdu [OPTION]... [DIRECTORY]
+Scan a directory and browse its disk usage on a full-screen display. The
+listing is ordered by size, with a bar drawn relative to the largest entry.
+This browser is strictly read-only: unlike the original it can neither delete
+files nor spawn a shell.
+
+Keys:
+  up/down, j/k        move the selection
+  right/enter, l      open the selected directory
+  left, h             go to the parent directory
+  n / s               sort by name / by size (s again reverses)
+  a                   switch between disk usage and apparent size
+  ? / q               show the key list / quit
+
+Options:
+  -x                  stay on one filesystem
+  --apparent-size     count file sizes instead of allocated blocks
+  --exclude PATTERN   skip entries matching PATTERN
+  --si                use powers of 1000 instead of 1024
+  -r, -q, -0/-1/-2    accepted for compatibility
+  --help              show this help`,
 	"strings": `Usage: strings [-n LENGTH] [FILE]...
 Print runs of printable bytes.`,
 	"sync": `Usage: sync
@@ -418,15 +454,23 @@ Options:
   -l [SIGNAL]
             list signal names or translate one signal
   --help    show this help`,
-	"ps": `Usage: ps [OPTION]...
+	"ps": `Usage: ps [OPTION]... [BSD OPTIONS] [PID]...
 Display processes by reading /proc. All processes are shown by default.
 
 Options:
   -e/-A     show all processes (default)
   -f        full output
   -p LIST   restrict output to comma-separated PIDs
-  -o LIST   columns: pid,ppid,uid,user,stat,vsz,rss,comm,args
-  --help    show this help`,
+  -o LIST   columns: pid,ppid,uid,user,stat,tty,vsz,rss,%cpu,%mem,
+            start,time,comm,args
+  --help    show this help
+
+BSD options are written without a dash and may be bundled:
+  a         processes that have a controlling terminal
+  x         processes belonging to the current user
+  u         user-oriented format, as in "ps aux"
+  A         every process
+  w         wide output; command lines are never truncated here`,
 	"sed": `Usage: sed [OPTION]... SCRIPT [FILE]...
 Apply a focused stream-editing language to input lines.
 
@@ -765,8 +809,31 @@ Options:
   -s        squeeze repeated bytes in the last SET
   -c/-C     complement SET1
   --help    show this help`,
+	"tree": `Usage: tree [OPTION]... [DIRECTORY]...
+List directories as an indented tree and close with a count of what was found.
+
+Options:
+  -a        include entries whose name begins with a dot
+  -d        list directories only
+  -f        print the full path of each entry
+  -F        append /, *, @, =, or | to mark the file type
+  -i        omit the indentation lines
+  -L LEVEL  descend at most LEVEL directories deep
+  -P PATTERN keep only files matching PATTERN
+  -I PATTERN skip entries matching PATTERN
+  -s/-h     show sizes in bytes / in human-readable units
+  -p        show permissions
+  -t/-r/-U  sort by modification time / reverse the order / do not sort
+  -n/-C     accepted for compatibility; output is never colored
+  --dirsfirst  list directories before files
+  --noreport   omit the closing count
+  --help    show this help`,
 	"ip": `Usage: ip [OPTION]... OBJECT COMMAND [ARG]...
 Show or change Linux links, addresses, neighbors, routes, and rules using rtnetlink.
+
+Objects and commands may be abbreviated to any unambiguous prefix, resolved in
+the order ip(8) lists them: "ip r s" is "ip route show" and "ip l s eth0 up" is
+"ip link set eth0 up". Use "ip l sh" for a link listing.
 
 Options:
   -4, -6        restrict the output to IPv4 or IPv6
