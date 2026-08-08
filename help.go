@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 )
 
 var appletHelp = map[string]string{ //nolint:gosec // G101: command help contains words such as "prefix", not credentials.
@@ -870,12 +871,8 @@ func writeGeneralHelp(w io.Writer) error {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	for _, name := range names {
-		if _, err := fmt.Fprintf(w, "  %s\n", name); err != nil {
-			return err
-		}
-	}
-	return nil
+	_, err := fmt.Fprintf(w, "  %s\n", strings.Join(names, " "))
+	return err
 }
 
 func cmdHelp(args []string) int {
