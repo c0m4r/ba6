@@ -764,11 +764,15 @@ Options:
   -s        squeeze repeated bytes in the last SET
   -c/-C     complement SET1
   --help    show this help`,
-	"ip": `Usage: ip OBJECT COMMAND [ARG]...
+	"ip": `Usage: ip [OPTION]... OBJECT COMMAND [ARG]...
 Show or change Linux links, addresses, neighbors, routes, and rules using rtnetlink.
 
+Options:
+  -4, -6        restrict the output to IPv4 or IPv6
+  -c[=WHEN]     accepted for compatibility; output is never colored
+
 Objects and commands:
-  ip link [show] [dev IFACE]
+  ip link [show] [dev IFACE] [up]
   ip link add NAME type bond [mode MODE] [miimon MS]
   ip link add link PARENT name NAME type vlan id VLAN_ID
   ip link set dev IFACE up|down

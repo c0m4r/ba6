@@ -66,11 +66,17 @@ func ipLink(args []string) error {
 		if len(args) > 0 {
 			args = args[1:]
 		}
+		// "ip link show [dev IFACE] [up]" restricts the listing to running
+		// interfaces; the filter always comes last.
+		up := false
+		if len(args) > 0 && args[len(args)-1] == "up" {
+			up, args = true, args[:len(args)-1]
+		}
 		dev, err := parseShowDev(args)
 		if err != nil {
 			return err
 		}
-		return showLinks(dev)
+		return showLinks(dev, up)
 	}
 	switch args[0] {
 	case "add":
@@ -393,7 +399,7 @@ type linkDetails struct {
 	alias    string
 }
 
-func showLinks(dev string) error {
+func showLinks(dev string, up bool) error {
 	rib, err := syscall.NetlinkRIB(syscall.RTM_GETLINK, syscall.AF_UNSPEC)
 	if err != nil {
 		return err
@@ -423,6 +429,9 @@ func showLinks(dev string) error {
 	matched := false
 	for _, link := range links {
 		if dev != "" && link.name != dev {
+			continue
+		}
+		if up && link.flags&syscall.IFF_UP == 0 {
 			continue
 		}
 		matched = true

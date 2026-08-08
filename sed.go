@@ -35,6 +35,7 @@ func (a *sedAddress) matches(text string, line int, last bool) bool {
 type sedCommand struct {
 	first, second *sedAddress
 	inRange       bool
+	negated       bool
 	kind          byte
 	regex         *regexp.Regexp
 	replacement   string
@@ -42,7 +43,13 @@ type sedCommand struct {
 	printOnChange bool
 }
 
+// selected reports whether the command applies to this line, honouring an
+// address negation such as "/TYPE := /,/}/!d".
 func (c *sedCommand) selected(text string, line int, last bool) bool {
+	return c.inAddress(text, line, last) != c.negated
+}
+
+func (c *sedCommand) inAddress(text string, line int, last bool) bool {
 	if c.second == nil {
 		return c.first.matches(text, line, last)
 	}
@@ -358,6 +365,15 @@ func parseSedScript(script string) ([]sedCommand, error) {
 		}
 		for position < len(script) && (script[position] == ' ' || script[position] == '\t') {
 			position++
+		}
+		if position < len(script) && script[position] == '!' {
+			command.negated, position = true, position+1
+			for position < len(script) && (script[position] == ' ' || script[position] == '\t') {
+				position++
+			}
+			if position < len(script) && script[position] == '!' {
+				return nil, fmt.Errorf("multiple '!'s")
+			}
 		}
 		if position >= len(script) {
 			return nil, fmt.Errorf("missing command")

@@ -24,6 +24,66 @@ func TestGrepMaxCountZeroSelectsNothing(t *testing.T) {
 	}
 }
 
+// TestAwkBashCompletionPrograms covers the programs the bash completions run,
+// which need brace-delimited blocks, if/else, sub() and comments. The expected
+// output is what gawk produces for the same input.
+func TestAwkBashCompletionPrograms(t *testing.T) {
+	cases := []struct {
+		name, program, input, output string
+	}{
+		{
+			name:    "available interfaces",
+			program: `/^[^ \t]/ { if ($1 ~ /^[0-9]+:/) { sub(/@.*/, "", $2); print $2 } else { print $1 } }`,
+			input:   "1: lo: <UP> mtu 65536\n2: veth0@if7: <UP> mtu 1500\n    link/ether 00:00:00:00:00:00\n",
+			output:  "lo:\nveth0\n",
+		},
+		{
+			name:    "systemd units",
+			program: "# leading comment\nsub(/\\.service$/, \"\", $1) { print $1; next }\nsub(/\\.service$/, \"\", $2) { print $2 }\n",
+			input:   "httpd.service loaded active\n* iptables.service not-found dead\nfoo.socket loaded active\n",
+			output:  "httpd\niptables\n",
+		},
+		{
+			name:    "else branch",
+			program: `{ if (NF > 2) print "wide"; else print "narrow" }`,
+			input:   "a b c\na b\n",
+			output:  "wide\nnarrow\n",
+		},
+		{
+			name:    "gsub counts replacements",
+			program: `{ print gsub(/o/, "0"), $0 }`,
+			input:   "foo boo\n",
+			output:  "4 f00 b00\n",
+		},
+		{
+			name:    "field assignment rebuilds the record",
+			program: `{ $2 = "X"; print }`,
+			input:   "a b c\n",
+			output:  "a X c\n",
+		},
+		{
+			name:    "ampersand keeps the match",
+			program: `{ sub(/b+/, "[&]"); sub(/a/, "\\&"); print }`,
+			input:   "abba\n",
+			output:  "&[bb]a\n",
+		},
+		{
+			name:    "bare regular expression matches the record",
+			program: `!/skip/ { print $1 }`,
+			input:   "keep me\nskip me\n",
+			output:  "keep\n",
+		},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			status, stdout, stderr := captureApplet(t, cmdAwk, []string{test.program}, test.input)
+			if status != 0 || stdout != test.output || stderr != "" {
+				t.Fatalf("status=%d stdout=%q stderr=%q", status, stdout, stderr)
+			}
+		})
+	}
+}
+
 func TestEchoControlCStopsBeforeNewline(t *testing.T) {
 	status, stdout, stderr := captureApplet(t, cmdEcho, []string{"-e", `before\cafter`}, "")
 	if status != 0 || stdout != "before" {

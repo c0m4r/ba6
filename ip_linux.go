@@ -34,12 +34,17 @@ var netlinkSequence atomic.Uint32
 func cmdIP(args []string) int {
 	family := syscall.AF_UNSPEC
 	for len(args) > 0 {
-		switch args[0] {
-		case "-4":
+		switch {
+		case args[0] == "-4":
 			family, args = syscall.AF_INET, args[1:]
-		case "-6":
+		case args[0] == "-6":
 			family, args = syscall.AF_INET6, args[1:]
-		case "--":
+		case args[0] == "-c", args[0] == "-color",
+			strings.HasPrefix(args[0], "-c="), strings.HasPrefix(args[0], "-color="):
+			// ba6 never colors its output, but scripts such as the bash
+			// completions call "ip -c=never link show" unconditionally.
+			args = args[1:]
+		case args[0] == "--":
 			args = args[1:]
 			goto object
 		default:

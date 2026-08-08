@@ -13,8 +13,14 @@ import (
 )
 
 // awk implements the small but useful record-processing subset most often
-// needed in recovery scripts. It deliberately keeps the language bounded: no
-// arrays, user functions, getline, redirection, or external command execution.
+// needed in recovery scripts: patterns, actions, if/else, statement blocks,
+// field assignment, and sub/gsub. It deliberately keeps the language bounded:
+// no arrays, loops, user functions, getline, redirection, or external command
+// execution.
+
+// awkFieldLimit caps how far a field assignment may extend a record so a stray
+// expression such as $999999999 = "" cannot exhaust memory.
+const awkFieldLimit = 1 << 16
 
 type awkRule struct {
 	pattern string
@@ -219,54 +225,168 @@ func (ctx *awkContext) field(number int) awkValue {
 	return awkLiteral(ctx.fields[number-1])
 }
 
+// setField assigns a field, rebuilding the record from the fields joined by
+// OFS the way awk does. Assigning $0 re-splits the record instead.
+func (ctx *awkContext) setField(number int, value string) error {
+	if number < 0 || number > awkFieldLimit {
+		return fmt.Errorf("invalid field $%d", number)
+	}
+	if number == 0 {
+		ctx.record = value
+		ctx.splitRecord()
+		return nil
+	}
+	for len(ctx.fields) < number {
+		ctx.fields = append(ctx.fields, "")
+	}
+	ctx.fields[number-1] = value
+	ctx.record = strings.Join(ctx.fields, ctx.get("OFS").text)
+	return nil
+}
+
+// awkLvalue names an assignable location: either a variable or a field.
+type awkLvalue struct {
+	name  string
+	field int
+	isSet bool
+}
+
+func (ctx *awkContext) read(target awkLvalue) awkValue {
+	if target.name == "" {
+		return ctx.field(target.field)
+	}
+	return ctx.get(target.name)
+}
+
+func (ctx *awkContext) assign(target awkLvalue, value awkValue) error {
+	if target.name == "" {
+		return ctx.setField(target.field, value.text)
+	}
+	ctx.vars[target.name] = value
+	return nil
+}
+
+// target resolves the left-hand side of an assignment, which is either a plain
+// variable name or a field reference such as $1 or $(NF - 1).
+func (ctx *awkContext) target(text string) (awkLvalue, error) {
+	text = strings.TrimSpace(text)
+	if validAwkName(text) {
+		return awkLvalue{name: text, isSet: true}, nil
+	}
+	if strings.HasPrefix(text, "$") {
+		index, err := ctx.eval(text[1:])
+		if err != nil {
+			return awkLvalue{}, err
+		}
+		return awkLvalue{field: int(index.asNumber()), isSet: true}, nil
+	}
+	return awkLvalue{}, fmt.Errorf("invalid assignment target %q", text)
+}
+
 func (ctx *awkContext) matches(pattern string) (bool, error) {
 	pattern = strings.TrimSpace(pattern)
 	if pattern == "" {
 		return true, nil
 	}
-	if len(pattern) >= 2 && pattern[0] == '/' && pattern[len(pattern)-1] == '/' {
-		re, err := regexp.Compile(pattern[1 : len(pattern)-1])
-		return err == nil && re.MatchString(ctx.record), err
-	}
 	value, err := ctx.eval(pattern)
-	return err == nil && value.truth(), err
+	if err != nil {
+		return false, err
+	}
+	return value.truth(), nil
 }
 
 func (ctx *awkContext) runAction(action string) error {
-	for _, statement := range splitAwkList(action, true) {
-		statement = strings.TrimSpace(statement)
-		if statement == "" {
-			continue
-		}
-		switch {
-		case statement == "next":
-			ctx.next = true
+	for position := 0; ; {
+		position = skipAwkSpace(action, position)
+		if position >= len(action) {
 			return nil
-		case statement == "exit" || strings.HasPrefix(statement, "exit "):
-			ctx.exiting = true
-			if expression := strings.TrimSpace(strings.TrimPrefix(statement, "exit")); expression != "" {
-				value, err := ctx.eval(expression)
-				if err != nil {
-					return err
-				}
-				ctx.exitStatus = int(value.asNumber())
-			}
-			return nil
-		case statement == "print" || strings.HasPrefix(statement, "print "):
-			if err := ctx.awkPrint(strings.TrimSpace(strings.TrimPrefix(statement, "print"))); err != nil {
-				return err
-			}
-		case strings.HasPrefix(statement, "printf "):
-			if err := ctx.awkPrintf(strings.TrimSpace(strings.TrimPrefix(statement, "printf"))); err != nil {
-				return err
-			}
-		default:
-			if err := ctx.awkAssignment(statement); err != nil {
-				return err
-			}
 		}
+		end := awkStatementEnd(action, position)
+		if err := ctx.runStatement(action[position:end]); err != nil {
+			return err
+		}
+		if ctx.next || ctx.exiting {
+			return nil
+		}
+		position = end
 	}
-	return nil
+}
+
+func (ctx *awkContext) runStatement(statement string) error {
+	statement = strings.TrimSpace(statement)
+	switch {
+	case statement == "":
+		return nil
+	case statement[0] == '{':
+		close, err := matchingAwkBracket(statement, 0)
+		if err != nil {
+			return err
+		}
+		if rest := strings.TrimSpace(statement[close+1:]); rest != "" {
+			return fmt.Errorf("unexpected text after block %q", rest)
+		}
+		return ctx.runAction(statement[1:close])
+	case awkKeyword(statement, "if"):
+		return ctx.runIf(statement)
+	case statement == "next":
+		ctx.next = true
+		return nil
+	case statement == "exit" || strings.HasPrefix(statement, "exit "):
+		ctx.exiting = true
+		if expression := strings.TrimSpace(strings.TrimPrefix(statement, "exit")); expression != "" {
+			value, err := ctx.eval(expression)
+			if err != nil {
+				return err
+			}
+			ctx.exitStatus = int(value.asNumber())
+		}
+		return nil
+	case statement == "print" || strings.HasPrefix(statement, "print "):
+		return ctx.awkPrint(strings.TrimSpace(strings.TrimPrefix(statement, "print")))
+	case strings.HasPrefix(statement, "printf "):
+		return ctx.awkPrintf(strings.TrimSpace(strings.TrimPrefix(statement, "printf")))
+	default:
+		return ctx.awkAssignment(statement)
+	}
+}
+
+func (ctx *awkContext) runIf(statement string) error {
+	condition, thenPart, elsePart, err := splitAwkIf(statement)
+	if err != nil {
+		return err
+	}
+	value, err := ctx.eval(condition)
+	if err != nil {
+		return err
+	}
+	if value.truth() {
+		return ctx.runStatement(thenPart)
+	}
+	return ctx.runStatement(elsePart)
+}
+
+// splitAwkIf breaks "if (condition) statement [else statement]" apart. The
+// statement must already be a single statement as delimited by awkStatementEnd.
+func splitAwkIf(statement string) (condition, thenPart, elsePart string, err error) {
+	rest := strings.TrimSpace(statement[len("if"):])
+	if !strings.HasPrefix(rest, "(") {
+		return "", "", "", fmt.Errorf("if requires a condition")
+	}
+	close, err := matchingAwkBracket(rest, 0)
+	if err != nil {
+		return "", "", "", err
+	}
+	condition = rest[1:close]
+	body := rest[close+1:]
+	end := awkStatementEnd(body, 0)
+	thenPart = body[:end]
+	tail := skipAwkSpace(body, end)
+	if awkKeyword(body[tail:], "else") {
+		elsePart = body[tail+len("else"):]
+	} else if remainder := strings.TrimSpace(body[tail:]); remainder != "" {
+		return "", "", "", fmt.Errorf("unexpected text after if %q", remainder)
+	}
+	return condition, thenPart, elsePart, nil
 }
 
 func (ctx *awkContext) awkPrint(expressions string) error {
@@ -274,7 +394,7 @@ func (ctx *awkContext) awkPrint(expressions string) error {
 		_, err := io.WriteString(os.Stdout, ctx.record+ctx.get("ORS").text)
 		return err
 	}
-	parts := splitAwkList(expressions, false)
+	parts := splitAwkArguments(expressions)
 	values := make([]string, 0, len(parts))
 	for _, part := range parts {
 		value, err := ctx.eval(part)
@@ -288,7 +408,7 @@ func (ctx *awkContext) awkPrint(expressions string) error {
 }
 
 func (ctx *awkContext) awkPrintf(expressions string) error {
-	parts := splitAwkList(expressions, false)
+	parts := splitAwkArguments(expressions)
 	if len(parts) == 0 {
 		return fmt.Errorf("printf requires a format")
 	}
@@ -306,39 +426,44 @@ func (ctx *awkContext) awkPrintf(expressions string) error {
 
 func (ctx *awkContext) awkAssignment(statement string) error {
 	for _, operator := range []string{"+=", "-=", "*=", "/=", "="} {
-		if position := findAwkOperator(statement, operator); position >= 0 {
-			name := strings.TrimSpace(statement[:position])
-			if !validAwkName(name) {
-				return fmt.Errorf("unsupported statement %q", statement)
+		position := findAwkOperator(statement, operator)
+		if position < 0 {
+			continue
+		}
+		target, err := ctx.target(statement[:position])
+		if err != nil {
+			return err
+		}
+		value, err := ctx.eval(statement[position+len(operator):])
+		if err != nil {
+			return err
+		}
+		current := ctx.read(target).asNumber()
+		switch operator {
+		case "+=":
+			value = awkNumber(current + value.asNumber())
+		case "-=":
+			value = awkNumber(current - value.asNumber())
+		case "*=":
+			value = awkNumber(current * value.asNumber())
+		case "/=":
+			if value.asNumber() == 0 {
+				return fmt.Errorf("division by zero")
 			}
-			value, err := ctx.eval(statement[position+len(operator):])
-			if err != nil {
-				return err
-			}
-			current := ctx.get(name).asNumber()
-			switch operator {
-			case "+=":
-				value = awkNumber(current + value.asNumber())
-			case "-=":
-				value = awkNumber(current - value.asNumber())
-			case "*=":
-				value = awkNumber(current * value.asNumber())
-			case "/=":
-				if value.asNumber() == 0 {
-					return fmt.Errorf("division by zero")
-				}
-				value = awkNumber(current / value.asNumber())
-			}
-			ctx.vars[name] = value
-			return nil
+			value = awkNumber(current / value.asNumber())
+		}
+		return ctx.assign(target, value)
+	}
+	if strings.HasSuffix(statement, "++") {
+		target, err := ctx.target(strings.TrimSuffix(statement, "++"))
+		if err == nil {
+			return ctx.assign(target, awkNumber(ctx.read(target).asNumber()+1))
 		}
 	}
-	if strings.HasSuffix(statement, "++") && validAwkName(strings.TrimSpace(strings.TrimSuffix(statement, "++"))) {
-		name := strings.TrimSpace(strings.TrimSuffix(statement, "++"))
-		ctx.vars[name] = awkNumber(ctx.get(name).asNumber() + 1)
-		return nil
-	}
-	return fmt.Errorf("unsupported statement %q", statement)
+	// Anything else is an expression statement, evaluated for its side effects
+	// such as sub() and gsub().
+	_, err := ctx.eval(statement)
+	return err
 }
 
 func (ctx *awkContext) eval(expression string) (awkValue, error) {
@@ -365,6 +490,12 @@ func tokenizeAwk(expression string) ([]awkToken, error) {
 			i++
 			continue
 		}
+		if expression[i] == '#' {
+			for i < len(expression) && expression[i] != '\n' {
+				i++
+			}
+			continue
+		}
 		if expression[i] == '"' {
 			start := i
 			i++
@@ -386,26 +517,24 @@ func tokenizeAwk(expression string) ([]awkToken, error) {
 			tokens = append(tokens, awkToken{kind: "string", text: value})
 			continue
 		}
-		if expression[i] == '/' {
-			// A slash following ~ or !~ begins a regular-expression literal;
-			// otherwise it is the division operator.
-			if len(tokens) > 0 && (tokens[len(tokens)-1].text == "~" || tokens[len(tokens)-1].text == "!~") {
-				start := i + 1
-				i++
-				for i < len(expression) && expression[i] != '/' {
-					if expression[i] == '\\' && i+1 < len(expression) {
-						i += 2
-					} else {
-						i++
-					}
+		if expression[i] == '/' && awkRegexOperand(tokens) {
+			// A slash where a value is expected begins a regular-expression
+			// literal; after a value it is the division operator.
+			start := i + 1
+			i++
+			for i < len(expression) && expression[i] != '/' {
+				if expression[i] == '\\' && i+1 < len(expression) {
+					i += 2
+				} else {
+					i++
 				}
-				if i >= len(expression) {
-					return nil, fmt.Errorf("unterminated regular expression")
-				}
-				tokens = append(tokens, awkToken{kind: "regex", text: expression[start:i]})
-				i++
-				continue
 			}
+			if i >= len(expression) {
+				return nil, fmt.Errorf("unterminated regular expression")
+			}
+			tokens = append(tokens, awkToken{kind: "regex", text: expression[start:i]})
+			i++
+			continue
 		}
 		if (expression[i] >= '0' && expression[i] <= '9') || expression[i] == '.' && i+1 < len(expression) && expression[i+1] >= '0' && expression[i+1] <= '9' {
 			start := i
@@ -448,6 +577,16 @@ func tokenizeAwk(expression string) ([]awkToken, error) {
 	return tokens, nil
 }
 
+// awkRegexOperand reports whether a slash following the tokens scanned so far
+// starts a regular-expression literal rather than the division operator.
+func awkRegexOperand(tokens []awkToken) bool {
+	if len(tokens) == 0 {
+		return true
+	}
+	last := tokens[len(tokens)-1]
+	return last.kind == "operator" && last.text != ")"
+}
+
 type awkExpressionParser struct {
 	tokens   []awkToken
 	position int
@@ -486,17 +625,20 @@ func (p *awkExpressionParser) parseCompare() (awkValue, error) {
 		return left, nil
 	}
 	p.position++
+	if op == "~" || op == "!~" {
+		pattern, err := p.parseRegexOperand()
+		if err != nil {
+			return left, err
+		}
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			return left, err
+		}
+		return awkBool(re.MatchString(left.text) != (op == "!~")), nil
+	}
 	right, err := p.parseAdd()
 	if err != nil {
 		return left, err
-	}
-	if op == "~" || op == "!~" {
-		re, compileErr := regexp.Compile(right.text)
-		if compileErr != nil {
-			return left, compileErr
-		}
-		matched := re.MatchString(left.text)
-		return awkBool(matched != (op == "!~")), nil
 	}
 	numeric := left.numeric && right.numeric
 	var comparison int
@@ -603,18 +745,151 @@ func (p *awkExpressionParser) parsePrimary() (awkValue, error) {
 	token := p.tokens[p.position]
 	p.position++
 	switch token.kind {
-	case "string", "regex":
+	case "string":
 		return awkString(token.text), nil
+	case "regex":
+		// A bare regular expression is shorthand for matching it against $0.
+		re, err := regexp.Compile(token.text)
+		if err != nil {
+			return awkValue{}, err
+		}
+		return awkBool(re.MatchString(p.ctx.record)), nil
 	case "number":
 		number, err := strconv.ParseFloat(token.text, 64)
 		return awkNumber(number), err
 	case "name":
 		if p.take("(") {
+			if token.text == "sub" || token.text == "gsub" {
+				return p.substitute(token.text == "gsub")
+			}
 			return p.call(token.text)
 		}
 		return p.ctx.get(token.text), nil
 	}
 	return awkValue{}, fmt.Errorf("unexpected token %q", token.text)
+}
+
+// parseRegexOperand reads a pattern given either as a /regex/ literal or as an
+// expression producing the pattern text.
+func (p *awkExpressionParser) parseRegexOperand() (string, error) {
+	if p.position < len(p.tokens) && p.tokens[p.position].kind == "regex" {
+		pattern := p.tokens[p.position].text
+		p.position++
+		return pattern, nil
+	}
+	value, err := p.parseAdd()
+	return value.text, err
+}
+
+// parseLvalue reads an assignable target: a field such as $2 or a variable.
+func (p *awkExpressionParser) parseLvalue() (awkLvalue, error) {
+	if p.take("$") {
+		value, err := p.parseUnary()
+		if err != nil {
+			return awkLvalue{}, err
+		}
+		return awkLvalue{field: int(value.asNumber()), isSet: true}, nil
+	}
+	if p.position < len(p.tokens) && p.tokens[p.position].kind == "name" {
+		name := p.tokens[p.position].text
+		p.position++
+		return awkLvalue{name: name, isSet: true}, nil
+	}
+	return awkLvalue{}, fmt.Errorf("substitution target must be a field or variable")
+}
+
+// substitute implements sub(regex, replacement [, target]) and its gsub
+// variant, returning the number of replacements made.
+func (p *awkExpressionParser) substitute(global bool) (awkValue, error) {
+	pattern, err := p.parseRegexOperand()
+	if err != nil {
+		return awkValue{}, err
+	}
+	if !p.take(",") {
+		return awkValue{}, fmt.Errorf("sub requires a replacement")
+	}
+	replacement, err := p.parseOr()
+	if err != nil {
+		return awkValue{}, err
+	}
+	target := awkLvalue{isSet: true}
+	if p.take(",") {
+		if target, err = p.parseLvalue(); err != nil {
+			return awkValue{}, err
+		}
+	}
+	if !p.take(")") {
+		return awkValue{}, fmt.Errorf("missing )")
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return awkValue{}, err
+	}
+	text, count := awkSubstitute(re, p.ctx.read(target).text, replacement.text, global)
+	if count > 0 {
+		if err := p.ctx.assign(target, awkString(text)); err != nil {
+			return awkValue{}, err
+		}
+	}
+	return awkNumber(float64(count)), nil
+}
+
+// awkSubstitute replaces the first match, or every match when global is set,
+// expanding an unescaped & in the replacement to the matched text.
+func awkSubstitute(re *regexp.Regexp, text, replacement string, global bool) (string, int) {
+	var builder strings.Builder
+	count, position, previous := 0, 0, -1
+	for position <= len(text) {
+		match := re.FindStringIndex(text[position:])
+		if match == nil {
+			break
+		}
+		start, end := position+match[0], position+match[1]
+		empty := start == end
+		builder.WriteString(text[position:start])
+		if empty && start == previous {
+			// An empty match directly after a replacement is not a match.
+			if start < len(text) {
+				builder.WriteByte(text[start])
+			}
+			position = start + 1
+			continue
+		}
+		previous = end
+		builder.WriteString(awkReplacement(replacement, text[start:end]))
+		count++
+		position = end
+		if empty {
+			// An empty match must still make progress.
+			if end < len(text) {
+				builder.WriteByte(text[end])
+			}
+			position = end + 1
+		}
+		if !global {
+			break
+		}
+	}
+	if position < len(text) {
+		builder.WriteString(text[position:])
+	}
+	return builder.String(), count
+}
+
+func awkReplacement(replacement, matched string) string {
+	var builder strings.Builder
+	for i := 0; i < len(replacement); i++ {
+		switch {
+		case replacement[i] == '\\' && i+1 < len(replacement) && (replacement[i+1] == '&' || replacement[i+1] == '\\'):
+			builder.WriteByte(replacement[i+1])
+			i++
+		case replacement[i] == '&':
+			builder.WriteString(matched)
+		default:
+			builder.WriteByte(replacement[i])
+		}
+	}
+	return builder.String()
 }
 
 func (p *awkExpressionParser) call(name string) (awkValue, error) {
@@ -672,8 +947,10 @@ func (p *awkExpressionParser) call(name string) (awkValue, error) {
 	return awkValue{}, fmt.Errorf("unsupported function %s", name)
 }
 
+// take consumes the named operator. It matches operator tokens only, so that a
+// string literal such as "-" is never mistaken for one.
 func (p *awkExpressionParser) take(value string) bool {
-	if p.position < len(p.tokens) && p.tokens[p.position].text == value {
+	if p.position < len(p.tokens) && p.tokens[p.position].kind == "operator" && p.tokens[p.position].text == value {
 		p.position++
 		return true
 	}
@@ -696,14 +973,14 @@ func parseAwkProgram(program string) ([]awkRule, error) {
 		}
 		open := findAwkBrace(program, position)
 		if open < 0 {
-			pattern := strings.TrimSpace(program[position:])
+			pattern := strings.TrimSpace(awkStripComments(program[position:]))
 			if pattern != "" {
 				rules = append(rules, awkRule{pattern: pattern, action: "print", kind: "record"})
 			}
 			break
 		}
-		pattern := strings.TrimSpace(program[position:open])
-		close, err := matchingAwkBrace(program, open)
+		pattern := strings.TrimSpace(awkStripComments(program[position:open]))
+		close, err := matchingAwkBracket(program, open)
 		if err != nil {
 			return nil, err
 		}
@@ -714,105 +991,207 @@ func parseAwkProgram(program string) ([]awkRule, error) {
 		rules = append(rules, awkRule{pattern: pattern, action: program[open+1 : close], kind: kind})
 		position = close + 1
 	}
-	if len(rules) == 0 {
-		return nil, fmt.Errorf("empty program")
-	}
 	return rules, nil
 }
 
+// awkScan walks value from start, skipping string literals, regular
+// expressions and comments so that structural characters inside them are
+// ignored. visit receives each remaining position together with the current
+// bracket nesting depth, counted after an opener and after its closer, and
+// stops the scan by returning false.
+func awkScan(value string, start int, visit func(i, depth int) bool) {
+	previous := byte(0)
+	depth := 0
+	for i := start; i < len(value); {
+		character := value[i]
+		switch {
+		case character == '"', character == '/' && awkRegexStart(previous):
+			i = awkSkipLiteral(value, i)
+			previous = character
+			continue
+		case character == '#':
+			if !visit(i, depth) {
+				return
+			}
+			for i < len(value) && value[i] != '\n' {
+				i++
+			}
+			previous = 0
+			continue
+		case character == '(', character == '{':
+			depth++
+		case character == ')', character == '}':
+			depth--
+		}
+		if !visit(i, depth) {
+			return
+		}
+		if !strings.ContainsRune(" \t\r\n", rune(character)) {
+			previous = character
+		}
+		i++
+	}
+}
+
+// awkRegexStart reports whether a slash preceded by the given character begins
+// a regular-expression literal rather than a division.
+func awkRegexStart(previous byte) bool {
+	return previous == 0 || strings.IndexByte("(,{}~!&|=<>+-*%;", previous) >= 0
+}
+
+// awkStripComments removes # comments that lie outside string and regular
+// expression literals.
+func awkStripComments(value string) string {
+	var builder strings.Builder
+	kept := 0
+	awkScan(value, 0, func(i, depth int) bool {
+		if value[i] != '#' {
+			return true
+		}
+		builder.WriteString(value[kept:i])
+		kept = len(value)
+		if end := strings.IndexByte(value[i:], '\n'); end >= 0 {
+			kept = i + end
+		}
+		return true
+	})
+	if kept == 0 {
+		return value
+	}
+	builder.WriteString(value[kept:])
+	return builder.String()
+}
+
+// awkSkipLiteral returns the index just past the string or regular expression
+// literal beginning at i.
+func awkSkipLiteral(value string, i int) int {
+	quote := value[i]
+	for i++; i < len(value); i++ {
+		if value[i] == '\\' {
+			i++
+			continue
+		}
+		if value[i] == quote {
+			return i + 1
+		}
+	}
+	return len(value)
+}
+
 func findAwkBrace(value string, start int) int {
-	quoted, regex := false, false
-	for i := start; i < len(value); i++ {
-		if value[i] == '\\' && (quoted || regex) {
-			i++
-			continue
+	brace := -1
+	awkScan(value, start, func(i, depth int) bool {
+		if value[i] == '{' && depth == 1 {
+			brace = i
+			return false
 		}
-		switch value[i] {
-		case '"':
-			if !regex {
-				quoted = !quoted
-			}
-		case '/':
-			if !quoted {
-				regex = !regex
-			}
-		case '{':
-			if !quoted && !regex {
-				return i
-			}
-		}
-	}
-	return -1
+		return true
+	})
+	return brace
 }
 
-func matchingAwkBrace(value string, open int) (int, error) {
-	quoted := false
-	for i := open + 1; i < len(value); i++ {
-		if value[i] == '\\' && quoted {
-			i++
-			continue
-		}
-		if value[i] == '"' {
-			quoted = !quoted
-		} else if value[i] == '}' && !quoted {
-			return i, nil
-		}
+// matchingAwkBracket returns the index of the bracket closing the ( or { at
+// open, honouring nesting, literals and comments.
+func matchingAwkBracket(value string, open int) (int, error) {
+	closer := byte(')')
+	if value[open] == '{' {
+		closer = '}'
 	}
-	return 0, fmt.Errorf("missing }")
+	match := -1
+	awkScan(value, open, func(i, depth int) bool {
+		if value[i] == closer && depth == 0 {
+			match = i
+			return false
+		}
+		return true
+	})
+	if match < 0 {
+		return 0, fmt.Errorf("missing %c", closer)
+	}
+	return match, nil
 }
 
-func splitAwkList(value string, statements bool) []string {
+// awkStatementEnd returns the index just past the single statement beginning at
+// start. An if statement takes its trailing else branch with it, so that a
+// semicolon before the else does not terminate the statement.
+func awkStatementEnd(value string, start int) int {
+	start = skipAwkSpace(value, start)
+	if start >= len(value) {
+		return len(value)
+	}
+	if value[start] == '{' {
+		close, err := matchingAwkBracket(value, start)
+		if err != nil {
+			return len(value)
+		}
+		return close + 1
+	}
+	if awkKeyword(value[start:], "if") {
+		open := skipAwkSpace(value, start+len("if"))
+		if open >= len(value) || value[open] != '(' {
+			return len(value)
+		}
+		close, err := matchingAwkBracket(value, open)
+		if err != nil {
+			return len(value)
+		}
+		end := awkStatementEnd(value, close+1)
+		if tail := skipAwkSpace(value, end); awkKeyword(value[tail:], "else") {
+			return awkStatementEnd(value, tail+len("else"))
+		}
+		return end
+	}
+	end := len(value)
+	awkScan(value, start, func(i, depth int) bool {
+		if depth == 0 && (value[i] == ';' || value[i] == '\n') {
+			end = i
+			return false
+		}
+		return true
+	})
+	return end
+}
+
+// awkKeyword reports whether value begins with the keyword as a whole word.
+func awkKeyword(value, keyword string) bool {
+	if !strings.HasPrefix(value, keyword) {
+		return false
+	}
+	rest := value[len(keyword):]
+	return rest == "" || !isAwkNameStart(rest[0]) && (rest[0] < '0' || rest[0] > '9')
+}
+
+// splitAwkArguments splits a comma-separated expression list, ignoring commas
+// nested inside brackets or literals.
+func splitAwkArguments(value string) []string {
 	var parts []string
-	start, depth, quoted := 0, 0, false
-	for i := 0; i < len(value); i++ {
-		if value[i] == '\\' && quoted {
-			i++
-			continue
+	start := 0
+	awkScan(value, 0, func(i, depth int) bool {
+		if value[i] == ',' && depth == 0 {
+			parts = append(parts, value[start:i])
+			start = i + 1
 		}
-		switch value[i] {
-		case '"':
-			quoted = !quoted
-		case '(':
-			if !quoted {
-				depth++
-			}
-		case ')':
-			if !quoted {
-				depth--
-			}
-		case ',', ';', '\n':
-			separator := value[i] == ',' && !statements || value[i] != ',' && statements
-			if !quoted && depth == 0 && separator {
-				parts = append(parts, value[start:i])
-				start = i + 1
-			}
-		}
-	}
-	parts = append(parts, value[start:])
-	return parts
+		return true
+	})
+	return append(parts, value[start:])
 }
 
 func findAwkOperator(value, operator string) int {
-	quoted, depth := false, 0
-	for i := 0; i+len(operator) <= len(value); i++ {
-		if value[i] == '\\' && quoted {
-			i++
-			continue
+	position := -1
+	awkScan(value, 0, func(i, depth int) bool {
+		if depth != 0 || !strings.HasPrefix(value[i:], operator) {
+			return true
 		}
-		if value[i] == '"' {
-			quoted = !quoted
-		} else if !quoted && value[i] == '(' {
-			depth++
-		} else if !quoted && value[i] == ')' {
-			depth--
-		} else if !quoted && depth == 0 && strings.HasPrefix(value[i:], operator) {
-			if operator == "=" && i > 0 && strings.ContainsRune("!<>", rune(value[i-1])) {
-				continue
+		if operator == "=" {
+			// Skip the = of ==, !=, <= and >=, which are comparisons.
+			if i > 0 && strings.ContainsRune("!<>=", rune(value[i-1])) || strings.HasPrefix(value[i:], "==") {
+				return true
 			}
-			return i
 		}
-	}
-	return -1
+		position = i
+		return false
+	})
+	return position
 }
 
 func skipAwkSpace(value string, position int) int {

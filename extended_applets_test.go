@@ -100,6 +100,21 @@ func TestSedSubstitutionAddressesAndDelete(t *testing.T) {
 	if status != 0 || stdout != "x\nbetween\nx\n" {
 		t.Fatalf("sed regex range=(%d,%q,%q)", status, stdout, stderr)
 	}
+	// Negated addresses, as used by the iproute2 bash completion to keep only
+	// the "TYPE := { ... }" block of ip's help output.
+	status, stdout, stderr = captureApplet(t, cmdSed, []string{`/TYPE := /,/}/!d`},
+		"Usage: ip link add\nTYPE := { bridge |\n  veth }\ntrailing\n")
+	if status != 0 || stdout != "TYPE := { bridge |\n  veth }\n" {
+		t.Fatalf("sed negated range=(%d,%q,%q)", status, stdout, stderr)
+	}
+	status, stdout, stderr = captureApplet(t, cmdSed, []string{"-n", `$!p`}, "one\ntwo\n")
+	if status != 0 || stdout != "one\n" {
+		t.Fatalf("sed negated last line=(%d,%q,%q)", status, stdout, stderr)
+	}
+	status, _, stderr = captureApplet(t, cmdSed, []string{`/x/!!d`}, "x\n")
+	if status == 0 || !strings.Contains(stderr, "multiple") {
+		t.Fatalf("sed repeated negation=(%d,%q)", status, stderr)
+	}
 	dir := t.TempDir()
 	first := filepath.Join(dir, "first")
 	if err := os.WriteFile(first, []byte("first\nsecond\n"), 0o600); err != nil {

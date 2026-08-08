@@ -7,8 +7,27 @@ package main
 
 import (
 	"encoding/binary"
+	"strings"
 	"testing"
 )
+
+// TestIPColorOptionAndUpFilter covers the two invocations the iproute2 bash
+// completion makes: "ip -c=never link show" and "ip link show up".
+func TestIPColorOptionAndUpFilter(t *testing.T) {
+	status, _, stderr := captureApplet(t, cmdIP, []string{"-c=never", "link", "show", "dev", "ba6-absent0"}, "")
+	if status == 0 || !strings.Contains(stderr, "does not exist") {
+		t.Fatalf("ip -c=never=(%d,%q)", status, stderr)
+	}
+	status, stdout, stderr := captureApplet(t, cmdIP, []string{"link", "show", "up"}, "")
+	if status != 0 || stderr != "" {
+		t.Fatalf("ip link show up=(%d,%q)", status, stderr)
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(stdout, "\n"), "\n") {
+		if line != "" && !strings.Contains(line, "UP") {
+			t.Fatalf("ip link show up listed a down link: %q", line)
+		}
+	}
+}
 
 func TestParseBondLinkAdd(t *testing.T) {
 	spec, err := parseLinkAdd([]string{"bond0", "type", "bond", "mode", "active-backup", "miimon", "100"})
