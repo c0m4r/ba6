@@ -2,13 +2,19 @@
 
 > Applets marked _(run)_ were diffed against the real tool on a live system; _(src)_
 > means the option parser was read but the behaviour could not be executed side by
-> side (root-only or interactive applets). Everything below is measured, not
-> estimated — see [How this was measured](#how-this-was-measured).
+> side (root-only or interactive applets); _(no reference)_ means the original is not
+> installed on the measurement host, so nothing was compared. Everything below is
+> measured, not estimated — see [How this was measured](#how-this-was-measured).
 
 Measured 2026-08-07 against `ba6` at commit `e532a75`, 127 applets, on Manjaro.
-`make verify` passes, and `tools/coverage/behaviour_diff.sh` reports 31 of 33 cases
-byte-identical — the two that differ are the documented C-locale date format and
-`find`'s traversal order.
+`make verify` passes, and `tools/coverage/behaviour_diff.sh` reports 31 of 33
+executed cases byte-identical — the two that differ are the documented C-locale date
+format in `ls -l` and `find`'s traversal order. Two further `tree` cases skip here,
+because the original is not installed.
+
+Re-measured 2026-08-08 for the five applets the `netstat`/`ncdu`/`tree` change
+touched — `netstat`, `ncdu`, `tree`, `ps` and `ip` — bringing the binary to 130
+applets. Everything else in this document is unchanged from the 2026-08-07 pass.
 
 Several entries were re-measured later the same day as fixes landed: `wget` and
 `curl` after wget was given its own command line instead of sharing curl's; then
@@ -18,8 +24,10 @@ Several entries were re-measured later the same day as fixes landed: `wget` and
 `losetup` and `swapoff` after the second round of defects was fixed.
 
 **Short answer to "which are 1:1?"** — 14 applets are genuine drop-ins, 25 more are
-near-complete, 79 are partial or a narrow subset in ways that stay invisible until a
+near-complete, 82 are partial or a narrow subset in ways that stay invisible until a
 script reaches for a flag, and 9 have no upstream counterpart to compare against.
+`netstat` and `ps aux` are the closest of the recent additions: every invocation
+tested is byte-identical to net-tools and procps.
 Notably, the *filesystem* applets score badly on flags but produce images that pass
 `e2fsck`, `xfs_repair` and `btrfs check` cleanly — flag count is not the same as
 correctness in either direction.
@@ -35,8 +43,8 @@ the missing options listed per applet below.
 |---|---|---|
 | **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `pwd` `echo` `basename` `tr` `base64` `uname` `whoami` `true` `false` `printenv` `sleep` `mknod` `seq` `dirname` |
 | **B — near-complete** | Common paths match; a handful of real gaps | `cat` `wc` `head` `tail` `rm` `mkdir` `tee` `test` `[` `expr` `printf` `id` `mktemp` `kill` `timeout` `chroot` `blockdev` `stat` `env` `cmp` `sync` `dd` `sha256sum` `which` `rmdir` |
-| **C — partial** | Everyday cases work, well-known flags or output details missing | `ls` `cp` `mv` `ln` `touch` `sort` `uniq` `cut` `grep` `find` `du` `df` `date` `readlink` `realpath` `strings` `tar` `gzip` `gunzip` `chown` `chgrp` `free` `uptime` `hostname` `top` `wget` `lsof` `lsblk` `blkid` `mount` `umount` `losetup` `swapon` `swapoff` `mkswap` `ss` `ip` `iptables` `ping` `traceroute` `mtr` `nc` `nslookup` `curl` `iftop` `pgrep` `pkill` `pidof` `modprobe` `insmod` `rmmod` `lsmod` `fdisk` `sfdisk` `mkfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkfs.btrfs` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `login` `passwd` |
-| **D — narrow subset** | A slice of the original; do not treat as a replacement | `sh` `awk` `sed` `chmod` `od` `hexdump` `file` `diff` `xargs` `ps` `dig` `nano` `dmesg` |
+| **C — partial** | Everyday cases work, well-known flags or output details missing | `ls` `cp` `mv` `ln` `touch` `sort` `uniq` `cut` `grep` `find` `du` `df` `date` `readlink` `realpath` `strings` `tar` `gzip` `gunzip` `chown` `chgrp` `free` `uptime` `hostname` `top` `wget` `lsof` `lsblk` `blkid` `mount` `umount` `losetup` `swapon` `swapoff` `mkswap` `ss` `ip` `iptables` `ping` `traceroute` `mtr` `nc` `nslookup` `curl` `iftop` `pgrep` `pkill` `pidof` `modprobe` `insmod` `rmmod` `lsmod` `fdisk` `sfdisk` `mkfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkfs.btrfs` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `login` `passwd` `ps` `netstat` `tree` |
+| **D — narrow subset** | A slice of the original; do not treat as a replacement | `sh` `awk` `sed` `chmod` `od` `hexdump` `file` `diff` `xargs` `ncdu` `dig` `nano` `dmesg` |
 | **N/A** | ba6-specific, no upstream counterpart | `help` `man` `completion` `init` `halt` `reboot` `poweroff` `switch_root` `udhcpc` |
 
 ## Open defects
@@ -63,6 +71,27 @@ with Go's `fork/exec` wording instead of `not found` and 127; and `cmp` said
 three EOF messages into one. The `cmp` entry below had wrongly recorded those as
 matching — they were checked by eye, not diffed, which is the failure mode the
 harness in `tools/coverage/` exists to prevent.
+
+That `cmp` fix went the wrong way, which the 2026-08-08 pass caught and corrected.
+The message is locale-dependent in the original: GNU diffutils 3.12 prints
+`differ: char N, line N` untranslated — the POSIX wording, which is what
+`LC_ALL=C cmp` gives — and `differ: byte N, line N` through its English message
+catalogue, which is what the tool prints on an ordinary system. ba6 now prints
+`byte`, so the two agree in the default locale; under `LC_ALL=C` the original says
+`char` and ba6 still says `byte`. The EOF messages are unaffected: they count in
+bytes in both, and ba6 quotes the file name with `'...'`, the ASCII form the
+original uses outside a UTF-8 locale, rather than the catalogue's `‘...’`.
+
+Four more surfaced on 2026-08-08, when the new BSD `ps` output was diffed line by
+line against procps, and were fixed with it. `defects_test.go` has no entry for
+them; they are pinned by `TestPsMatchesProcpsArithmetic` in `inspection_test.go`.
+
+| Was | Now |
+|---|---|
+| `RSS` came from the `rss` field of `/proc/PID/stat`, which reads ~6 % low (init: 14148 kB against ps's 15088) | the resident count comes from `/proc/PID/statm`, which agrees with `VmRSS` |
+| `%CPU` and `%MEM` were rounded, so two seconds of CPU over an hour printed `0.1` | both are computed in tenths with integer division and truncated, as ps does |
+| `START` was dated from `now - /proc/uptime`, so two runs a minute apart disagreed | the date comes from the kernel's `btime`, the same fixed instant ps uses |
+| `USER` was the real UID, so `fusermount3` was listed as the calling user | the effective UID is used, and a setuid program is listed as its owner |
 
 Fixing `ss` meant widening the seccomp policy in `seccomp_amd64.go` to admit
 `NETLINK_SOCK_DIAG` alongside the `NETLINK_ROUTE` and `NETLINK_NETFILTER` already
@@ -126,7 +155,7 @@ Absent behaviour rather than wrong behaviour, each of which touches many applets
 | `blockdev` | 12/26 | `--getpbsz` `--getiomin` `--getioopt` `--getalignoff` `--setbsz` `--getsize` `--getfra`/`--setfra` `--getdiskseq` `--getzonesz` `-q` `-v` | the 12 present cover the recovery cases _(src)_ |
 | `stat` | `-c` near-complete | `-f` `-t` `--printf`, and `%d %t %T %w %m %C` | **default (no `-c`) layout differs**: quotes the name, no column alignment, `Device: 42` vs `0,42`, no `Birth:` line. `%N` quotes with `"` instead of `'` _(run)_ |
 | `env` | 2/11 | `-0` `-C` `-S` `-a`, signal options | `-i` `-u` and `NAME=VAL` prefixes match _(run)_ |
-| `cmp` | 1/5 | `-b` `-i` `-l` `-n` | `-s`, the `char N, line N` difference message, all three EOF forms (`line`, `in line`, `which is empty`) and the exit codes match _(run)_ |
+| `cmp` | 1/5 | `-b` `-i` `-l` `-n` | `-s`, `differ: byte N, line N`, all three EOF forms (`line`, `in line`, `which is empty`) and the exit codes match; the EOF file name is quoted `'x'` where a UTF-8 locale gives GNU `‘x’` _(run)_ |
 | `sync` | 0/2 | `-d` `-f`, and **file operands** | bare `sync` is identical; `sync PATH` is rejected _(run)_ |
 | `dd` | 8/13 operands | `iflag=` `oflag=` `cbs=`, `conv=fsync\|fdatasync\|noerror\|swab\|excl\|ucase\|lcase`, `status=progress` | `if of bs ibs obs count skip seek conv=notrunc,sync status=none` produce byte-identical results to GNU on every combination tested, including stdin/stdout; the summary omits GNU's `, T s, R MB/s` tail _(run)_ |
 
@@ -248,11 +277,49 @@ but ignored). No `Recv-Q`/`Send-Q` columns, no service-name resolution, no proce
 attribution, and the `Netid` column says `tcp6`/`udp6` where the original says `tcp`
 and `udp` for both families. Missing `-s -e -m -i -o -r -f -K -H -Z --ipv4/--ipv6`.
 
-**`ip`** — objects `link`, `addr`, `route`, `neigh`, `rule` _(run)_. `route show` and
-`rule show` match closely; `link show` omits `qdisc`, `mode`, `group`, `qlen` and
-orders flags differently; `addr show` omits `valid_lft`/`preferred_lft` and reports a
-different state; `neigh show` lists multicast NOARP entries the original filters out.
-Global options: only `-4`/`-6` — **no `-br`, `-j`, `-s`, `-d`, `-o`, `-c`**.
+**`netstat`** — 13/21 _(run, vs net-tools 2.10)_. Eight invocations were diffed
+whole and came back **byte-identical**: `-tan`, `-uan`, `-tuwxan`, `-tulpn`, `-xl`,
+`-xlp`, `-rn` and `-i` — column widths, section headings, state names, the
+`PID/Program name` field taken from `argv[0]`, the not-root warning on stderr, and
+the `Flg` letters of the interface table all match. Present: `-t -u -w -x -l -a -n
+-p -r -i` plus `-e -v -W` accepted and ignored. **Names are never resolved**, so
+plain `netstat` and `netstat -r` print numeric addresses and ports where the
+original prints `HOST:https` and `_gateway`; only the default route is named.
+Missing `-s` (per-protocol statistics), `-A`, `-g`, `-M`, `-C`, `-F`, `-c`, `-o`,
+and the IPv6 routing table.
+
+**`ps`** — 10/58 documented options _(run, vs procps-ng 4.0.6)_, plus the BSD
+grammar an option count cannot see. **`ps aux` and `ps ax` are byte-identical** over
+all ~330 processes on this machine, bar rows whose `STAT` overflows its four-column
+field (`S<Lsl`), where this table recovers the grid one column earlier than procps
+does. Present: the dashless `a x u A w` and a bare PID list (`ps 1 2`), `-e`/`-A`,
+`-f`, `-p`, `-o`/`--format` over `pid ppid uid user stat tty vsz rss %cpu %mem start
+time comm args`, procps' column widths (PID sized from `pid_max`, `USER` clipped
+with `+`), and the `STAT` modifiers `< N L s l +`. The default with no options still
+lists **every** process as `PID STAT COMMAND`, where procps lists the caller's
+terminal as `PID TTY TIME CMD`; `-ef` keeps its ba6 layout. Missing the selection
+set (`-u -U -C -t -s -G --ppid`), `--sort`, `--forest`, `--no-headers`, `-l`, `-j`,
+`-L`, `-H`, `-w`.
+
+**`tree`** — _(no reference)_: `tree(1)` is not installed on the measurement host, so
+nothing here was diffed and the option list below is what ba6 accepts, not a
+coverage ratio. Present: `-a -d -f -F -i -L -P -I -s -h -p -t -r -U -n -C
+--dirsfirst --noreport`. Drawing, the `name -> target` form for symlinks, the
+`[error opening dir]` marker on the directory's own line, and the closing
+`N directories, M files` line follow the original's layout. Missing `-l` (follow
+symlinks), `-x`, `-D`, `-u`/`-g`, `-J`/`-X`/`-H` (JSON, XML, HTML), `--du`,
+`--prune`, `--filelimit`, `--timefmt`, `--charset`, `--matchdirs`, `--inodes`,
+`--device`, `--sort=`, `-o`.
+
+**`ip`** — objects `link`, `addr`, `route`, `neigh`, `rule` _(run)_. Objects and
+commands now accept **any unambiguous prefix**, resolved in the order iproute2
+resolves them, so `ip r s`, `ip a s`, `ip n s`, `ip ru s` and `ip l sh` all list and
+`ip l s eth0 up` sets — including the trap that `s` means `set` for `link` but
+`show` for every other object. `route show` and `rule show` match closely;
+`link show` omits `qdisc`, `mode`, `group`, `qlen` and orders flags differently;
+`addr show` omits `valid_lft`/`preferred_lft` and reports a different state;
+`neigh show` lists multicast NOARP entries the original filters out. Global options:
+only `-4`/`-6` — **no `-br`, `-j`, `-s`, `-d`, `-o`, `-c`**.
 
 **`iptables`** — 9/26 _(src)_. Commands `-A -D -F -L -P`; matches `-p -s -d --sport
 --dport`; `-j`, `-n`, `-v`, `--line-numbers`. Missing `-I -R -C -S -Z -N -X -E`, `-t`
@@ -394,12 +461,19 @@ Present: `-0 -r -n -I` (attached, spaced and `=` forms). Missing `-a -d -E -e -L
 **`nano`** _(run, help)_ — 6/50 options; a minimal full-screen editor, not GNU nano's
 key map, syntax highlighting, search/replace or multi-buffer support.
 
-**`ps`** _(run)_ — 7/60. **`ps aux` — the most common invocation there is — is
-rejected** (`unsupported operand "aux"`), and there is no BSD option grammar at all.
-The default table is BusyBox-style `PID STAT COMMAND` for *every* process, where
-procps prints `PID TTY TIME CMD` for the caller's terminal only; `-ef` prints a ba6
-layout (`USER PID PPID VSZ RSS STAT COMMAND`), unpadded. Working: `-e`/`-A`, `-p`,
-`-o`/`--format`. Missing: `-u -U -C -t -s -G --sort --forest --no-headers -L -H -j -l -w`.
+**`ncdu`** _(run, vs ncdu 2.9.2)_ — 6/37 options. The scan and the browser are
+there: the same nine-column size field, the same bar width (`columns / 7`) drawn
+against the largest entry in the directory, the `/..` row, the reverse-video header
+and footer, and the `*` that marks whether the totals are disk usage or apparent
+size. Compared screen against screen under a pseudo-terminal, the listing and both
+totals match. Keys present: arrows/`jkhl`, enter, `n`, `s`, `a`, `?`, `q`. Options
+present: `-x`, `--apparent-size`, `--exclude`, `--si`, with `-r`, `-q` and `-0/-1/-2`
+accepted. **Deliberately absent: file deletion, the shell escape and directory
+refresh** — the header says `[readonly]`, as ncdu's own `-r` does. Also missing the
+export/import pair `-o`/`-f`, extended mode `-e`, `--exclude-from`,
+`--exclude-caches`, `--exclude-kernfs`, `-L`, `-t`, the display toggles
+(`--show-itemcount`, `--show-mtime`, `--show-graph`, `--show-percent`,
+`--group-directories-first`, `--sort`), and the config file.
 
 **`dig`** _(run)_ — no flags at all; the name and type may now be given in either
 order. Formerly `dig +short A example.com` failed,
@@ -421,13 +495,14 @@ Ordered by how many applets each item moves, not by effort.
    is, and it currently fails outright.
 3. **`sort -k`/`-t`** — field sorting is what sort is for; without it the applet
    handles only whole-line ordering.
-4. **`--version` for all 127** — the last thing every original has and no applet here
+4. **`--version` for all 130** — the last thing every original has and no applet here
    does. `expandShortOptions` and the per-applet parsers now agree enough on shape
    that one shared entry point could carry it, along with `Try 'x --help'`.
 5. **`touch -d`/`-t`/`-r`** — the only reason to reach for touch besides creating a file.
 6. **`grep -o`/`-A`/`-B`/`-C`** and **`sed -i`** — the highest-frequency missing
    options in the two most-used text tools.
-7. **`ps aux`** — the invocation everyone types; today it errors out.
+7. **`ps` process selection** — `-u`, `-C`, `-t` and `--sort`. `ps aux` now matches
+   procps byte for byte, so picking *which* processes to list is the remaining gap.
 8. **`ss` `Recv-Q`/`Send-Q`** — the netlink query added for `IPV6_V6ONLY` already
    returns `idiag_rqueue` and `idiag_wqueue`; only the columns are missing.
 
@@ -454,6 +529,16 @@ Three independent passes, cross-checked against each other:
    This is where every defect in the list above came from; flag counts alone would
    have shown `tr` at 100% and never caught `rmdir` deleting files.
 
+The 2026-08-08 pass added three techniques for applets whose output is not a
+fixed string. `netstat` and `ps` read live kernel state, so each invocation was
+diffed whole against the original run seconds apart, and the volatile rows
+(kernel workers, the shell's own children) were filtered out before counting the
+differences that remained; that is how the four `ps` defects above were found.
+`ncdu` and the interactive side of `ip` were driven under a pseudo-terminal
+(`script -qc`, with `stty rows/cols` fixing the geometry), the escape sequences
+stripped, and the resulting screen compared with the original's. `tree` could not
+be measured at all: the package is not installed here.
+
 ### Reading the percentages
 
 A percentage is "option groups the original documents that ba6 also accepts". It is a
@@ -472,6 +557,11 @@ terminal, or an irreversible action: `iptables`, `mount`/`umount` writes, `swapo
 `iftop`, `traceroute`, `mtr`, `nano`. The `mkfs.*`, `fsck.*`, `fdisk` and `sfdisk`
 applets *were* executed — against image files rather than block devices — and
 validated with the vendor tools; `nc` was exercised over loopback.
+
+`tree` is the one applet with an upstream counterpart that was not compared at all,
+because `tree(1)` is not installed on this machine; its entry is marked
+_(no reference)_ and carries no percentage. `ncdu` *was* executed, under a
+pseudo-terminal, and is marked _(run)_ on that basis.
 
 `dd` is scored by operands rather than flags, since that is how the original is
 driven. `sh`, `awk`, `sed`, `find`, `test`, `expr`, `printf`, `ip`, `iptables` and

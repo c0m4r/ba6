@@ -502,8 +502,8 @@ func TestSocketAddressDistinguishesV6Only(t *testing.T) {
 	}
 }
 
-// cmp counts in "char" for a difference and in bytes for an EOF, and words the
-// EOF differently depending on whether the file stopped on a line boundary.
+// cmp counts in bytes for both a difference and an EOF, and words the EOF
+// differently depending on whether the file stopped on a line boundary.
 func TestCmpMessagesMatchTheOriginal(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name, content string) string {
@@ -515,7 +515,7 @@ func TestCmpMessagesMatchTheOriginal(t *testing.T) {
 	}
 	long := write("long", "abc\ndef\nghi\n")
 	for _, c := range []struct{ name, a, b, want string }{
-		{"difference", write("p", "abc\ndef\n"), write("q", "abc\ndeX\n"), "differ: char "},
+		{"difference", write("p", "abc\ndef\n"), write("q", "abc\ndeX\n"), "differ: byte 7, line 2"},
 		{"eof on a line boundary", long, write("whole", "abc\ndef\n"), "after byte 8, line 2"},
 		{"eof inside a line", long, write("part", "abc\nde"), "after byte 6, in line 2"},
 		{"empty file", long, write("empty", ""), "which is empty"},

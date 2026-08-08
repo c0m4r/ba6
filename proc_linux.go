@@ -31,6 +31,7 @@ type processInfo struct {
 	uid             uint32
 	user            string
 	state           string
+	locked          bool
 	nice            int
 	threads         int
 	vsz, rss        uint64
@@ -191,33 +192,44 @@ func splitPSColumns(value string) []string {
 	return strings.FieldsFunc(strings.ToLower(value), func(r rune) bool { return r == ',' || r == ' ' })
 }
 
-// psColumn describes one output column. ps(1) reserves a fixed width for most
-// columns: a numeric value wider than its column simply overflows and shifts
-// the rest of that row, while a name is cut short and marked with a trailing
-// "+". Only the PID and command columns are sized from the data.
+// psFit says what ps(1) does with a value wider than its column: it widens the
+// PID and command columns to fit, cuts a user name short and marks it with a
+// trailing "+", and lets everything else overflow, shifting the rest of that
+// row.
+type psFit int
+
+const (
+	psOverflow psFit = iota
+	psGrow
+	psClip
+)
+
+// psColumn describes one output column: its heading, whether values are
+// right-aligned, the width ps reserves for it, and what happens when a value
+// does not fit.
 type psColumn struct {
 	heading string
 	right   bool
 	width   int
-	grow    bool
+	fit     psFit
 	value   func(psRuntime, processInfo) string
 }
 
 var psColumns = map[string]psColumn{
-	"pid":   {"PID", true, 0, true, func(_ psRuntime, p processInfo) string { return strconv.Itoa(p.pid) }},
-	"ppid":  {"PPID", true, 0, true, func(_ psRuntime, p processInfo) string { return strconv.Itoa(p.ppid) }},
-	"uid":   {"UID", true, 5, true, func(_ psRuntime, p processInfo) string { return strconv.FormatUint(uint64(p.uid), 10) }},
-	"user":  {"USER", false, 8, false, func(_ psRuntime, p processInfo) string { return p.user }},
-	"stat":  {"STAT", false, 4, false, func(_ psRuntime, p processInfo) string { return psState(p) }},
-	"vsz":   {"VSZ", true, 6, false, func(_ psRuntime, p processInfo) string { return strconv.FormatUint((p.vsz+1023)/1024, 10) }},
-	"rss":   {"RSS", true, 5, false, func(_ psRuntime, p processInfo) string { return strconv.FormatUint((p.rss+1023)/1024, 10) }},
-	"pcpu":  {"%CPU", true, 4, false, func(r psRuntime, p processInfo) string { return fmt.Sprintf("%.1f", r.cpuPercent(p)) }},
-	"pmem":  {"%MEM", true, 4, false, func(r psRuntime, p processInfo) string { return fmt.Sprintf("%.1f", r.memoryPercent(p)) }},
-	"tty":   {"TTY", false, 8, false, func(_ psRuntime, p processInfo) string { return ttyName(p.tty) }},
-	"start": {"START", true, 5, false, func(r psRuntime, p processInfo) string { return r.startTime(p) }},
-	"time":  {"TIME", true, 6, false, func(_ psRuntime, p processInfo) string { return psCPUTime(p) }},
-	"comm":  {"COMMAND", false, 0, true, func(_ psRuntime, p processInfo) string { return p.comm }},
-	"args":  {"COMMAND", false, 0, true, func(_ psRuntime, p processInfo) string { return p.args }},
+	"pid":   {"PID", true, 0, psGrow, func(_ psRuntime, p processInfo) string { return strconv.Itoa(p.pid) }},
+	"ppid":  {"PPID", true, 0, psGrow, func(_ psRuntime, p processInfo) string { return strconv.Itoa(p.ppid) }},
+	"uid":   {"UID", true, 5, psGrow, func(_ psRuntime, p processInfo) string { return strconv.FormatUint(uint64(p.uid), 10) }},
+	"user":  {"USER", false, 8, psClip, func(_ psRuntime, p processInfo) string { return p.user }},
+	"stat":  {"STAT", false, 4, psOverflow, func(_ psRuntime, p processInfo) string { return psState(p) }},
+	"vsz":   {"VSZ", true, 6, psOverflow, func(_ psRuntime, p processInfo) string { return strconv.FormatUint((p.vsz+1023)/1024, 10) }},
+	"rss":   {"RSS", true, 5, psOverflow, func(_ psRuntime, p processInfo) string { return strconv.FormatUint((p.rss+1023)/1024, 10) }},
+	"pcpu":  {"%CPU", true, 4, psOverflow, func(r psRuntime, p processInfo) string { return r.cpuPercent(p) }},
+	"pmem":  {"%MEM", true, 4, psOverflow, func(r psRuntime, p processInfo) string { return r.memoryPercent(p) }},
+	"tty":   {"TTY", false, 8, psOverflow, func(_ psRuntime, p processInfo) string { return ttyName(p.tty) }},
+	"start": {"START", true, 5, psOverflow, func(r psRuntime, p processInfo) string { return r.startTime(p) }},
+	"time":  {"TIME", true, 6, psOverflow, func(_ psRuntime, p processInfo) string { return psCPUTime(p) }},
+	"comm":  {"COMMAND", false, 0, psGrow, func(_ psRuntime, p processInfo) string { return p.comm }},
+	"args":  {"COMMAND", false, 0, psGrow, func(_ psRuntime, p processInfo) string { return p.args }},
 }
 
 // psColumnName resolves the spellings ps(1) accepts for the same column.
@@ -249,6 +261,9 @@ func psState(p processInfo) string {
 		state += "<"
 	case p.nice > 0:
 		state += "N"
+	}
+	if p.locked {
+		state += "L"
 	}
 	if p.session == p.pid {
 		state += "s"
@@ -287,7 +302,19 @@ func newPSRuntime() psRuntime {
 			runtime.uptime, _ = strconv.ParseFloat(fields[0], 64)
 		}
 	}
+	// ps dates a process from the kernel's own boot timestamp, so that two runs
+	// a moment apart agree on the minute a process started.
 	runtime.boot = runtime.now.Add(-time.Duration(runtime.uptime * float64(time.Second)))
+	if data, err := os.ReadFile("/proc/stat"); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			if seconds, found := strings.CutPrefix(line, "btime "); found {
+				if epoch, convErr := strconv.ParseInt(strings.TrimSpace(seconds), 10, 64); convErr == nil {
+					runtime.boot = time.Unix(epoch, 0)
+				}
+				break
+			}
+		}
+	}
 	if values, err := readMeminfo(); err == nil {
 		runtime.memTotal = values["MemTotal"]
 	}
@@ -300,26 +327,39 @@ func newPSRuntime() psRuntime {
 	return runtime
 }
 
-func (r psRuntime) cpuPercent(p processInfo) float64 {
-	lifetime := r.uptime - float64(p.startTicks)/clockTicks
-	if lifetime <= 0 {
-		return 0
+// cpuPercent and memoryPercent mirror the integer arithmetic ps uses: both
+// figures are computed in tenths of a percent and truncated rather than
+// rounded, so two seconds of CPU spent over an hour of life reads 0.0.
+func (r psRuntime) cpuPercent(p processInfo) string {
+	elapsed := uint64(r.uptime) //nolint:gosec // G115: /proc/uptime is a nonnegative number of seconds.
+	started := p.startTicks / clockTicks
+	if elapsed <= started {
+		return "0.0"
 	}
-	return float64(p.utime+p.stime) / clockTicks / lifetime * 100
+	return psTenths((p.utime + p.stime) * 1000 / clockTicks / (elapsed - started))
 }
 
-func (r psRuntime) memoryPercent(p processInfo) float64 {
+func (r psRuntime) memoryPercent(p processInfo) string {
 	if r.memTotal == 0 {
-		return 0
+		return "0.0"
 	}
-	return float64(p.rss) / float64(r.memTotal) * 100
+	return psTenths(p.rss * 1000 / r.memTotal)
+}
+
+// psTenths prints a value given in tenths of a percent, dropping the decimal
+// once the figure reaches 100 percent, as ps does.
+func psTenths(tenths uint64) string {
+	if tenths > 999 {
+		return strconv.FormatUint(tenths/10, 10)
+	}
+	return fmt.Sprintf("%d.%d", tenths/10, tenths%10)
 }
 
 // startTime prints the wall-clock start of a process the way ps does: the time
 // of day for processes started today, the date within this year, and otherwise
 // the year alone.
 func (r psRuntime) startTime(p processInfo) string {
-	start := r.boot.Add(time.Duration(float64(p.startTicks) / clockTicks * float64(time.Second)))
+	start := r.boot.Add(time.Duration(p.startTicks/clockTicks) * time.Second) //nolint:gosec // G115: a tick count is nonnegative and well inside int64 seconds.
 	switch {
 	case start.Year() == r.now.Year() && start.YearDay() == r.now.YearDay():
 		return start.Format("15:04")
@@ -430,15 +470,34 @@ func readProcess(pid int) (processInfo, error) {
 	process.vsz, _ = strconv.ParseUint(fields[20], 10, 64)
 	rssPages, _ := strconv.ParseUint(fields[21], 10, 64)
 	process.rss = rssPages * uint64(os.Getpagesize()) //nolint:gosec // page size and RSS page count are nonnegative.
+	// ps reports the resident size from /proc/PID/statm, which agrees with
+	// VmRSS; the counter in stat leaves some resident pages out.
+	if resident, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "statm")); err == nil {
+		if columns := strings.Fields(string(resident)); len(columns) > 1 {
+			if pages, convErr := strconv.ParseUint(columns[1], 10, 64); convErr == nil {
+				process.rss = pages * uint64(os.Getpagesize()) //nolint:gosec // the page size is positive.
+			}
+		}
+	}
 	status, _ := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "status"))
 	for _, line := range strings.Split(string(status), "\n") {
-		if strings.HasPrefix(line, "Uid:") {
-			parts := strings.Fields(line)
-			if len(parts) > 1 {
-				value, _ := strconv.ParseUint(parts[1], 10, 32)
-				process.uid = uint32(value) //nolint:gosec // parsed with a 32-bit limit.
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
+			continue
+		}
+		switch parts[0] {
+		case "Uid:":
+			// Uid: lists the real, effective, saved and filesystem IDs; ps
+			// reports the effective one, so a setuid program shows its owner.
+			if len(parts) > 2 {
+				parts[1] = parts[2]
 			}
-			break
+			value, _ := strconv.ParseUint(parts[1], 10, 32)
+			process.uid = uint32(value) //nolint:gosec // parsed with a 32-bit limit.
+		case "VmLck:":
+			// Locked pages are what ps marks with "L" in the STAT column.
+			locked, _ := strconv.ParseUint(parts[1], 10, 64)
+			process.locked = locked > 0
 		}
 	}
 	process.user = strconv.FormatUint(uint64(process.uid), 10)
@@ -473,9 +532,9 @@ func writePS(processes []processInfo, columns []string, runtime psRuntime) {
 		for i, spec := range specs {
 			row[i] = spec.value(runtime, process)
 			switch {
-			case spec.grow:
+			case spec.fit == psGrow:
 				widths[i] = maxInt(widths[i], len(row[i]))
-			case !spec.right && len(row[i]) > widths[i]:
+			case spec.fit == psClip && len(row[i]) > widths[i]:
 				row[i] = row[i][:widths[i]-1] + "+"
 			}
 		}
@@ -495,20 +554,35 @@ func psHeadings(specs []psColumn) []string {
 	return headings
 }
 
+// writePSRow lays one row onto the column grid. ps keeps every column at a
+// fixed position: a value wider than its column pushes the next ones right,
+// and the first left-aligned column with padding to spare absorbs the overrun
+// so the grid recovers.
 func writePSRow(specs []psColumn, widths []int, fields []string) {
 	var line strings.Builder
+	target := 0
 	for i, field := range fields {
+		if i > 0 {
+			target++ // the single space between columns
+		}
+		target += widths[i]
+		// A numeric column is right-aligned on the grid: when an earlier value
+		// overflowed, its padding shrinks to the single separating space and
+		// the row starts catching up.
+		if specs[i].right {
+			padding := target - line.Len() - len(field)
+			if i > 0 && padding < 1 {
+				padding = 1
+			}
+			line.WriteString(strings.Repeat(" ", maxInt(0, padding)) + field)
+			continue
+		}
 		if i > 0 {
 			line.WriteByte(' ')
 		}
-		padding := widths[i] - len(field)
-		switch {
-		case i == len(fields)-1 && !specs[i].right:
-			line.WriteString(field)
-		case specs[i].right:
-			line.WriteString(strings.Repeat(" ", maxInt(0, padding)) + field)
-		default:
-			line.WriteString(field + strings.Repeat(" ", maxInt(0, padding)))
+		line.WriteString(field)
+		if i < len(fields)-1 {
+			line.WriteString(strings.Repeat(" ", maxInt(0, target-line.Len())))
 		}
 	}
 	fmt.Fprintln(os.Stdout, line.String())

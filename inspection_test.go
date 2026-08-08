@@ -295,6 +295,66 @@ func TestPsColumnValues(t *testing.T) {
 	}
 }
 
+// TestPsMatchesProcpsArithmetic pins the four differences from procps that the
+// 2026-08-08 side-by-side measurement of "ps aux" turned up.
+func TestPsMatchesProcpsArithmetic(t *testing.T) {
+	process, err := readProcess(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// RSS comes from statm, which agrees with VmRSS; the counter in stat is
+	// smaller.
+	status, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(status), "\n") {
+		if fields := strings.Fields(line); len(fields) > 1 && fields[0] == "VmRSS:" {
+			resident, convErr := strconv.ParseUint(fields[1], 10, 64)
+			if convErr != nil {
+				t.Fatal(convErr)
+			}
+			// The two readings are a moment apart, so allow a little drift.
+			if difference := int64(process.rss/1024) - int64(resident); difference > 512 || difference < -512 { //nolint:gosec // G115: both values are small.
+				t.Errorf("rss = %d kB, VmRSS = %d kB", process.rss/1024, resident)
+			}
+		}
+	}
+	// The user is the effective one, so a setuid program is listed as its owner.
+	if int(process.uid) != os.Geteuid() {
+		t.Errorf("uid = %d, want the effective %d", process.uid, os.Geteuid())
+	}
+	// Percentages are truncated to a tenth rather than rounded.
+	runtime := psRuntime{uptime: 3700, memTotal: 1000000}
+	if got := runtime.cpuPercent(processInfo{utime: 200}); got != "0.0" {
+		t.Errorf("cpuPercent(2s over 3700s) = %q, want 0.0", got)
+	}
+	if got := runtime.cpuPercent(processInfo{utime: 100 * 3700}); got != "100" {
+		t.Errorf("cpuPercent(full core) = %q", got)
+	}
+	if got := runtime.memoryPercent(processInfo{rss: 19999}); got != "1.9" {
+		t.Errorf("memoryPercent = %q, want 1.9", got)
+	}
+	// Start times are dated from the kernel's boot timestamp, not from the
+	// moment ps happened to read /proc/uptime.
+	boot := newPSRuntime().boot
+	data, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if seconds, found := strings.CutPrefix(line, "btime "); found {
+			epoch, convErr := strconv.ParseInt(strings.TrimSpace(seconds), 10, 64)
+			if convErr != nil {
+				t.Fatal(convErr)
+			}
+			if boot.Unix() != epoch {
+				t.Errorf("boot time = %d, want btime %d", boot.Unix(), epoch)
+			}
+		}
+	}
+}
+
 func TestPsUserFormatOutput(t *testing.T) {
 	status, stdout, stderr := captureApplet(t, cmdPs, []string{"axu"}, "")
 	if status != 0 || stderr != "" {

@@ -472,9 +472,11 @@ func cmdCmp(args []string) int {
 	for i := 0; i < limit; i++ {
 		if a[i] != b[i] {
 			if !silent {
-				// The original counts in "char" here even though the unit is a
-				// byte, and quotes the name only in the EOF message.
-				fmt.Printf("%s %s differ: char %d, line %d\n", args[0], args[1], i+1, line)
+				// The unit is a byte, and so is the word: GNU cmp's own message
+				// catalogue rewords the POSIX "char" of its untranslated string
+				// to "byte", which is what the tool prints on any ordinary
+				// system. The name is quoted only in the EOF message.
+				fmt.Printf("%s %s differ: byte %d, line %d\n", args[0], args[1], i+1, line)
 			}
 			return 1
 		}

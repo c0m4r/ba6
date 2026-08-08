@@ -21,7 +21,7 @@ BA6=${BA6:-$(cd "$(dirname "$0")/../.." && pwd)/ba6}
 ALLOWLIST="cat head tail wc sort uniq cut tr grep sed awk seq base64 sha256sum
 strings echo printf expr basename dirname realpath readlink date env printenv id
 whoami uname uptime free pwd df du ls stat file find cmp diff which test true
-false hexdump od"
+false hexdump od tree"
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
@@ -100,6 +100,10 @@ run cmp f.txt c.csv
 run find d -type f
 run id -u
 run uname -sm
+# tree is skipped where the package is absent, which is the case on the machine
+# these measurements were taken on.
+run tree d
+run tree -L 1 --noreport d
 
 echo
 echo "$same identical, $diff differing"
