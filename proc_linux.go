@@ -25,20 +25,25 @@ import (
 const clockTicks = 100
 
 type processInfo struct {
-	pid, ppid, pgrp int
-	session, tpgid  int
-	tty             int
-	uid             uint32
-	user            string
-	state           string
-	locked          bool
-	nice            int
-	threads         int
-	vsz, rss        uint64
-	utime, stime    uint64 // clock ticks of user and system time
-	startTicks      uint64 // clock ticks between boot and process start
-	comm            string
-	args            string
+	pid, ppid, pgrp  int
+	session, tpgid   int
+	tty              int
+	uid              uint32 // effective UID; this is the identity ps displays
+	realUID          uint32
+	savedUID         uint32
+	fsUID            uint32
+	user             string
+	state            string
+	locked           bool
+	priority         int
+	nice             int
+	threads          int
+	vsz, rss, shared uint64
+	utime, stime     uint64 // clock ticks of user and system time
+	cutime, cstime   uint64 // clock ticks used by waited-for children
+	startTicks       uint64 // clock ticks between boot and process start
+	comm             string
+	args             string
 }
 
 // psOptions holds one command line. Selection follows ps(1): the BSD options
@@ -464,6 +469,9 @@ func readProcess(pid int) (processInfo, error) {
 	process.tpgid, _ = strconv.Atoi(fields[5])
 	process.utime, _ = strconv.ParseUint(fields[11], 10, 64)
 	process.stime, _ = strconv.ParseUint(fields[12], 10, 64)
+	process.cutime, _ = strconv.ParseUint(fields[13], 10, 64)
+	process.cstime, _ = strconv.ParseUint(fields[14], 10, 64)
+	process.priority, _ = strconv.Atoi(fields[15])
 	process.nice, _ = strconv.Atoi(fields[16])
 	process.threads, _ = strconv.Atoi(fields[17])
 	process.startTicks, _ = strconv.ParseUint(fields[19], 10, 64)
@@ -477,6 +485,11 @@ func readProcess(pid int) (processInfo, error) {
 			if pages, convErr := strconv.ParseUint(columns[1], 10, 64); convErr == nil {
 				process.rss = pages * uint64(os.Getpagesize()) //nolint:gosec // the page size is positive.
 			}
+			if len(columns) > 2 {
+				if pages, convErr := strconv.ParseUint(columns[2], 10, 64); convErr == nil {
+					process.shared = pages * uint64(os.Getpagesize()) //nolint:gosec // the page size and shared-page count are nonnegative.
+				}
+			}
 		}
 	}
 	status, _ := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "status"))
@@ -487,13 +500,19 @@ func readProcess(pid int) (processInfo, error) {
 		}
 		switch parts[0] {
 		case "Uid:":
-			// Uid: lists the real, effective, saved and filesystem IDs; ps
-			// reports the effective one, so a setuid program shows its owner.
-			if len(parts) > 2 {
-				parts[1] = parts[2]
+			// Uid: lists the real, effective, saved and filesystem IDs. ps and
+			// top display the effective identity, while top's -U filter may
+			// intentionally match any of the four.
+			ids := []*uint32{&process.realUID, &process.uid, &process.savedUID, &process.fsUID}
+			for index, target := range ids {
+				if index+1 >= len(parts) {
+					break
+				}
+				value, convErr := strconv.ParseUint(parts[index+1], 10, 32)
+				if convErr == nil {
+					*target = uint32(value) //nolint:gosec // parsed with a 32-bit limit.
+				}
 			}
-			value, _ := strconv.ParseUint(parts[1], 10, 32)
-			process.uid = uint32(value) //nolint:gosec // parsed with a 32-bit limit.
 		case "VmLck:":
 			// Locked pages are what ps marks with "L" in the STAT column.
 			locked, _ := strconv.ParseUint(parts[1], 10, 64)

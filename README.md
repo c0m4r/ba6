@@ -61,7 +61,9 @@ them and falling back to the UDP error queue otherwise. `mtr` refreshes a
 full-screen display on a terminal and prints an mtr-compatible report when its
 output is redirected or `-r` is given. `iftop` is a bounded batch sampler of
 per-interface `/proc/net/dev` counters rather than an interactive per-flow
-display. `netstat` reports sockets, the IPv4 routing table, and interface
+display. `top` renders the usual task, CPU, memory, and swap summaries with
+procps-style task columns; it supports bounded batch collection for scripts and
+a small terminal key set for sorting and view toggles. `netstat` reports sockets, the IPv4 routing table, and interface
 counters in the net-tools layout; it never resolves names, so `-r` shows numeric
 addresses apart from the default route. `ncdu` scans a directory and browses it
 on a full-screen display, strictly read-only: it can neither delete files nor

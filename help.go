@@ -196,9 +196,33 @@ and execute NEW_INIT. NEW_ROOT must be a usable root filesystem.`,
 	"timeout": `Usage: timeout [-s SIGNAL] [-k DURATION] DURATION COMMAND [ARG]...
 Run COMMAND and signal its process group if it exceeds DURATION. Exit status
 124 indicates a timeout.`,
-	"top": `Usage: top [-b] [-n ITERATIONS] [-d DELAY]
-Display process, memory, uptime, and load snapshots. Output is batch-oriented;
-up to 25 processes are shown, ordered by lifetime-average CPU use.`,
+	"top": `Usage: top [OPTION]...
+Display a live Linux process monitor, or a script-friendly batch report.
+
+Options:
+  -b, --batch, --batch-mode     write reports without terminal control
+  -n, --iterations N            stop after N reports
+  -d, --delay SECONDS           wait between reports (default: 3)
+  -p, --pid PID[,PID...]        restrict the task list (may be repeated)
+  -u, --filter-only-euser USER  restrict to an effective user
+  -U, --filter-any-user USER    match any saved/real/effective user ID
+  -o, --sort-override FIELD     sort by PID, %CPU, %MEM, TIME+, VIRT, RES, ...
+  -O, --list-fields             list sortable field names and exit
+  -c, --cmdline-toggle          show full command lines
+  -H, --threads-show            show individual threads
+  -i, --idle-toggle             hide idle tasks after the first refresh
+  -S, --accum-time-toggle       include waited-for child CPU time
+  -E, --scale-summary-mem UNIT  summary unit: k, m, g, t, p, or e
+  -e, --scale-task-mem UNIT     task-memory unit: k, m, g, t, or p
+  -w, --width [COLUMNS]         limit report width (at most 512 columns)
+  -1, --single-cpu-toggle       print one CPU summary per core
+  -s, --secure-mode             accepted; ba6's display is always secure
+  -A, --apply-defaults          accepted alone; ba6 has no saved top config
+  -V, --version                 print the ba6 top identity
+
+On a terminal, q quits; SPACE refreshes; c, i, S, and 1 toggle their matching
+views; P, M, N, and T choose CPU, memory, PID, or time ordering; R reverses it.
+Redirected top emits one report unless -b or -n requests a longer run.`,
 	"traceroute": `Usage: traceroute [-46n] [-m HOPS] [-q PROBES] [-w SECONDS] HOST
 Trace an IPv4 or IPv6 route with increasing UDP hop limits and Linux's
 unprivileged UDP error queue. -n disables reverse DNS.`,

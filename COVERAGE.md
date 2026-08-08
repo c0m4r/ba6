@@ -23,8 +23,8 @@ Several entries were re-measured later the same day as fixes landed: `wget` and
 `rm` `mkdir` `stat` `cut` `tee` `base64` `env` `printenv` `blkid` `which`
 `losetup` and `swapoff` after the second round of defects was fixed.
 
-**Short answer to "which are 1:1?"** — 14 applets are genuine drop-ins, 25 more are
-near-complete, 82 are partial or a narrow subset in ways that stay invisible until a
+**Short answer to "which are 1:1?"** — 14 applets are genuine drop-ins, 26 more are
+near-complete, 81 are partial or a narrow subset in ways that stay invisible until a
 script reaches for a flag, and 9 have no upstream counterpart to compare against.
 `netstat` and `ps aux` are the closest of the recent additions: every invocation
 tested is byte-identical to net-tools and procps.
@@ -42,8 +42,8 @@ the missing options listed per applet below.
 | Tier | Meaning | Applets |
 |---|---|---|
 | **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `pwd` `echo` `basename` `tr` `base64` `uname` `whoami` `true` `false` `printenv` `sleep` `mknod` `seq` `dirname` |
-| **B — near-complete** | Common paths match; a handful of real gaps | `cat` `wc` `head` `tail` `rm` `mkdir` `tee` `test` `[` `expr` `printf` `id` `mktemp` `kill` `timeout` `chroot` `blockdev` `stat` `env` `cmp` `sync` `dd` `sha256sum` `which` `rmdir` |
-| **C — partial** | Everyday cases work, well-known flags or output details missing | `ls` `cp` `mv` `ln` `touch` `sort` `uniq` `cut` `grep` `find` `du` `df` `date` `readlink` `realpath` `strings` `tar` `gzip` `gunzip` `chown` `chgrp` `free` `uptime` `hostname` `top` `wget` `lsof` `lsblk` `blkid` `mount` `umount` `losetup` `swapon` `swapoff` `mkswap` `ss` `ip` `iptables` `ping` `traceroute` `mtr` `nc` `nslookup` `curl` `iftop` `pgrep` `pkill` `pidof` `modprobe` `insmod` `rmmod` `lsmod` `fdisk` `sfdisk` `mkfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkfs.btrfs` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `login` `passwd` `ps` `netstat` `tree` |
+| **B — near-complete** | Common paths match; a handful of real gaps | `cat` `wc` `head` `tail` `rm` `mkdir` `tee` `test` `[` `expr` `printf` `id` `mktemp` `kill` `timeout` `chroot` `blockdev` `stat` `env` `cmp` `sync` `dd` `sha256sum` `which` `rmdir` `top` |
+| **C — partial** | Everyday cases work, well-known flags or output details missing | `ls` `cp` `mv` `ln` `touch` `sort` `uniq` `cut` `grep` `find` `du` `df` `date` `readlink` `realpath` `strings` `tar` `gzip` `gunzip` `chown` `chgrp` `free` `uptime` `hostname` `wget` `lsof` `lsblk` `blkid` `mount` `umount` `losetup` `swapon` `swapoff` `mkswap` `ss` `ip` `iptables` `ping` `traceroute` `mtr` `nc` `nslookup` `curl` `iftop` `pgrep` `pkill` `pidof` `modprobe` `insmod` `rmmod` `lsmod` `fdisk` `sfdisk` `mkfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkfs.btrfs` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `login` `passwd` `ps` `netstat` `tree` |
 | **D — narrow subset** | A slice of the original; do not treat as a replacement | `sh` `awk` `sed` `chmod` `od` `hexdump` `file` `diff` `xargs` `ncdu` `dig` `nano` `dmesg` |
 | **N/A** | ba6-specific, no upstream counterpart | `help` `man` `completion` `init` `halt` `reboot` `poweroff` `switch_root` `udhcpc` |
 
@@ -158,6 +158,7 @@ Absent behaviour rather than wrong behaviour, each of which touches many applets
 | `cmp` | 1/5 | `-b` `-i` `-l` `-n` | `-s`, `differ: byte N, line N`, all three EOF forms (`line`, `in line`, `which is empty`) and the exit codes match; the EOF file name is quoted `'x'` where a UTF-8 locale gives GNU `‘x’` _(run)_ |
 | `sync` | 0/2 | `-d` `-f`, and **file operands** | bare `sync` is identical; `sync PATH` is rejected _(run)_ |
 | `dd` | 8/13 operands | `iflag=` `oflag=` `cbs=`, `conv=fsync\|fdatasync\|noerror\|swab\|excl\|ucase\|lcase`, `status=progress` | `if of bs ibs obs count skip seek conv=notrunc,sync status=none` produce byte-identical results to GNU on every combination tested, including stdin/stdout; the summary omits GNU's `, T s, R MB/s` tail _(run)_ |
+| `top` | common display paths | configuration files, alternate windows, field-layout editor, colour mapping, kill/renice prompts, and task-area scrolling | Provides the five standard summary lines; procps-style task columns; batch and terminal modes; `-b -n -d -p -u/-U -o/-O -c -H -i -S -E -e -w -1`; and basic live keys for sorting and view toggles. Dynamic CPU percentages use adjacent `/proc` snapshots rather than lifetime averages. |
 
 ### Tier C — partial
 
@@ -243,10 +244,6 @@ changes produced identical results to coreutils. Missing `-c -f -v --reference
 user count: `02:47:09 up 01:23, load average: …` vs `02:47:09 up 1:23, 1 user, load average: …`.
 
 **`hostname`** — 1/7 _(run)_. Bare form matches. Missing `-f -d -i -a -s -y -F`.
-
-**`top`** — 3/18 _(run)_. `-b -n -d` present. Header is 3 lines instead of 5 (no
-`%Cpu(s)` line, no Tasks state breakdown, no Swap line), the task table has different
-columns (`PID USER %CPU VSZ RSS STAT COMMAND`), and there are no interactive keys.
 
 **`lsof`** — 3/15 _(run)_. `-n -P -p -i` present. Missing `-c -u -t -d -s -F -g -x -R -a`.
 
@@ -495,7 +492,7 @@ Ordered by how many applets each item moves, not by effort.
    is, and it currently fails outright.
 3. **`sort -k`/`-t`** — field sorting is what sort is for; without it the applet
    handles only whole-line ordering.
-4. **`--version` for all 130** — the last thing every original has and no applet here
+4. **`--version` for the remaining 129** — the last thing most originals have and only `top` here
    does. `expandShortOptions` and the per-applet parsers now agree enough on shape
    that one shared entry point could carry it, along with `Try 'x --help'`.
 5. **`touch -d`/`-t`/`-r`** — the only reason to reach for touch besides creating a file.
