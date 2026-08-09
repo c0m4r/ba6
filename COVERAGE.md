@@ -168,14 +168,14 @@ Missing everything else, notably `-i` `-c` `-u` `-U` `-v` `-C` `-x` `-m` `-n` `-
 `-lh` matches GNU's rounding. Long format, symlink arrows, `total`, multi-directory
 headers and C-locale sort order all match.
 
-**`cp`** — 7/34 _(run)_. Present: `-r/-R -a -p -f -i -v`. Missing `-d -L -P -H -n -u
--l -s -t -T -x --parents --sparse --backup --reflink --remove-destination
+**`cp`** — 8/34 _(run)_. Present: `-r/-R -a -p -f -i -v --remove-destination`. Missing `-d -L -P -H -n -u
+-l -s -t -T -x --parents --sparse --backup --reflink
 --strip-trailing-slashes`. Basic copies, `-p` timestamps and the "into itself" guard match.
 
 **`mv`** — 4/16 _(run)_. Present: `-f -i -n -v`. Missing `-t -T -b -S -u --backup
 --exchange --strip-trailing-slashes`. Cross-device moves work.
 
-**`ln`** — 4/14 _(run)_. Present: `-s -f -v -T`. Missing `-n -r -b -i -d -L -P -S -t`.
+**`ln`** — 5/14 _(run)_. Present: `-s -f -n -v -T`. Missing `-r -b -i -d -L -P -S -t`.
 Hard and symbolic links match.
 
 **`touch`** — 3/8 _(src, run)_. Present: `-a -c -m`. **Missing `-d` `-t` `-r` `-h` `-f`**
@@ -192,7 +192,8 @@ Hard and symbolic links match.
 **`grep`** — 15/49 _(run, vs GNU grep 3.12)_. Present and byte-identical: `-c -n -i -w
 -x -v -l -H -h -q -e -m -E -F -r/-R`. Missing: **`-o` `-A` `-B` `-C` `-s` `--color`**,
 plus `-f -L -P -G -a -z -b -I --include --exclude --exclude-dir --binary-files`.
-Patterns are RE2, so BRE-only escapes and backreferences differ (documented).
+The default pattern syntax is POSIX BRE and `-E` uses POSIX ERE. Pattern
+backreferences are rejected because RE2 cannot implement them.
 
 **`find`** — predicates present: `-name -iname -path -ipath -type -size -mtime -newer
 -empty -maxdepth -mindepth -print -true -false -a/-and -o/-or -not` _(run)_; each of
@@ -422,6 +423,8 @@ substitution.
 **`awk`** _(run)_ — works: `BEGIN`/`END`, `/re/` and `$n ~ /re/` patterns, field and
 record variables (`NR NF FS OFS ORS FNR`), `print`, `printf`, `-F`, `-v`, `exit`,
 `next`, and the builtins `length`, `substr`, `index`, `int`, `tolower`, `toupper`.
+AWK regexes are POSIX EREs; a one-character `FS` is literal and a longer `FS`
+is an ERE. Pattern backreferences are rejected because RE2 cannot implement them.
 **Missing: `if`/`else`, `for`, `while`, `do`, arrays and `in`, user-defined functions,
 `split`, `gsub`/`sub`, `match`, `sprintf`, `getline`, assignment to fields (`$1="x"`),
 range patterns (`/a/,/b/`), output redirection, `ARGV`/`ENVIRON`/`SUBSEP`/`RSTART`.**
@@ -429,7 +432,9 @@ Roughly: one-liner projection and counting works, programs do not.
 
 **`sed`** _(run)_ — works: addresses (line number, `$`, `/re/`, and ranges of both),
 `s///` with `g`, `p`, `I` flags and `&`/`\1` backrefs, `d`, `p`, `=`, `q`, `-n`, `-e`,
-`-E`/`-r`, `-f`. **Missing commands: `a` `i` `c` `y` `n` `N` `D` `P` `h` `H` `g` `G`
+`-E`/`-r`, `-f`. The default syntax is POSIX BRE and `-E`/`-r` selects POSIX
+ERE; pattern backreferences are rejected because RE2 cannot implement them.
+**Missing commands: `a` `i` `c` `y` `n` `N` `D` `P` `h` `H` `g` `G`
 `x` `b` `t` `T` `:label` `r` `R` `w` `W` `l` `z` `F` `e`, and the numeric occurrence
 flag (`s///2`).** Missing options: **`-i`**, `-s`, `-z`, `-u`, `-l`, `--posix`.
 

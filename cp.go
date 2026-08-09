@@ -13,7 +13,8 @@ import (
 )
 
 // cmdCp implements cp(1): copy files and directories. Flags: -r/-R (recursive),
-// -f (force/overwrite), -i (prompt), -p (preserve mode & times), -v (verbose).
+// -f (force/overwrite), -i (prompt), -p (preserve mode & times), -v (verbose),
+// and --remove-destination (unlink before opening a replacement).
 // Multiple sources require the destination to be a directory.
 func cmdCp(args []string) int {
 	var (
@@ -22,6 +23,7 @@ func cmdCp(args []string) int {
 		preserve    bool
 		verbose     bool
 		interactive bool
+		removeDest  bool
 		srcs        []string
 	)
 
@@ -42,6 +44,8 @@ func cmdCp(args []string) int {
 			verbose = true
 		case a == "--interactive":
 			interactive, force = true, false
+		case a == "--remove-destination":
+			removeDest = true
 		case len(a) > 1 && a[0] == '-':
 			for _, c := range a[1:] {
 				switch c {
@@ -79,7 +83,7 @@ rest:
 
 	c := &copier{
 		recursive: recursive, force: force, preserve: preserve, verbose: verbose,
-		interactive: interactive, input: bufio.NewReader(os.Stdin),
+		interactive: interactive, removeDest: removeDest, input: bufio.NewReader(os.Stdin),
 	}
 
 	dstInfo, dstErr := os.Stat(dst)
@@ -110,6 +114,7 @@ type copier struct {
 	preserve    bool
 	verbose     bool
 	interactive bool
+	removeDest  bool
 	input       *bufio.Reader
 }
 
@@ -189,6 +194,15 @@ func (c *copier) copyFile(src, dst string, info os.FileInfo) (retErr error) {
 			if !confirmed {
 				return nil
 			}
+		}
+	}
+	if c.removeDest {
+		// Unlike -f's fallback, this happens before the destination is
+		// opened. It creates a new inode even when the old one is writable,
+		// so copying over a mapped shared library cannot truncate its live
+		// mapping in place.
+		if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
+			return err
 		}
 	}
 

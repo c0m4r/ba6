@@ -140,7 +140,9 @@ Process text as records and fields.
 Supported rules include BEGIN, END, /REGEX/, and expressions. Actions support
 print, printf, variable assignment and arithmetic assignment, next, and exit.
 Built-ins include NR, FNR, NF, FS, OFS, ORS, length, int, substr, tolower, and
-toupper. Arrays, user functions, getline, redirection, and system() are omitted.`,
+toupper. Regexes are POSIX EREs; a one-character FS (other than space) is
+literal, while a multi-character FS is an ERE. Arrays, user functions, getline,
+redirection, and system() are omitted.`,
 	"chroot": `Usage: chroot NEW_ROOT [COMMAND [ARG]...]
 Run COMMAND with NEW_ROOT as the filesystem root. The default command is
 /bin/sh -i. Requires appropriate privilege.`,
@@ -535,11 +537,12 @@ Options:
   -n        suppress default output
   -e SCRIPT add a script
   -f FILE   read a script from FILE
-  -E/-r     accept extended regular-expression syntax
+  -E/-r     use POSIX extended regular-expression syntax (the default is BRE)
   --help    show this help
 
 Supported commands are s/// with g, p, and i flags, d, p, q, and =.
-Line-number, $, /REGEX/, and two-address ranges are supported.`,
+Line-number, $, /REGEX/, and two-address ranges are supported. Regex
+backreferences in patterns are rejected because RE2 cannot implement them.`,
 	"sha1sum": `Usage: sha1sum [OPTION]... [FILE]...
 Compute or check SHA-1 digests. -c verifies checksum files; -b/-t select the
 printed marker; --quiet and --status control verification output.`,
@@ -555,7 +558,7 @@ Options:
 	"sha512sum": `Usage: sha512sum [OPTION]... [FILE]...
 Compute or check SHA-512 digests. -c verifies checksum files; -b/-t select the
 printed marker; --quiet and --status control verification output.`,
-	"tar": `Usage: tar -c|-x|-t [-zv] [-f ARCHIVE] [-C DIR] [FILE]...
+	"tar": `Usage: tar -c|-x|-t [-kzv] [-f ARCHIVE] [-C DIR] [FILE]...
 Create, extract, or list tar archives. ARCHIVE '-' means stdin/stdout.
 Extraction rejects escaping paths and is limited to 64 GiB of regular data.
 
@@ -566,6 +569,8 @@ Options:
   -f FILE   use FILE as the archive
   -z        filter the archive through gzip
   -v        list processed members
+  -k, --keep-old-files
+            keep existing files instead of replacing them while extracting
   -C DIR    read or extract relative to DIR
   --help    show this help`,
 	"uname": `Usage: uname [OPTION]...
@@ -642,6 +647,8 @@ Create hard links, or symbolic links with -s.
 Options:
   -s        make symbolic links
   -f        remove existing non-directory destinations
+  -n, --no-dereference
+            treat a destination symlink to a directory as a link name
   -T        always treat the last operand as a link name
   -v        print each link as it is created
   --help    show this help`,
@@ -727,12 +734,15 @@ Options:
   -l        print names of matching files
   -h/-H     suppress/force filename prefixes
   -w/-x     match whole words/whole lines
-  -F/-E     fixed strings/extended regular expressions
+  -F        match fixed strings
+  -E        use POSIX extended regular expressions (the default is BRE)
   -r/-R     recurse through directories
   -q        stop after the first match
   -e PAT    add a pattern
   -m NUM    stop after NUM matches per file
-  --help    show this help`,
+  --help    show this help
+
+Regex backreferences in patterns are rejected because RE2 cannot implement them.`,
 	"head": `Usage: head [OPTION]... [FILE]...
 Print the beginning of each FILE.
 
@@ -773,6 +783,8 @@ Options:
   -i        prompt before overwriting
   -p        preserve modes and timestamps
   -v        explain what is copied
+  --remove-destination
+            unlink a destination before copying a replacement
   --help    show this help`,
 	"mv": `Usage: mv [OPTION]... SOURCE... DEST
 Move or rename files and directories.

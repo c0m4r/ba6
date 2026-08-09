@@ -24,14 +24,15 @@ type grepOpts struct {
 	wholeWord  bool // -w
 	wholeLine  bool // -x
 	fixed      bool // -F: pattern is a literal string
+	extended   bool // -E: patterns use ERE rather than the default BRE
 	recursive  bool // -r/-R
 	quiet      bool // -q
 	maxCount   int  // -m, -1 = unlimited
 }
 
-// cmdGrep implements a useful subset of grep(1) backed by Go's RE2 engine
-// (so it supports -E/ERE syntax; basic-regex-only constructs like \( are not
-// emulated). Reads files given as operands, or stdin if none.
+// cmdGrep implements a useful subset of grep(1). Its default patterns are
+// POSIX BREs and -E selects POSIX EREs. RE2 supplies execution, after the
+// syntax has been translated and validated by the shared regex layer.
 func cmdGrep(args []string) int {
 	opts := grepOpts{maxCount: -1}
 	var pattern string
@@ -72,6 +73,9 @@ func cmdGrep(args []string) int {
 				continue
 			case a == "--fixed-strings":
 				opts.fixed = true
+				continue
+			case a == "--extended-regexp":
+				opts.extended = true
 				continue
 			case a == "--quiet" || a == "--silent":
 				opts.quiet = true
@@ -132,7 +136,7 @@ func cmdGrep(args []string) int {
 				case 'F':
 					opts.fixed = true
 				case 'E':
-					// RE2 is already ERE; accept for compatibility.
+					opts.extended = true
 				case 'r', 'R':
 					opts.recursive = true
 				case 'q':
@@ -228,20 +232,29 @@ func buildRegexp(patterns []string, opts grepOpts) (*regexp.Regexp, error) {
 	for i, p := range patterns {
 		if opts.fixed {
 			p = regexp.QuoteMeta(p)
+		} else {
+			var err error
+			syntax := posixBRE
+			if opts.extended {
+				syntax = posixERE
+			}
+			p, err = translatePOSIXRegexp(p, syntax)
+			if err != nil {
+				return nil, err
+			}
 		}
 		if opts.wholeWord {
-			p = `\b(?:` + p + `)\b`
+			// RE2's \b is not a POSIX ERE operator. The explicit ASCII
+			// boundary has the same definition grep uses for -w.
+			p = `(^|[^[:alnum:]_])(` + p + `)($|[^[:alnum:]_])`
 		}
 		if opts.wholeLine {
-			p = `^(?:` + p + `)$`
+			p = `^(` + p + `)$`
 		}
-		parts[i] = "(?:" + p + ")"
+		parts[i] = "(" + p + ")"
 	}
 	expr := strings.Join(parts, "|")
-	if opts.ignoreCase {
-		expr = "(?i)" + expr
-	}
-	return regexp.Compile(expr)
+	return compilePOSIXERE(expr, opts.ignoreCase)
 }
 
 type grepRun struct {

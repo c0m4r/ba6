@@ -87,6 +87,7 @@ type sedLine struct {
 
 func cmdSed(args []string) int {
 	noDefault := false
+	extended := false
 	var scripts, files []string
 	parsingOptions := true
 	for i := 0; i < len(args); i++ {
@@ -100,6 +101,7 @@ func cmdSed(args []string) int {
 			continue
 		}
 		if parsingOptions && (arg == "-E" || arg == "-r" || arg == "--regexp-extended") {
+			extended = true
 			continue
 		}
 		if parsingOptions && (arg == "-e" || arg == "--expression") {
@@ -155,7 +157,7 @@ func cmdSed(args []string) int {
 	}
 	var commands []sedCommand
 	for _, script := range scripts {
-		parsed, err := parseSedScript(script)
+		parsed, err := parseSedScript(script, extended)
 		if err != nil {
 			fatalf("sed", "%v", err)
 			return 1
@@ -328,7 +330,7 @@ func (s *sedStream) Close() error {
 	return err
 }
 
-func parseSedScript(script string) ([]sedCommand, error) {
+func parseSedScript(script string, extended bool) ([]sedCommand, error) {
 	var commands []sedCommand
 	position := 0
 	for {
@@ -345,7 +347,7 @@ func parseSedScript(script string) ([]sedCommand, error) {
 			continue
 		}
 		var command sedCommand
-		first, next, present, err := parseSedAddress(script, position)
+		first, next, present, err := parseSedAddress(script, position, extended)
 		if err != nil {
 			return nil, err
 		}
@@ -356,7 +358,7 @@ func parseSedScript(script string) ([]sedCommand, error) {
 			}
 			if position < len(script) && script[position] == ',' {
 				position++
-				second, after, secondPresent, addressErr := parseSedAddress(script, position)
+				second, after, secondPresent, addressErr := parseSedAddress(script, position, extended)
 				if addressErr != nil || !secondPresent {
 					return nil, fmt.Errorf("invalid second address")
 				}
@@ -398,6 +400,7 @@ func parseSedScript(script string) ([]sedCommand, error) {
 				return nil, err
 			}
 			position = after
+			ignoreCase := false
 			for position < len(script) && script[position] != ';' && script[position] != '\n' {
 				switch script[position] {
 				case 'g':
@@ -405,14 +408,18 @@ func parseSedScript(script string) ([]sedCommand, error) {
 				case 'p':
 					command.printOnChange = true
 				case 'I', 'i':
-					pattern = "(?i)" + pattern
+					ignoreCase = true
 				case ' ', '\t':
 				default:
 					return nil, fmt.Errorf("unsupported substitution flag %q", script[position])
 				}
 				position++
 			}
-			compiled, compileErr := regexp.Compile(pattern)
+			syntax := posixBRE
+			if extended {
+				syntax = posixERE
+			}
+			compiled, compileErr := compilePOSIXRegexp(pattern, syntax, ignoreCase)
 			if compileErr != nil {
 				return nil, fmt.Errorf("invalid regular expression: %w", compileErr)
 			}
@@ -429,7 +436,7 @@ func parseSedScript(script string) ([]sedCommand, error) {
 	return commands, nil
 }
 
-func parseSedAddress(script string, position int) (*sedAddress, int, bool, error) {
+func parseSedAddress(script string, position int, extended bool) (*sedAddress, int, bool, error) {
 	if position >= len(script) {
 		return nil, position, false, nil
 	}
@@ -452,7 +459,11 @@ func parseSedAddress(script string, position int) (*sedAddress, int, bool, error
 		if err != nil {
 			return nil, position, false, err
 		}
-		compiled, err := regexp.Compile(pattern)
+		syntax := posixBRE
+		if extended {
+			syntax = posixERE
+		}
+		compiled, err := compilePOSIXRegexp(pattern, syntax, false)
 		if err != nil {
 			return nil, position, false, fmt.Errorf("invalid address regular expression: %w", err)
 		}

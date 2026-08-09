@@ -23,6 +23,16 @@ timeout top touch tr traceroute tree true tty udhcpc umount uname uniq unxz unzi
 wc wget which whoami xargs xz zip zstd
 ```
 
+## Regular-expression compatibility
+
+`grep` and `sed` use POSIX Basic Regular Expressions by default; `grep -E`
+and `sed -E` select POSIX EREs, and AWK regular expressions are POSIX EREs.
+For AWK, a one-character `FS` other than space is always literal, while a
+multi-character `FS` is an ERE. BA6 executes these expressions with RE2, which
+cannot implement regular-expression backreferences: patterns such as
+`\(x\)\1` are rejected clearly instead of being silently misinterpreted.
+The common GNU BRE extensions `\|`, `\+`, and `\?` remain available.
+
 ## Bash completion
 
 Load completion for the current Bash session with:

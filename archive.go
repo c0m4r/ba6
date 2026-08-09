@@ -21,6 +21,7 @@ type tarOptions struct {
 	directory string
 	gzip      bool
 	verbose   bool
+	keepOld   bool
 	files     []string
 }
 
@@ -50,7 +51,7 @@ func cmdTar(args []string) int {
 func parseTarOptions(args []string) (tarOptions, error) {
 	opts := tarOptions{archive: "-", directory: "."}
 	args = append([]string(nil), args...)
-	if len(args) > 0 && args[0] != "" && args[0][0] != '-' && strings.Trim(args[0], "ctxzvfC") == "" {
+	if len(args) > 0 && args[0] != "" && args[0][0] != '-' && strings.Trim(args[0], "ctxzvfkC") == "" {
 		args[0] = "-" + args[0]
 	}
 	for i := 0; i < len(args); i++ {
@@ -71,6 +72,8 @@ func parseTarOptions(args []string) (tarOptions, error) {
 				opts.gzip = true
 			case "--verbose":
 				opts.verbose = true
+			case "--keep-old-files":
+				opts.keepOld = true
 			default:
 				return opts, fmt.Errorf("invalid option %q", arg)
 			}
@@ -89,6 +92,8 @@ func parseTarOptions(args []string) (tarOptions, error) {
 					opts.gzip = true
 				case 'v':
 					opts.verbose = true
+				case 'k':
+					opts.keepOld = true
 				case 'f', 'C':
 					var value string
 					if pos+1 < len(arg) {
@@ -410,8 +415,15 @@ func extractTar(opts tarOptions) error {
 			if err := ensureTarParents(root, target); err != nil {
 				return err
 			}
-			if info, statErr := os.Lstat(target); statErr == nil && !info.Mode().IsRegular() {
-				return fmt.Errorf("refusing to replace non-regular path %q", header.Name)
+			if info, statErr := os.Lstat(target); statErr == nil {
+				if opts.keepOld {
+					return fmt.Errorf("refusing to replace existing path %q", header.Name)
+				}
+				if !info.Mode().IsRegular() {
+					return fmt.Errorf("refusing to replace non-regular path %q", header.Name)
+				}
+			} else if !os.IsNotExist(statErr) {
+				return statErr
 			}
 			if err := extractTarRegular(reader, target, header, mode); err != nil {
 				return err
@@ -423,12 +435,7 @@ func extractTar(opts tarOptions) error {
 			if err := ensureTarParents(root, target); err != nil {
 				return err
 			}
-			if _, err := os.Lstat(target); err == nil {
-				return fmt.Errorf("refusing to replace existing path %q with a symbolic link", header.Name)
-			} else if !os.IsNotExist(err) {
-				return err
-			}
-			if err := os.Symlink(header.Linkname, target); err != nil {
+			if err := extractTarSymlink(target, header.Linkname, header.Name, opts.keepOld); err != nil {
 				return err
 			}
 		case tar.TypeLink:
@@ -457,6 +464,53 @@ func extractTar(opts tarOptions) error {
 			return err
 		}
 	}
+	return nil
+}
+
+// extractTarSymlink installs a symlink with rename(2), just as regular
+// members are installed. Re-extracting an archive therefore replaces a stale
+// symlink without an unlink/create window. -k/--keep-old-files retains the
+// deliberately conservative behavior for callers that need it.
+func extractTarSymlink(target, link, member string, keepOld bool) error {
+	if keepOld {
+		if _, err := os.Lstat(target); err == nil {
+			return fmt.Errorf("refusing to replace existing path %q with a symbolic link", member)
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+	}
+
+	// CreateTemp gives the temporary symlink a private, unpredictable name in
+	// the target directory. The placeholder is only used to obtain that name;
+	// the .link sibling is created directly as a symlink before it is renamed.
+	placeholder, err := os.CreateTemp(filepath.Dir(target), ".ba6-tar-*")
+	if err != nil {
+		return err
+	}
+	placeholderName := placeholder.Name()
+	if err := placeholder.Close(); err != nil {
+		_ = os.Remove(placeholderName)
+		return err
+	}
+	if err := os.Remove(placeholderName); err != nil {
+		return err
+	}
+	temporary := placeholderName + ".link"
+	created := false
+	installed := false
+	defer func() {
+		if created && !installed {
+			_ = os.Remove(temporary)
+		}
+	}()
+	if err := os.Symlink(link, temporary); err != nil {
+		return err
+	}
+	created = true
+	if err := os.Rename(temporary, target); err != nil {
+		return err
+	}
+	installed = true
 	return nil
 }
 

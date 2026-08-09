@@ -83,7 +83,9 @@ func TestFindPredicatesDepthAndSize(t *testing.T) {
 }
 
 func TestSedSubstitutionAddressesAndDelete(t *testing.T) {
-	script := `1,2s/(foo) ([0-9])/\1=x\2/;3d`
+	// sed defaults to BREs, so grouping uses \( and \) rather than ERE's
+	// unescaped parentheses.
+	script := `1,2s/\(foo\) \([0-9]\)/\1=x\2/;3d`
 	status, stdout, stderr := captureApplet(t, cmdSed, []string{script}, "foo 1\nfoo 2\nbar 3\n")
 	if status != 0 || stdout != "foo=x1\nfoo=x2\n" {
 		t.Fatalf("sed=(%d,%q,%q)", status, stdout, stderr)

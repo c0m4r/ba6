@@ -12,12 +12,16 @@ import (
 // cmdLn implements a focused ln(1): hard and symbolic links, optional
 // replacement, and the usual directory-target behavior.
 func cmdLn(args []string) int {
-	var symbolic, force, noTargetDir, verbose bool
+	var symbolic, force, noTargetDir, noDereference, verbose bool
 	var operands []string
 	parsing := true
 	for _, arg := range args {
 		if parsing && arg == "--" {
 			parsing = false
+			continue
+		}
+		if parsing && arg == "--no-dereference" {
+			noDereference = true
 			continue
 		}
 		if parsing && len(arg) > 1 && arg[0] == '-' {
@@ -29,6 +33,8 @@ func cmdLn(args []string) int {
 					force = true
 				case 'T':
 					noTargetDir = true
+				case 'n':
+					noDereference = true
 				case 'v':
 					verbose = true
 				default:
@@ -53,7 +59,14 @@ func cmdLn(args []string) int {
 	}
 	destinationIsDir := false
 	if !noTargetDir {
-		if info, err := os.Stat(destination); err == nil {
+		var info os.FileInfo
+		var err error
+		if noDereference {
+			info, err = os.Lstat(destination)
+		} else {
+			info, err = os.Stat(destination)
+		}
+		if err == nil {
 			destinationIsDir = info.IsDir()
 		}
 	}

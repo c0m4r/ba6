@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // awk implements the small but useful record-processing subset most often
@@ -163,7 +164,9 @@ func (ctx *awkContext) processAwkFile(name string, rules []awkRule) error {
 		ctx.nr++
 		ctx.fnr++
 		ctx.record = scanner.Text()
-		ctx.splitRecord()
+		if err := ctx.splitRecord(); err != nil {
+			return err
+		}
 		ctx.next = false
 		for _, rule := range rules {
 			if rule.kind != "record" {
@@ -189,18 +192,57 @@ func (ctx *awkContext) processAwkFile(name string, rules []awkRule) error {
 	return scanner.Err()
 }
 
-func (ctx *awkContext) splitRecord() {
+func (ctx *awkContext) splitRecord() error {
 	separator := ctx.get("FS").text
 	if separator == " " || separator == "" {
 		ctx.fields = strings.Fields(ctx.record)
-	} else {
-		re, err := regexp.Compile(separator)
-		if err != nil {
-			ctx.fields = strings.Split(ctx.record, separator)
-		} else {
-			ctx.fields = re.Split(ctx.record, -1)
+		return nil
+	}
+	if literal, ok := awkSingleCharacterFS(separator); ok {
+		ctx.fields = strings.Split(ctx.record, literal)
+		return nil
+	}
+	re, err := compilePOSIXRegexp(separator, posixERE, false)
+	if err != nil {
+		return fmt.Errorf("invalid field separator: %w", err)
+	}
+	ctx.fields = re.Split(ctx.record, -1)
+	return nil
+}
+
+// awkSingleCharacterFS applies awk's special single-character FS rule. The
+// -F spelling commonly uses escaped single characters such as "\\t", so
+// recognize those before deciding that a multi-character value is an ERE.
+func awkSingleCharacterFS(separator string) (string, bool) {
+	if utf8.RuneCountInString(separator) == 1 {
+		return separator, true
+	}
+	if len(separator) < 2 || separator[0] != '\\' {
+		return "", false
+	}
+	if len(separator) == 2 {
+		switch separator[1] {
+		case 'a':
+			return "\a", true
+		case 'b':
+			return "\b", true
+		case 'f':
+			return "\f", true
+		case 'n':
+			return "\n", true
+		case 'r':
+			return "\r", true
+		case 't':
+			return "\t", true
+		case 'v':
+			return "\v", true
+		default:
+			// An escaped ordinary character is a literal separator too,
+			// e.g. -F'\\|' and -F'\\.'.
+			return string(separator[1]), true
 		}
 	}
+	return "", false
 }
 
 func (ctx *awkContext) get(name string) awkValue {
@@ -233,8 +275,7 @@ func (ctx *awkContext) setField(number int, value string) error {
 	}
 	if number == 0 {
 		ctx.record = value
-		ctx.splitRecord()
-		return nil
+		return ctx.splitRecord()
 	}
 	for len(ctx.fields) < number {
 		ctx.fields = append(ctx.fields, "")
@@ -630,7 +671,7 @@ func (p *awkExpressionParser) parseCompare() (awkValue, error) {
 		if err != nil {
 			return left, err
 		}
-		re, err := regexp.Compile(pattern)
+		re, err := compilePOSIXRegexp(pattern, posixERE, false)
 		if err != nil {
 			return left, err
 		}
@@ -749,7 +790,7 @@ func (p *awkExpressionParser) parsePrimary() (awkValue, error) {
 		return awkString(token.text), nil
 	case "regex":
 		// A bare regular expression is shorthand for matching it against $0.
-		re, err := regexp.Compile(token.text)
+		re, err := compilePOSIXRegexp(token.text, posixERE, false)
 		if err != nil {
 			return awkValue{}, err
 		}
@@ -821,7 +862,7 @@ func (p *awkExpressionParser) substitute(global bool) (awkValue, error) {
 	if !p.take(")") {
 		return awkValue{}, fmt.Errorf("missing )")
 	}
-	re, err := regexp.Compile(pattern)
+	re, err := compilePOSIXRegexp(pattern, posixERE, false)
 	if err != nil {
 		return awkValue{}, err
 	}
