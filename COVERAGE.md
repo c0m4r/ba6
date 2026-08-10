@@ -16,6 +16,11 @@ Re-measured 2026-08-08 for the five applets the `netstat`/`ncdu`/`tree` change
 touched — `netstat`, `ncdu`, `tree`, `ps` and `ip` — bringing the binary to 130
 applets. Everything else in this document is unchanged from the 2026-08-07 pass.
 
+`cfdisk` was added and assessed on 2026-08-10 against util-linux 2.42.2. It is
+a post-baseline addition: its Tier D result below reflects a pseudo-terminal run
+on disposable image files, while the 130-applet headline remains the historical
+2026-08-08 snapshot rather than a current inventory.
+
 Several entries were re-measured later the same day as fixes landed: `wget` and
 `curl` after wget was given its own command line instead of sharing curl's; then
 `rmdir` `ss` `xargs` `free` `df` `ls` `id` `pidof` `dig` `fsck.ext*` `dirname` `seq`
@@ -44,7 +49,7 @@ the missing options listed per applet below.
 | **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `pwd` `echo` `basename` `tr` `base64` `uname` `whoami` `true` `false` `printenv` `sleep` `mknod` `seq` `dirname` |
 | **B — near-complete** | Common paths match; a handful of real gaps | `cat` `wc` `head` `tail` `rm` `mkdir` `tee` `test` `[` `expr` `printf` `id` `mktemp` `kill` `timeout` `chroot` `blockdev` `stat` `env` `cmp` `sync` `dd` `sha256sum` `which` `rmdir` `top` |
 | **C — partial** | Everyday cases work, well-known flags or output details missing | `ls` `cp` `mv` `ln` `touch` `sort` `uniq` `cut` `grep` `find` `du` `df` `date` `readlink` `realpath` `strings` `tar` `gzip` `gunzip` `chown` `chgrp` `free` `uptime` `hostname` `wget` `lsof` `lsblk` `blkid` `mount` `umount` `losetup` `swapon` `swapoff` `mkswap` `ss` `ip` `iptables` `ping` `traceroute` `mtr` `nc` `nslookup` `curl` `iftop` `pgrep` `pkill` `pidof` `modprobe` `insmod` `rmmod` `lsmod` `fdisk` `sfdisk` `mkfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkfs.btrfs` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `login` `passwd` `ps` `netstat` `tree` |
-| **D — narrow subset** | A slice of the original; do not treat as a replacement | `sh` `awk` `sed` `chmod` `od` `hexdump` `file` `diff` `xargs` `ncdu` `dig` `nano` `dmesg` |
+| **D — narrow subset** | A slice of the original; do not treat as a replacement | `sh` `awk` `sed` `chmod` `od` `hexdump` `file` `diff` `xargs` `cfdisk` `ncdu` `dig` `nano` `dmesg` |
 | **N/A** | ba6-specific, no upstream counterpart | `help` `man` `completion` `init` `halt` `reboot` `poweroff` `switch_root` `udhcpc` |
 
 ## Open defects
@@ -102,8 +107,9 @@ where the route protocol can reconfigure the network.
 
 Absent behaviour rather than wrong behaviour, each of which touches many applets.
 
-* **No `--version` anywhere.** _(run)_ Every original supports it; ba6 answers
-  `unsupported option "--version"`. Scripts and packagers probe this.
+* **No `--version` for most applets.** _(run)_ `cfdisk` is the exception, with
+  `-V`/`--version`; most other applets answer `unsupported option "--version"`.
+  Scripts and packagers commonly probe this.
 * **No `Try 'x --help' for more information.` line** after most usage errors. _(run)_
   `sha256sum`, `env`, `printenv` and `blkid` print it where their originals do;
   the other applets stop at the diagnostic.
@@ -158,7 +164,7 @@ Absent behaviour rather than wrong behaviour, each of which touches many applets
 | `cmp` | 1/5 | `-b` `-i` `-l` `-n` | `-s`, `differ: byte N, line N`, all three EOF forms (`line`, `in line`, `which is empty`) and the exit codes match; the EOF file name is quoted `'x'` where a UTF-8 locale gives GNU `‘x’` _(run)_ |
 | `sync` | 0/2 | `-d` `-f`, and **file operands** | bare `sync` is identical; `sync PATH` is rejected _(run)_ |
 | `dd` | 8/13 operands | `iflag=` `oflag=` `cbs=`, `conv=fsync\|fdatasync\|noerror\|swab\|excl\|ucase\|lcase`, `status=progress` | `if of bs ibs obs count skip seek conv=notrunc,sync status=none` produce byte-identical results to GNU on every combination tested, including stdin/stdout; the summary omits GNU's `, T s, R MB/s` tail _(run)_ |
-| `top` | common display paths | configuration files, alternate windows, field-layout editor, colour mapping, kill/renice prompts, and task-area scrolling | Provides the five standard summary lines; procps-style task columns; batch and terminal modes; `-b -n -d -p -u/-U -o/-O -c -H -i -S -E -e -w -1`; and basic live keys for sorting and view toggles. Dynamic CPU percentages use adjacent `/proc` snapshots rather than lifetime averages. |
+| `top` | common display paths | configuration files, alternate windows, field-layout editor, colour mapping, kill/renice prompts, and task-area scrolling | Provides the five standard summary lines; procps-style task columns; batch and terminal modes; `-b -n -d -p -u/-U -o/-O -c -H -i -S -E -e -w -1`; and basic live keys for sorting and view toggles. Dynamic CPU percentages use adjacent `/proc` snapshots rather than lifetime averages. In raw terminal mode, each rendered row now ends in CRLF so the process table remains column-aligned. |
 
 ### Tier C — partial
 
@@ -373,9 +379,11 @@ Load/unload work; `lsmod` output matches except one column of padding. Missing
 `rmmod -s -v`, `lsmod -s -v`.
 
 **`fdisk` / `sfdisk`** — read-only `-l` and DOS-only write support, **by design**
-(documented in help). `fdisk` 1/18, `sfdisk` 6/41. No interactive editor, no GPT
-writes. **On-disk output is correct** _(run)_: a table written by `ba6 sfdisk` is read
-back identically by real `fdisk -l` and `sfdisk --dump`. The *printed* layout differs —
+(documented in help). `fdisk` 1/18, `sfdisk` 6/41. `fdisk` itself has no
+interactive editor; the separately documented `cfdisk` applet provides the bounded
+DOS/MBR and GPT terminal editor. `sfdisk` has no GPT write path. **On-disk output
+is correct** _(run)_: a table written by `ba6 sfdisk` is read back identically by
+real `fdisk -l` and `sfdisk --dump`. The *printed* layout differs —
 ba6's `fdisk -l` has no column alignment and omits the `Disk model`, `Units`,
 `Sector size` and `Disklabel type` lines; ba6's `sfdisk --dump` omits `label-id`,
 `device` and `sector-size` and pads columns differently.
@@ -397,6 +405,8 @@ complaints:
 | `mkfs.xfs -f 400M` | `xfs_repair -n` | all 7 phases clean |
 | `mkfs.btrfs -f 200M` | `btrfs check` | no errors |
 | `sfdisk` DOS table | `fdisk -l`, `sfdisk --dump` | read back byte-for-byte |
+| `cfdisk` DOS table | `fdisk -l`, `sfdisk --dump` | confirmed write read back correctly; its `u` dump replays to a byte-identical MBR |
+| `cfdisk` GPT table | real `fdisk -l`, `sfdisk --verify` | interactive GPT creation and type change read as Linux swap; both headers and 128-entry arrays validate |
 
 `fsck.ext4` also validated a `mke2fs`-produced image correctly — but only when its
 flags are given separately (`-f -n`, not `-fn`), and it identifies itself as
@@ -463,6 +473,35 @@ Present: `-0 -r -n -I` (attached, spaced and `=` forms). Missing `-a -d -E -e -L
 **`nano`** _(run, help)_ — 6/50 options; a minimal full-screen editor, not GNU nano's
 key map, syntax highlighting, search/replace or multi-buffer support.
 
+**`cfdisk`** _(run, vs util-linux 2.42.2)_ — a deliberately narrow terminal
+partition editor. It recognizes util-linux's seven option groups: `-L`/`--color`,
+`--lock`, `-r`/`--read-only`, `-b`/`--sector-size`, `-z`/`--zero`, `-h`/`--help`,
+and `-V`/`--version`. A pseudo-terminal session on a disposable image exercised
+create, delete, resize, sort, type, boot flag, extra information, dump, confirmed
+write, and quit for DOS. A second pseudo-terminal run selected GPT, created a 1 MiB
+partition, changed it to `swap`, and wrote it; real `fdisk -l` recognized the GPT
+and Linux-swap type, while `sfdisk --verify` reported no errors. Image tests cover
+construction, readback, type parsing, rendering, primary and backup header/
+entry-array checksums, and stale-target rejection. The GPT writer installs its
+backup array/header before the primary copy, then the protective MBR. Proposed
+layouts are overlap- and bounds-checked, stale images and mounted/active-swap
+targets are rejected before a write, and writes preserve MBR boot code outside the
+partition entries. On an unlabelled disk, a selector presents GPT and DOS only,
+with GPT selected by default. Up/Down selects a partition or label, and
+Left/Right plus Enter navigates the New/Quit/Help/Write/Dump action bar.
+
+This is **not** a general replacement for cfdisk: it supports 512-byte-sector DOS
+with four primary partitions, plus GPT only in the conventional 128-entry,
+128-byte-entry layout (primary entries at LBAs 2–33, with a mirrored backup array
+immediately before the final backup header). GPT `t` handles `linux`, `swap`, `efi`,
+or an explicit GUID and preserves partition names and attributes; it has no MBR boot
+flag. Extended/logical partitions, SGI and SUN labels, nonstandard GPT geometry,
+cfdisk script input, the full curses menu/type UI, and colour themes are absent.
+`u` emits a GPT sfdisk-style dump for inspection or compatible external tooling;
+ba6 `sfdisk` replays DOS only. `--color=never` disables reverse-video styling and
+`--sector-size` accepts 512 only. The screen layout and key presentation intentionally
+differ from util-linux's curses interface.
+
 **`ncdu`** _(run, vs ncdu 2.9.2)_ — 6/37 options. The scan and the browser are
 there: the same nine-column size field, the same bar width (`columns / 7`) drawn
 against the largest entry in the directory, the `/..` row, the reverse-video header
@@ -497,9 +536,10 @@ Ordered by how many applets each item moves, not by effort.
    is, and it currently fails outright.
 3. **`sort -k`/`-t`** — field sorting is what sort is for; without it the applet
    handles only whole-line ordering.
-4. **`--version` for the remaining 129** — the last thing most originals have and only `top` here
-   does. `expandShortOptions` and the per-applet parsers now agree enough on shape
-   that one shared entry point could carry it, along with `Try 'x --help'`.
+4. **`--version` for the remaining applets** — the last thing most originals have;
+   only `top` and `cfdisk` provide it here. `expandShortOptions` and the per-applet
+   parsers now agree enough on shape that one shared entry point could carry it,
+   along with `Try 'x --help'`.
 5. **`touch -d`/`-t`/`-r`** — the only reason to reach for touch besides creating a file.
 6. **`grep -o`/`-A`/`-B`/`-C`** and **`sed -i`** — the highest-frequency missing
    options in the two most-used text tools.
@@ -538,8 +578,11 @@ diffed whole against the original run seconds apart, and the volatile rows
 differences that remained; that is how the four `ps` defects above were found.
 `ncdu` and the interactive side of `ip` were driven under a pseudo-terminal
 (`script -qc`, with `stty rows/cols` fixing the geometry), the escape sequences
-stripped, and the resulting screen compared with the original's. `tree` could not
-be measured at all: the package is not installed here.
+stripped, and the resulting screen compared with the original's. `cfdisk` used the
+same setup against disposable disk images; its intentionally narrower screen was
+not compared pixel-for-pixel, but its on-disk table and dump round trip were checked
+with `fdisk` and `sfdisk`. `tree` could not be measured at all: the package is not
+installed here.
 
 ### Reading the percentages
 
@@ -556,9 +599,9 @@ Assessed from source and help text only, because they need root, a real device, 
 terminal, or an irreversible action: `iptables`, `mount`/`umount` writes, `swapon`,
 `swapoff`, `mkswap`, `blockdev`, `insmod`, `rmmod`, `modprobe`, `chroot`,
 `switch_root`, `init`, `halt`, `reboot`, `poweroff`, `login`, `passwd`, `udhcpc`,
-`iftop`, `traceroute`, `mtr`, `nano`. The `mkfs.*`, `fsck.*`, `fdisk` and `sfdisk`
-applets *were* executed — against image files rather than block devices — and
-validated with the vendor tools; `nc` was exercised over loopback.
+`iftop`, `traceroute`, `mtr`, `nano`. The `mkfs.*`, `fsck.*`, `fdisk`, `sfdisk` and
+`cfdisk` applets *were* executed — against image files rather than block devices —
+and validated with the vendor tools; `nc` was exercised over loopback.
 
 `tree` is the one applet with an upstream counterpart that was not compared at all,
 because `tree(1)` is not installed on this machine; its entry is marked

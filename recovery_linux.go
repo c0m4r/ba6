@@ -545,7 +545,7 @@ func cmdSfdisk(args []string) int {
 func parseSfdiskScript(reader io.Reader, sectors uint32) ([]mbrPartition, error) {
 	scanner := bufio.NewScanner(reader)
 	partitions := make([]mbrPartition, 0, 4)
-	lineNumber := 0
+	lineNumber, sawDOSLabel := 0, false
 	for scanner.Scan() {
 		lineNumber++
 		line := strings.TrimSpace(strings.SplitN(scanner.Text(), "#", 2)[0])
@@ -557,6 +557,7 @@ func parseSfdiskScript(reader io.Reader, sectors uint32) ([]mbrPartition, error)
 			if strings.TrimSpace(strings.TrimPrefix(lower, "label:")) != "dos" {
 				return nil, fmt.Errorf("line %d: only a DOS/MBR label is supported", lineNumber)
 			}
+			sawDOSLabel = true
 			continue
 		}
 		if strings.HasPrefix(lower, "unit:") {
@@ -647,7 +648,7 @@ func parseSfdiskScript(reader io.Reader, sectors uint32) ([]mbrPartition, error)
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
-	if len(partitions) == 0 {
+	if len(partitions) == 0 && !sawDOSLabel {
 		return nil, fmt.Errorf("no partitions specified")
 	}
 	return partitions, nil
@@ -744,7 +745,7 @@ func pathIsInUse(path string) (bool, error) {
 		if resolveErr != nil {
 			sourceResolved = filepath.Clean(source)
 		}
-		if sourceResolved == resolved {
+		if sourceResolved == resolved || blockDeviceContainsPartition(resolved, sourceResolved) {
 			return true, nil
 		}
 	}
@@ -757,11 +758,35 @@ func pathIsInUse(path string) (bool, error) {
 		if resolveErr != nil {
 			sourceResolved = filepath.Clean(source)
 		}
-		if sourceResolved == resolved {
+		if sourceResolved == resolved || blockDeviceContainsPartition(resolved, sourceResolved) {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+// blockDeviceContainsPartition recognizes the usual /dev/sda -> /dev/sda1
+// relationship through sysfs rather than by a fragile pathname prefix. A disk
+// editor must not rewrite a whole-disk table while one of its partitions is
+// mounted or active as swap.
+func blockDeviceContainsPartition(disk, partition string) bool {
+	if disk == partition {
+		return false
+	}
+	diskInfo, err := os.Stat(disk)
+	if err != nil || !isBlockDevice(diskInfo.Mode()) {
+		return false
+	}
+	partitionInfo, err := os.Stat(partition)
+	if err != nil || !isBlockDevice(partitionInfo.Mode()) {
+		return false
+	}
+	diskName, partitionName := filepath.Base(disk), filepath.Base(partition)
+	if diskName == partitionName {
+		return false
+	}
+	_, err = os.Stat(filepath.Join("/sys/class/block", diskName, partitionName, "partition"))
+	return err == nil
 }
 
 // The ext formatter and checker below deliberately support one conservative

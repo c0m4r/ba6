@@ -107,6 +107,16 @@ func TestTopStandardRenderingAndWidth(t *testing.T) {
 	}
 }
 
+func TestTopInteractiveScreenUsesCRLF(t *testing.T) {
+	screen := topInteractiveScreen("header\nrow one\nrow two\n")
+	if !strings.HasPrefix(screen, "\x1b[H\x1b[2J") {
+		t.Fatalf("interactive screen lacks clear/home escape: %q", screen)
+	}
+	if strings.Contains(screen, "header\n") || !strings.Contains(screen, "header\r\nrow one\r\nrow two\r\n") {
+		t.Fatalf("interactive screen does not use CRLF: %q", screen)
+	}
+}
+
 func TestTopBatchIncludesProcpsSummaryAreas(t *testing.T) {
 	status, output, stderr := captureApplet(t, cmdTop, []string{"-bn1", "-p", strconv.Itoa(os.Getpid()), "-c", "-w", "200"}, "")
 	if status != 0 || stderr != "" {

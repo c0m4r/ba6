@@ -1086,7 +1086,7 @@ func runTopInteractive(options topOptions) int {
 			fatalf("top", "%v", renderErr)
 			return false
 		}
-		if _, renderErr = fmt.Fprint(os.Stdout, "\x1b[H\x1b[2J"+output); renderErr != nil {
+		if _, renderErr = fmt.Fprint(os.Stdout, topInteractiveScreen(output)); renderErr != nil {
 			fatalf("top", "write error: %v", renderErr)
 			return false
 		}
@@ -1169,6 +1169,14 @@ func runTopInteractive(options topOptions) int {
 			}
 		}
 	}
+}
+
+// terminalRaw disables OPOST, so a bare '\n' advances only to the next row;
+// it does not return to column zero. The batch renderer intentionally emits
+// LF-only text for pipes, while the live terminal needs CRLF to keep every
+// process row aligned at its first column.
+func topInteractiveScreen(output string) string {
+	return "\x1b[H\x1b[2J" + strings.ReplaceAll(output, "\n", "\r\n")
 }
 
 func readTopKeys(keys chan<- byte) {

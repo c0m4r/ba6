@@ -32,6 +32,7 @@ var applets = map[string]applet{
 	"bunzip2":     cmdBunzip2,
 	"bzip2":       cmdBzip2,
 	"cat":         cmdCat,
+	"cfdisk":      cmdCfdisk,
 	"chgrp":       cmdChgrp,
 	"chmod":       cmdChmod,
 	"chown":       cmdChown,

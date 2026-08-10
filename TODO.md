@@ -25,6 +25,7 @@ BusyBox, or POSIX compatibility.
 ## Disk and filesystem recovery
 
 - [x] `blockdev`
+- [x] terminal DOS/MBR and conventional-GPT `cfdisk`
 - [x] read-only `fdisk -l` and writable `sfdisk`
 - [x] `fsck` and selected filesystem-specific checkers
 - [x] `mkfs` and selected filesystem-specific formatters

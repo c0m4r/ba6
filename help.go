@@ -33,6 +33,34 @@ Operations:
   --getra/--setra SECTORS  query or set readahead
   --flushbufs/--rereadpt   flush buffers or reread the partition table
   --report DEVICE...       display a compact device report`,
+	"cfdisk": `Usage: cfdisk [-L|--color[=auto|always|never]] [--read-only] [--zero]
+              [--sector-size 512] [--lock[=yes|no|nonblock]] DEVICE
+       cfdisk -h|--help
+       cfdisk -V|--version
+Interactively edit a DOS/MBR or GPT partition table in a terminal. Up/Down
+selects an MBR slot or a visible GPT entry; Left/Right selects the New/Quit/
+Help/Write/Dump action bar and Enter invokes it. On a disk with no recognizable
+table, a label-type selector offers GPT and DOS with GPT selected by default. n
+creates, d deletes, r resizes, and s sorts partitions. For DOS, t changes a
+hexadecimal type and b
+toggles the boot flag. For GPT, t accepts linux, swap, efi, or a type GUID; GPT
+does not have an MBR boot flag. u writes an sfdisk-style text dump, x toggles
+extra information, W (or w) writes after an explicit “yes”, and q quits.
+K/M/G/T and KiB/MiB suffixes are accepted for new and resized partition sizes.
+
+Every proposed layout is range- and overlap-validated before writing. GPT
+writes matching primary and backup headers and entry arrays; changed images and
+mounted or active-swap targets are rejected before either label is written.
+--read-only disables disk writes; --zero opens the label selector with an empty
+in-memory table. --lock defaults to no lock, yes blocks for an advisory lock,
+and nonblock fails immediately if it is held. --color=never disables
+reverse-video styling.
+
+GPT support is intentionally bounded to 512-byte logical sectors and the
+conventional 128-entry, 128-byte-entry layout. DOS support is limited to four
+primary partitions. Extended/logical MBR partitions, SGI, and SUN labels are
+unsupported. ba6 sfdisk only replays DOS dumps; a GPT dump is for inspection or
+compatible external tooling.`,
 	"fdisk": `Usage: fdisk -l [DEVICE]...
 List DOS/MBR or GPT partition tables without modifying them. With no DEVICE,
 inspect whole block devices found through /sys/class/block. GPT header and

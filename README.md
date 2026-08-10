@@ -12,7 +12,7 @@ or `ba6 COMMAND --help` for the same documentation.
 The binary currently includes:
 
 ```text
-[ adduser awk base64 basename blkid blockdev bunzip2 bzip2 cat chgrp chmod chown chroot cmp completion cp
+[ adduser awk base64 basename blkid blockdev bunzip2 bzip2 cat cfdisk chgrp chmod chown chroot cmp completion cp
 cpio curl cut date dd df diff dig dirname dmesg du echo env expr false fdisk file find free fsck fsck.ext2
 fsck.ext3 fsck.ext4 grep groupadd gunzip gzip halt head help hexdump hostname id iftop init insmod ip iptables
 kill ln login losetup ls lsblk lsmod lsof man md5sum mkdir mkfs mkfs.btrfs mkfs.ext2 mkfs.ext3 mkfs.ext4
@@ -87,7 +87,8 @@ Storage recovery includes filesystem signature probing, node creation, mounting,
 unmounting, buffer flushing, and privileged halt/reboot/poweroff controls.
 It now also includes block-device discovery, loop-device setup, chroot and root
 switching, kernel-module management, and a focused one-shot DHCP client. Disk
-recovery gains block-device controls, validated DOS/MBR partition editing,
+recovery gains block-device controls, a terminal DOS/MBR and conventional-GPT
+partition editor, validated scripted DOS/MBR partition editing,
 read-only DOS/MBR and GPT partition listing,
 read-only ext2/ext3/ext4 structural checking, bounded ext2, ext3, ext4, XFS,
 and btrfs formatters, and Linux swap formatting and activation. Each formatter
