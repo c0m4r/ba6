@@ -14,8 +14,9 @@ The binary currently includes:
 ```text
 [ adduser awk base64 basename blkid blockdev bunzip2 bzip2 cat cfdisk chgrp chmod chown chroot cmp completion cp
 cpio curl cut date dd df diff dig dirname dmesg du echo env expr false fdisk file find free fsck fsck.ext2
-fsck.ext3 fsck.ext4 grep groupadd gunzip gzip halt head help hexdump hostname id iftop init insmod ip iptables
-kill ln login losetup ls lsblk lsmod lsof man md5sum mkdir mkfs mkfs.btrfs mkfs.ext2 mkfs.ext3 mkfs.ext4
+fsck.ext3 fsck.ext4 grep groupadd gunzip gzip halt head help hexdump host hostname id iftop init insmod ip
+iptables kill less ln login losetup ls lsblk lsmod lsof man md5sum mkdir mkfs mkfs.btrfs mkfs.ext2 mkfs.ext3
+mkfs.ext4
 mkfs.xfs mknod mkswap mktemp modprobe mount mtr mv nano nc ncdu netstat nslookup od passwd pgrep pidof ping
 pkill poweroff printenv printf ps pwd readlink realpath reboot rm rmdir rmmod sed seq sfdisk sh sha1sum
 sha256sum sha512sum sleep sort ss stat strings swapoff swapon switch_root sync sysctl tail tar tee test
@@ -107,7 +108,17 @@ applets write interoperable raw-block streams (and Zstandard RLE blocks), so
 they deliberately do not implement general compressed-block decoding.
 `nano` is a compact full-screen editor with
 navigation, insertion/deletion, line cutting, saving (`Ctrl-S`), and guarded
-exit (`Ctrl-X`).
+exit (`Ctrl-X`). `less` pages files on a full screen with searching, line
+numbering, horizontal scrolling, and movement between the files named on the
+command line; it holds each file in memory, copies its input through unchanged
+when the output is not a terminal, and has no command that runs another
+program, so the editor, shell, and pipe keys of the original are absent.
+`host` resolves names, addresses, and individual record types through the
+resolvers in `/etc/resolv.conf` or a server named on the command line, printing
+either the usual one-sentence-per-record summary or, with `-v`, the full
+response in master-file layout. It queries the name exactly as written, so the
+search list and the `ndots` rule do not apply, and it does not perform zone
+transfers.
 
 ## Build and verify
 

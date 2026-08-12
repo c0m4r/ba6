@@ -71,6 +71,7 @@ var applets = map[string]applet{
 	"head":        cmdHead,
 	"hexdump":     cmdHexdump,
 	"help":        cmdHelp,
+	"host":        cmdHost,
 	"hostname":    cmdHostname,
 	"id":          cmdId,
 	"iftop":       cmdIftop,
@@ -79,6 +80,7 @@ var applets = map[string]applet{
 	"ip":          cmdIP,
 	"iptables":    cmdIptables,
 	"kill":        cmdKill,
+	"less":        cmdLess,
 	"ln":          cmdLn,
 	"login":       cmdLogin,
 	"lsof":        cmdLsof,
@@ -228,8 +230,9 @@ func main() {
 
 func appletNeedsUnrestrictedSyscalls(name string) bool {
 	switch name {
-	case "chroot", "curl", "dig", "env", "init", "insmod", "login", "modprobe", "mount", "mtr", "nc", "nslookup", "ping",
-		"rmmod", "sh", "switch_root", "timeout", "traceroute", "udhcpc", "umount", "watch", "wget", "xargs":
+	case "chroot", "curl", "dig", "env", "host", "init", "insmod", "login", "modprobe", "mount", "mtr", "nc",
+		"nslookup", "ping", "rmmod", "sh", "switch_root", "timeout", "traceroute", "udhcpc", "umount", "watch",
+		"wget", "xargs":
 		return true
 	}
 	return false

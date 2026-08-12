@@ -300,8 +300,32 @@ Short options may be clustered, as in -sSL. Unlike wget, an HTTP error response
 is not by itself a failure; use -f for that.`,
 	"dig": `Usage: dig [@SERVER] [TYPE] NAME [+short] [+tcp] [+time=SECONDS]
 Query DNS over UDP with automatic TCP retry for truncated replies. Supported
-types are A, AAAA, CNAME, MX, NS, PTR, SOA, TXT, and ANY. Compressed names and
-response bounds are validated before records are displayed.`,
+types are A, AAAA, CNAME, MX, NS, PTR, SOA, SRV, TXT, CAA, DS, DNSKEY, SVCB,
+HTTPS, and ANY. Compressed names and response bounds are validated before
+records are displayed.`,
+	"host": `Usage: host [-46adrsTUvw] [-c CLASS] [-p PORT] [-R RETRIES] [-t TYPE]
+            [-W SECONDS] NAME [SERVER]
+Look up NAME in the DNS and describe each answer in a sentence. Without -t it
+asks in turn for addresses (A then AAAA), mail exchangers, and HTTPS service
+bindings; an IPv4 or IPv6 address operand is converted to its reverse name and
+asked for a pointer record. SERVER replaces the resolvers listed in
+/etc/resolv.conf.
+
+  -t TYPE     ask for one record type, and report when there is none
+  -v, -d      print the whole response in master-file layout
+  -a          the same as -v -t ANY
+  -T, -U      query over TCP or force UDP; type ANY starts on TCP
+  -4, -6      restrict the query transport to one address family
+  -c CLASS    query class IN, CH, or HS
+  -p PORT     contact the server on PORT instead of 53
+  -R RETRIES  attempts per server before moving to the next one
+  -W SECONDS  reply timeout; -w waits effectively forever
+  -r          clear the recursion-desired bit
+
+NAME is queried exactly as written, so the resolv.conf search list and the
+ndots rule do not apply. Zone transfers, the authoritative SOA comparison, and
+memory debugging are not implemented; their options are rejected rather than
+quietly ignored.`,
 	"diff": `Usage: diff [-u] FILE1 FILE2
 Show a line-oriented difference.`,
 	"dmesg": `Usage: dmesg [-c]
@@ -331,6 +355,32 @@ power-failure actions before powering off.`,
 Create a FIFO, block device, or character device.`,
 	"mount": `Usage: mount [-t TYPE] [-o OPTIONS] DEVICE DIRECTORY
 Mount a filesystem, or list mounts with no operands.`,
+	"less": `Usage: less [-eEFiImMnNqQrRsSXz] [-p PATTERN] [-x TABS] [-z LINES]
+            [+COMMAND] [FILE]...
+Page through files on a full screen. Each file is read into memory, so both
+directions scroll and every position is exact. When the output is not a
+terminal the input is copied through unchanged, which keeps the applet usable
+in a pipeline. Keys come from /dev/tty when the text arrives on standard input.
+
+  -N          number the lines; -n turns numbering off again
+  -S          cut long lines instead of wrapping them
+  -i, -I      case-insensitive search, -I even for mixed-case patterns
+  -F          print and exit when the file fits on one screen
+  -e, -E      stop once the last line has been shown
+  -X          stay on the main screen instead of the alternate one
+  -s          fold repeated blank lines into one
+  -R          pass escape sequences through instead of showing them
+  -m, -M      a position or a full position report on the status line
+  -p PATTERN  start at the first line matching PATTERN
+  -x TABS     tab stop width, 8 by default
+  -z LINES    scroll this many lines per screen command
+  +COMMAND    run one command at startup, such as +G or +/pattern
+
+SPACE, b, ENTER, y, d, u, g, G, and N% move; / and ? search, n and N repeat;
+= reports the position, h shows the key summary, :n and :p change file, and q
+quits. A count typed before a command repeats it. Nothing in this pager runs
+another program, so the editor, shell, and pipe commands are absent, and it
+does not follow a growing file.`,
 	"nano": `Usage: nano [FILE]
 Edit text in a small full-screen terminal editor. ^S saves and ^X exits.`,
 	"nc": `Usage: nc [-u] [-w SECONDS] HOST PORT

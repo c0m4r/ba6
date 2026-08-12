@@ -322,21 +322,29 @@ func terminalDimensions(fd uintptr) (int, int, bool) {
 	return int(ws.rows), int(ws.cols), ws.rows > 2 && ws.cols > 0
 }
 func readEditorKey() (int, error) {
+	return readKeyFrom(os.Stdin)
+}
+
+// readKeyFrom reads one key press from a terminal in raw mode. Arrow, page and
+// home/end keys arrive as escape sequences and are reported as codes above
+// 1000. The source is a parameter because a pager reading its data from a pipe
+// must take its keys from /dev/tty instead of standard input.
+func readKeyFrom(input *os.File) (int, error) {
 	one := []byte{0}
-	if _, err := os.Stdin.Read(one); err != nil {
+	if _, err := input.Read(one); err != nil {
 		return 0, err
 	}
 	if one[0] != 27 {
 		return int(one[0]), nil
 	}
 	seq := make([]byte, 1)
-	if _, err := os.Stdin.Read(seq); err != nil {
+	if _, err := input.Read(seq); err != nil {
 		return 27, nil
 	}
 	if seq[0] != '[' && seq[0] != 'O' {
 		return 27, nil
 	}
-	if _, err := os.Stdin.Read(seq); err != nil {
+	if _, err := input.Read(seq); err != nil {
 		return 27, nil
 	}
 	switch seq[0] {
@@ -354,7 +362,7 @@ func readEditorKey() (int, error) {
 		return 1005, nil
 	case '5', '6':
 		number := seq[0]
-		if _, err := os.Stdin.Read(seq); err != nil {
+		if _, err := input.Read(seq); err != nil {
 			return 27, nil
 		}
 		if number == '5' {

@@ -21,6 +21,23 @@ a post-baseline addition: its Tier D result below reflects a pseudo-terminal run
 on disposable image files, while the 130-applet headline remains the historical
 2026-08-08 snapshot rather than a current inventory.
 
+`host` and `less` were added and assessed on 2026-08-13, against BIND 9.20.26
+and less 704, and are post-baseline additions in the same sense. Every `host`
+invocation tested — the default question set, each supported record type,
+reverse lookups for both address families, a server operand, an unresolvable
+server, a missing name, an unreachable resolver, and the whole `-v` master-file
+dump — is byte-identical to the original once TTLs, query ids and timings are
+normalised. Its gaps are entire features rather than formatting: zone transfers,
+`-C`, `-A`, the search list and `-N`, `-m`, `-k`, and `-V`. `less` was driven
+through a pseudo-terminal and compared screen by screen: movement, half-screen
+and window scrolling, searching in both directions, `-N` numbering, tab and
+control-character rendering, wrapping and `-S` chopping, the `=` report, and
+every status-line form (the bare `:`, `(END)`, `-m`, `-M`, and the multi-file
+`(file 1 of 2) ... - Next:` line) match. Marks, bracket matching, the `F` follow
+command, custom `-P` prompts, the `LESS` environment variable, lesskey files,
+and every command that would start another program are absent, and a file is
+read into memory rather than streamed.
+
 Several entries were re-measured later the same day as fixes landed: `wget` and
 `curl` after wget was given its own command line instead of sharing curl's; then
 `rmdir` `ss` `xargs` `free` `df` `ls` `id` `pidof` `dig` `fsck.ext*` `dirname` `seq`
@@ -47,8 +64,8 @@ the missing options listed per applet below.
 | Tier | Meaning | Applets |
 |---|---|---|
 | **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `pwd` `echo` `basename` `tr` `base64` `uname` `whoami` `true` `false` `printenv` `sleep` `mknod` `seq` `dirname` |
-| **B — near-complete** | Common paths match; a handful of real gaps | `cat` `wc` `head` `tail` `rm` `mkdir` `tee` `test` `[` `expr` `printf` `id` `mktemp` `kill` `timeout` `chroot` `blockdev` `stat` `env` `cmp` `sync` `dd` `sha256sum` `which` `rmdir` `top` |
-| **C — partial** | Everyday cases work, well-known flags or output details missing | `ls` `cp` `mv` `ln` `touch` `sort` `uniq` `cut` `grep` `find` `du` `df` `date` `readlink` `realpath` `strings` `tar` `gzip` `gunzip` `chown` `chgrp` `free` `uptime` `hostname` `wget` `lsof` `lsblk` `blkid` `mount` `umount` `losetup` `swapon` `swapoff` `mkswap` `ss` `ip` `iptables` `ping` `traceroute` `mtr` `nc` `nslookup` `curl` `iftop` `pgrep` `pkill` `pidof` `modprobe` `insmod` `rmmod` `lsmod` `fdisk` `sfdisk` `mkfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkfs.btrfs` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `login` `passwd` `ps` `netstat` `tree` |
+| **B — near-complete** | Common paths match; a handful of real gaps | `cat` `wc` `head` `tail` `rm` `mkdir` `tee` `test` `[` `expr` `printf` `id` `mktemp` `kill` `timeout` `chroot` `blockdev` `stat` `env` `cmp` `sync` `dd` `sha256sum` `which` `rmdir` `top` `host` |
+| **C — partial** | Everyday cases work, well-known flags or output details missing | `ls` `cp` `mv` `ln` `touch` `sort` `uniq` `cut` `grep` `find` `du` `df` `date` `readlink` `realpath` `strings` `tar` `gzip` `gunzip` `chown` `chgrp` `free` `uptime` `hostname` `wget` `lsof` `lsblk` `blkid` `mount` `umount` `losetup` `swapon` `swapoff` `mkswap` `ss` `ip` `iptables` `ping` `traceroute` `mtr` `nc` `nslookup` `curl` `iftop` `pgrep` `pkill` `pidof` `modprobe` `insmod` `rmmod` `lsmod` `fdisk` `sfdisk` `mkfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkfs.btrfs` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `login` `passwd` `ps` `netstat` `tree` `less` |
 | **D — narrow subset** | A slice of the original; do not treat as a replacement | `sh` `awk` `sed` `chmod` `od` `hexdump` `file` `diff` `xargs` `cfdisk` `ncdu` `dig` `nano` `dmesg` |
 | **N/A** | ba6-specific, no upstream counterpart | `help` `man` `completion` `init` `halt` `reboot` `poweroff` `switch_root` `udhcpc` |
 
@@ -520,6 +537,34 @@ export/import pair `-o`/`-f`, extended mode `-e`, `--exclude-from`,
 order. Formerly `dig +short A example.com` failed,
 only the `dig NAME TYPE` order parses. Missing `-x` (reverse lookup), `-t -c -p -b -f
 -q -y`, every `+option` except `+short`, and the full answer/authority section layout.
+
+**`host`** _(run, vs BIND 9.20.26)_ — 18/19 option groups, and every invocation
+tested matches byte for byte. Present: `-t -c -p -R -W -w -T -U -4 -6 -r -s -a -d
+-v`, the default A/AAAA/MX/HTTPS question set, the address-to-`in-addr.arpa`/
+`ip6.arpa` conversion, the `Using domain server:` block once an answer arrives,
+`Host NAME not found: 3(NXDOMAIN)` with status 1, `NAME has no TYPE record` for an
+explicit `-t`, the per-server `;; communications error to ADDR#port` narration
+followed by `;; no servers could be reached`, and the `-v` dump down to dig's
+tab-stop columns and its `Received N bytes from ADDR#port in N ms` footer. Record
+wording covers A, AAAA, CNAME, MX, NS, PTR, TXT, SOA, SRV, CAA and the RFC 9460
+HTTPS/SVCB presentation form. Missing `-l` (AXFR), `-C`, `-A`, `-N` and the
+resolv.conf search list, `-m`, `-k` and `-V`; `-s` is accepted but redundant,
+because one server is asked at a time.
+
+**`less`** _(run, vs less 704)_ — 41/107 option groups and the everyday command
+set, compared screen by screen under a pseudo-terminal. Present: `-N -n -S -i -I
+-F -e -E -X -s -r -R -m -M -p -x -z`, `+command`, and `--` plus the long
+spellings of those; `-a -A -c -C -d -f -g -G -J -K -L -q -Q -u -U -w -W -~` are
+accepted without effect. Keys present: SPACE/`f`/PgDn, `b`/PgUp, ENTER/`j`/`e`/
+DOWN, `y`/`k`/UP, `d`, `u`, `g`/`<`/HOME, `G`/`>`/END, `p`/`%`, LEFT/RIGHT,
+`/`, `?`, `n`, `N`, `=`, `h`, `r`, `-` for the toggles, `:n`/`:p`/`:q`, `q`, and
+a numeric count before any of them. Status lines, the `=` report, byte-measured
+percentages, wrapping, `-S` chopping, tab expansion and caret notation all
+match. Each file is read into memory instead of streamed, so a file larger than
+memory is out of reach and `F` (follow) is absent, as are marks, bracket
+matching, `-P` prompts, the `LESS` variable, lesskey files, `-b -h -j -k -o -O
+-t -T -y -D -#`, and — by design, since this binary starts no child processes —
+the `v`, `!` and `|` commands and `LESSOPEN` filters.
 
 **`dmesg`** _(run)_ — no options at all (0/30). Missing `-w -H -T -t -l -f -x -C -c
 -k -u -n -S -r --since`.

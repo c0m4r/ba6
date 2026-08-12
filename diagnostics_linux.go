@@ -8,6 +8,7 @@ package main
 import (
 	"bufio"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -273,8 +274,8 @@ func decodeProcSocketAddress(value string, ipv6, numeric bool) string {
 }
 
 type dnsRecord struct {
-	name, kind, value string
-	ttl               uint32
+	name, kind, class, value string
+	ttl                      uint32
 }
 
 func cmdDig(args []string) int {
@@ -335,12 +336,12 @@ func cmdDig(args []string) int {
 	if _, _, err := net.SplitHostPort(server); err != nil {
 		server = net.JoinHostPort(server, "53")
 	}
-	query, id, err := buildDNSQuery(name, typeCode)
+	query, id, err := buildDNSQuery(name, typeCode, dnsClassIN, true)
 	if err != nil {
 		fatalf("dig", "%v", err)
 		return 1
 	}
-	response, err := exchangeDNS(server, query, timeout, tcpOnly)
+	response, err := exchangeDNS(server, query, timeout, dnsNetwork(tcpOnly))
 	if err != nil {
 		fatalf("dig", "%v", err)
 		return 1
@@ -351,7 +352,7 @@ func cmdDig(args []string) int {
 		return 1
 	}
 	if truncated && !tcpOnly {
-		response, err = exchangeDNS(server, query, timeout, true)
+		response, err = exchangeDNS(server, query, timeout, dnsNetwork(true))
 		if err == nil {
 			records, _, rcode, err = parseDNSResponse(response, id)
 		}
@@ -377,41 +378,91 @@ func cmdDig(args []string) int {
 	return 0
 }
 
+// dnsTypes maps every record type the bundled DNS tools can name. OPT is
+// listed so an EDNS0 pseudo-record can be recognised and skipped.
+var dnsTypes = map[string]uint16{
+	"A": 1, "NS": 2, "CNAME": 5, "SOA": 6, "PTR": 12, "MX": 15, "TXT": 16,
+	"AAAA": 28, "SRV": 33, "OPT": 41, "DS": 43, "DNSKEY": 48, "SVCB": 64,
+	"HTTPS": 65, "ANY": 255, "CAA": 257,
+}
+
+// dnsClasses holds the query classes; CH is the one that matters in practice,
+// because it is how a server is asked for its own version.
+var dnsClasses = map[string]uint16{"IN": 1, "CH": 3, "HS": 4}
+
+// dnsClassIN is the ordinary Internet class, used for every query but the
+// deliberate -c CH lookups.
+const dnsClassIN = 1
+
 func dnsTypeCode(name string) (uint16, bool) {
-	types := map[string]uint16{"A": 1, "NS": 2, "CNAME": 5, "SOA": 6, "PTR": 12, "MX": 15, "TXT": 16, "AAAA": 28, "ANY": 255}
-	value, ok := types[name]
+	value, ok := dnsTypes[name]
 	return value, ok
 }
 
 func dnsTypeName(value uint16) string {
-	for name, code := range map[string]uint16{"A": 1, "NS": 2, "CNAME": 5, "SOA": 6, "PTR": 12, "MX": 15, "TXT": 16, "AAAA": 28} {
-		if code == value {
+	for name, code := range dnsTypes {
+		if code == value && name != "ANY" {
 			return name
 		}
 	}
 	return "TYPE" + strconv.Itoa(int(value))
 }
 
-func firstNameServer() string {
+func dnsClassCode(name string) (uint16, bool) {
+	value, ok := dnsClasses[name]
+	return value, ok
+}
+
+func dnsClassName(value uint16) string {
+	for name, code := range dnsClasses {
+		if code == value {
+			return name
+		}
+	}
+	return "CLASS" + strconv.Itoa(int(value))
+}
+
+func dnsNetwork(tcp bool) string {
+	if tcp {
+		return "tcp"
+	}
+	return "udp"
+}
+
+// nameServers lists the resolvers configured in /etc/resolv.conf, in file
+// order.
+func nameServers() []string {
 	data, _ := os.ReadFile("/etc/resolv.conf")
+	var servers []string
 	for _, line := range strings.Split(string(data), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) >= 2 && fields[0] == "nameserver" {
-			return fields[1]
+			servers = append(servers, fields[1])
 		}
+	}
+	return servers
+}
+
+func firstNameServer() string {
+	if servers := nameServers(); len(servers) > 0 {
+		return servers[0]
 	}
 	return ""
 }
 
-func buildDNSQuery(name string, queryType uint16) ([]byte, uint16, error) {
+func buildDNSQuery(name string, queryType, queryClass uint16, recursive bool) ([]byte, uint16, error) {
 	idBytes := []byte{0, 0}
 	if _, err := rand.Read(idBytes); err != nil {
 		return nil, 0, err
 	}
 	id := binary.BigEndian.Uint16(idBytes)
+	flags := uint16(0x0100) // RD, recursion desired
+	if !recursive {
+		flags = 0
+	}
 	message := make([]byte, 12)
 	binary.BigEndian.PutUint16(message[0:2], id)
-	binary.BigEndian.PutUint16(message[2:4], 0x0100)
+	binary.BigEndian.PutUint16(message[2:4], flags)
 	binary.BigEndian.PutUint16(message[4:6], 1)
 	encoded, err := encodeDNSName(name)
 	if err != nil {
@@ -419,7 +470,7 @@ func buildDNSQuery(name string, queryType uint16) ([]byte, uint16, error) {
 	}
 	message = append(message, encoded...)
 	message = binary.BigEndian.AppendUint16(message, queryType)
-	message = binary.BigEndian.AppendUint16(message, 1)
+	message = binary.BigEndian.AppendUint16(message, queryClass)
 	return message, id, nil
 }
 
@@ -442,11 +493,11 @@ func encodeDNSName(name string) ([]byte, error) {
 	return append(encoded, 0), nil
 }
 
-func exchangeDNS(server string, query []byte, timeout time.Duration, tcp bool) ([]byte, error) {
-	network := "udp"
-	if tcp {
-		network = "tcp"
-	}
+// exchangeDNS sends one query and returns the raw response. network is a Go
+// dial network ("udp", "tcp4", ...), which is how the callers pin both the
+// transport and, for host -4/-6, the address family.
+func exchangeDNS(server string, query []byte, timeout time.Duration, network string) ([]byte, error) {
+	tcp := strings.HasPrefix(network, "tcp")
 	conn, err := net.DialTimeout(network, server, timeout) //nolint:gosec // G704: contacting the user-selected DNS server is this applet's purpose.
 	if err != nil {
 		return nil, err
@@ -518,8 +569,10 @@ func parseDNSResponse(message []byte, id uint16) ([]dnsRecord, bool, int, error)
 		if valueErr != nil {
 			return nil, false, 0, valueErr
 		}
-		if class == 1 {
-			records = append(records, dnsRecord{name: name, kind: dnsTypeName(kind), value: value, ttl: ttl})
+		if class == dnsClassIN {
+			records = append(records, dnsRecord{
+				name: name, kind: dnsTypeName(kind), class: dnsClassName(class), value: value, ttl: ttl,
+			})
 		}
 		offset = rdata + length
 	}
@@ -595,6 +648,21 @@ func formatDNSRData(message []byte, offset, length int, kind uint16) (string, er
 			position += size
 		}
 		return strings.Join(values, " "), nil
+	case 33:
+		if length < 7 {
+			break
+		}
+		target, _, err := decodeDNSName(message, offset+6, 0)
+		return fmt.Sprintf("%d %d %d %s", binary.BigEndian.Uint16(data[0:2]),
+			binary.BigEndian.Uint16(data[2:4]), binary.BigEndian.Uint16(data[4:6]), target), err
+	case 64, 65:
+		return formatServiceBinding(message, offset, length)
+	case 257:
+		if length < 2 || int(data[1])+2 > length {
+			break
+		}
+		tag := int(data[1])
+		return fmt.Sprintf("%d %s %s", data[0], data[2:2+tag], strconv.Quote(string(data[2+tag:]))), nil
 	case 6:
 		primary, next, err := decodeDNSName(message, offset, 0)
 		if err != nil {
@@ -610,6 +678,80 @@ func formatDNSRData(message []byte, offset, length int, kind uint16) (string, er
 			binary.BigEndian.Uint32(message[numbers+16:numbers+20])), nil
 	}
 	return fmt.Sprintf("\\# %d %x", length, data), nil
+}
+
+// serviceBindingKeys names the SVCB/HTTPS parameters that have a defined
+// presentation form; anything else is printed as keyNNN.
+var serviceBindingKeys = map[uint16]string{
+	0: "mandatory", 1: "alpn", 2: "no-default-alpn", 3: "port",
+	4: "ipv4hint", 5: "ech", 6: "ipv6hint",
+}
+
+// formatServiceBinding renders an SVCB or HTTPS record in the presentation
+// format of RFC 9460: the priority, the target name, and then the parameters
+// in the order they appear on the wire.
+func formatServiceBinding(message []byte, offset, length int) (string, error) {
+	if length < 3 {
+		return "", fmt.Errorf("invalid service binding record")
+	}
+	priority := binary.BigEndian.Uint16(message[offset : offset+2])
+	target, next, err := decodeDNSName(message, offset+2, 0)
+	if err != nil {
+		return "", err
+	}
+	parts := []string{strconv.Itoa(int(priority)), target}
+	for next+4 <= offset+length {
+		key := binary.BigEndian.Uint16(message[next : next+2])
+		size := int(binary.BigEndian.Uint16(message[next+2 : next+4]))
+		next += 4
+		if next+size > offset+length {
+			return "", fmt.Errorf("invalid service binding parameter")
+		}
+		parts = append(parts, formatServiceBindingParam(key, message[next:next+size]))
+		next += size
+	}
+	return strings.Join(parts, " "), nil
+}
+
+func formatServiceBindingParam(key uint16, value []byte) string {
+	name, known := serviceBindingKeys[key]
+	if !known {
+		name = "key" + strconv.Itoa(int(key))
+	}
+	switch key {
+	case 2: // no-default-alpn carries no value
+		return name
+	case 1: // a sequence of length-prefixed protocol identifiers
+		var protocols []string
+		for position := 0; position < len(value); {
+			size := int(value[position])
+			position++
+			if position+size > len(value) {
+				break
+			}
+			protocols = append(protocols, string(value[position:position+size]))
+			position += size
+		}
+		return fmt.Sprintf("%s=%q", name, strings.Join(protocols, ","))
+	case 3:
+		if len(value) != 2 {
+			break
+		}
+		return fmt.Sprintf("%s=%d", name, binary.BigEndian.Uint16(value))
+	case 4, 6:
+		step := 4
+		if key == 6 {
+			step = 16
+		}
+		var addresses []string
+		for position := 0; position+step <= len(value); position += step {
+			addresses = append(addresses, net.IP(value[position:position+step]).String())
+		}
+		return fmt.Sprintf("%s=%s", name, strings.Join(addresses, ","))
+	case 5:
+		return fmt.Sprintf("%s=%s", name, base64.StdEncoding.EncodeToString(value))
+	}
+	return fmt.Sprintf("%s=%q", name, string(value))
 }
 
 func dnsRCodeName(code int) string {
