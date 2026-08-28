@@ -1,155 +1,98 @@
 # ba6
 
-`ba6` is a dependency-free Linux/amd64 multicall binary containing a focused
-set of Unix utilities. Invoke an applet as `ba6 cat file`, or create a symlink
-whose basename is an applet name.
+`ba6` is a dependency-free Linux/amd64 multicall binary bundling a focused set
+of Unix utilities in one static, hardened binary with no third-party code.
+Invoke an applet as `ba6 cat file`, or symlink `cat` → `ba6` and call it
+directly.
 
-Run `ba6 --list` to list applets, `ba6 help COMMAND` for command-specific help,
-or `ba6 COMMAND --help` for the same documentation.
+```sh
+ba6 --list              # list applets
+ba6 help COMMAND        # or: ba6 COMMAND --help
+```
 
-## Included applets
-
-The binary currently includes:
+## Applets
 
 ```text
 [ adduser awk base64 basename blkid blockdev bunzip2 bzip2 cat cfdisk chgrp chmod chown chroot cmp completion cp
 cpio curl cut date dd df diff dig dirname dmesg du echo env expr false fdisk file find free fsck fsck.ext2
 fsck.ext3 fsck.ext4 grep groupadd gunzip gzip halt head help hexdump host hostname id iftop init insmod ip
 iptables kill less ln login losetup ls lsblk lsmod lsof man md5sum mkdir mkfs mkfs.btrfs mkfs.ext2 mkfs.ext3
-mkfs.ext4
-mkfs.xfs mknod mkswap mktemp modprobe mount mtr mv nano nc ncdu netstat nslookup od passwd pgrep pidof ping
-pkill poweroff printenv printf ps pwd readlink realpath reboot rm rmdir rmmod sed seq sfdisk sh sha1sum
+mkfs.ext4 mkfs.xfs mknod mkswap mktemp modprobe mount mtr mv nano nc ncdu netstat nslookup od passwd pgrep pidof
+ping pkill poweroff printenv printf ps pwd readlink realpath reboot rm rmdir rmmod sed seq sfdisk sh sha1sum
 sha256sum sha512sum sleep sort ss stat strings swapoff swapon switch_root sync sysctl tail tar tee test
 timeout top touch tr traceroute tree true tty udhcpc umount uname uniq unxz unzip unzstd uptime useradd watch
 wc wget which whoami xargs xz zip zstd
 ```
 
-## Regular-expression compatibility
+Coverage against the real tools is measured, not estimated — see
+[COVERAGE.md](COVERAGE.md). See [PROVENANCE.md](PROVENANCE.md) for how the
+applets were written.
 
-`grep` and `sed` use POSIX Basic Regular Expressions by default; `grep -E`
-and `sed -E` select POSIX EREs, and AWK regular expressions are POSIX EREs.
-For AWK, a one-character `FS` other than space is always literal, while a
-multi-character `FS` is an ERE. BA6 executes these expressions with RE2, which
-cannot implement regular-expression backreferences: patterns such as
-`\(x\)\1` are rejected clearly instead of being silently misinterpreted.
-The common GNU BRE extensions `\|`, `\+`, and `\?` remain available.
+## Behavior notes
 
-## Bash completion
-
-Load completion for the current Bash session with:
-
-```sh
-source <(ba6 completion bash)
-```
-
-For persistent per-user completion, generate the standard completion file:
-
-```sh
-mkdir -p ~/.local/share/bash-completion/completions
-ba6 completion bash > ~/.local/share/bash-completion/completions/ba6
-```
-
-The filesystem and scripting set includes hard and symbolic links, canonical
-path resolution, recursive octal permission and ownership changes, file
-metadata formatting, pipeline fan-out, path component extraction, conditional
-expressions, time display, and duration-based sleeping. `date` intentionally
-does not change the system clock.
-
-The extended recovery set also includes SHA-256 verification, filesystem and
-directory usage, recursive search, stream editing, protected tar extraction,
-gzip compression, system identity, `/proc` process and memory reporting, and
-signal delivery. `find` deliberately has no `-exec`, and `sed` has no in-place
-mode, preserving an explicit-write model for those individual applets.
-
-The scripting and diagnostic set adds a small execution-capable shell, `xargs`,
-environment and expression tools, byte and text inspection, process matching,
-kernel logs, uptime, open-file and socket inspection, direct DNS queries,
-IPv4/IPv6 ICMP, route/loss probing, interface traffic rates, verbose HTTP(S),
-and TCP/UDP copying. `traceroute` probes with UDP and reads Linux's
-unprivileged error queue; `mtr` prefers ICMP echo like the original, using
-unprivileged ICMP datagram sockets where `net.ipv4.ping_group_range` permits
-them and falling back to the UDP error queue otherwise. `mtr` refreshes a
-full-screen display on a terminal and prints an mtr-compatible report when its
-output is redirected or `-r` is given. `iftop` is a bounded batch sampler of
-per-interface `/proc/net/dev` counters rather than an interactive per-flow
-display. `top` renders the usual task, CPU, memory, and swap summaries with
-procps-style task columns; it supports bounded batch collection for scripts and
-a small terminal key set for sorting and view toggles. `netstat` reports sockets, the IPv4 routing table, and interface
-counters in the net-tools layout; it never resolves names, so `-r` shows numeric
-addresses apart from the default route. `ncdu` scans a directory and browses it
-on a full-screen display, strictly read-only: it can neither delete files nor
-spawn a shell. `tree` draws an indented directory listing.
-`ip` accepts abbreviated objects and commands the way the original resolves
-them, so `ip r s` lists routes and `ip l s eth0 up` brings a link up. `ps`
-accepts the dashless BSD options, including `ps aux` and `ps axu`.
-`init` provides a PID-1/container supervisor with process-group signal
-forwarding, orphan reaping, descendant cleanup, and exit-status propagation.
-Storage recovery includes filesystem signature probing, node creation, mounting,
-unmounting, buffer flushing, and privileged halt/reboot/poweroff controls.
-It now also includes block-device discovery, loop-device setup, chroot and root
-switching, kernel-module management, and a focused one-shot DHCP client. Disk
-recovery gains block-device controls, a terminal DOS/MBR and conventional-GPT
-partition editor, validated scripted DOS/MBR partition editing,
-read-only DOS/MBR and GPT partition listing,
-read-only ext2/ext3/ext4 structural checking, bounded ext2, ext3, ext4, XFS,
-and btrfs formatters, and Linux swap formatting and activation. Each formatter
-writes exactly one fixed profile rather than a configurable layout: the ext
-family uses 4 KiB blocks and a single block group from 1 MiB through 128 MiB
-(8 MiB and up for the journalled ext3 and ext4 variants); `mkfs.xfs` writes a
-version 5 filesystem with four allocation groups and a clean 64 MiB internal
-log from 320 MiB up; and `mkfs.btrfs` writes a single-device filesystem with
-unmirrored block groups from 128 MiB up. Their images are checked against
-system `e2fsck`, `xfs_repair`, and `btrfs check` in development. Text
-recovery gains focused AWK processing, block copying, file identification,
-secure temporary files, command timeouts, and process snapshots.
-Archive recovery now also includes safe ZIP and newc CPIO extraction, bzip2,
-and MD5/SHA-1/SHA-512 verification. The self-contained `xz` and `zstd`
-applets write interoperable raw-block streams (and Zstandard RLE blocks), so
-they deliberately do not implement general compressed-block decoding.
-`nano` is a compact full-screen editor with
-navigation, insertion/deletion, line cutting, saving (`Ctrl-S`), and guarded
-exit (`Ctrl-X`). `less` pages files on a full screen with searching, line
-numbering, horizontal scrolling, and movement between the files named on the
-command line; it holds each file in memory, copies its input through unchanged
-when the output is not a terminal, and has no command that runs another
-program, so the editor, shell, and pipe keys of the original are absent.
-`host` resolves names, addresses, and individual record types through the
-resolvers in `/etc/resolv.conf` or a server named on the command line, printing
-either the usual one-sentence-per-record summary or, with `-v`, the full
-response in master-file layout. It queries the name exactly as written, so the
-search list and the `ndots` rule do not apply, and it does not perform zone
-transfers.
+- **Regexes**: `grep`/`sed` default to POSIX BRE, `-E` selects ERE; AWK
+  regexes are ERE (a one-character `FS` is literal, a multi-character `FS`
+  is an ERE). Matching runs on RE2, so backreferences (`\(x\)\1`) are
+  rejected outright instead of being silently mishandled; the GNU BRE
+  extensions `\|`, `\+`, `\?` work.
+- **Shell** (`sh`): quoting, variable/arithmetic expansion, command
+  substitution, pipelines, `&&`/`||`, redirections, `if`/`for`/`while`,
+  `break`/`continue`, and the `cd pwd echo printf read export unset exit :`
+  builtins. No functions, subshells, `case`, globbing, or here-documents.
+- `find` has no `-exec`; `sed` has no `-i` — both keep an explicit-write
+  model. `tar`/`zip`/`cpio` extraction is guarded against path traversal
+  (`../`, absolute member paths).
+- Destructive commands (`rm`, `cp`, `mv`, disk formatters, …) carry
+  same-file, self-copy, and filesystem-root safeguards.
+- **Filesystem tools**: each `mkfs.*` writes one fixed on-disk profile
+  instead of a configurable layout — ext2/3/4 use 4 KiB blocks and a single
+  block group (ext2 from 1 MiB, the journalled ext3/ext4 from 8 MiB, all up
+  to 128 MiB); `mkfs.xfs` writes v5 with four allocation groups and a 64 MiB
+  log from 320 MiB; `mkfs.btrfs` writes single-device, unmirrored, from
+  128 MiB. Images are checked against `e2fsck`/`xfs_repair`/`btrfs check` in
+  development. `fsck.*` is read-only. `cfdisk` edits DOS/MBR and
+  conventional GPT tables on a terminal; `sfdisk` adds scripted DOS/MBR
+  editing; `fdisk`/`sfdisk` add read-only listing of both label types.
+- **Networking**: `traceroute` probes with UDP and Linux's unprivileged
+  error queue; `mtr` prefers ICMP echo (unprivileged sockets where
+  `net.ipv4.ping_group_range` allows, else the UDP error queue) and shows a
+  live display or an `-r` report. `iftop` is a bounded batch sampler of
+  `/proc/net/dev` counters, not an interactive per-flow view. `netstat`
+  never resolves names except the default route. `host` queries the exact
+  name given — no search list, no `ndots`; neither `host` nor `dig`
+  performs zone transfers. `ip` accepts any unambiguous abbreviation of an
+  object/command, resolved the way the original does (`ip r s` lists
+  routes, `ip l s eth0 up` brings a link up). `ps` accepts the dashless BSD
+  option style, including `ps aux`/`ps axu`.
+- **TUI applets** (`top`, `less`, `ncdu`, `nano`, `cfdisk`) run full-screen,
+  with a bounded batch/report mode for scripts where the original has one.
+  `ncdu` is strictly read-only (no delete, no shell escape); `less` holds
+  each file in memory and has no command that spawns another program.
+- **Self-contained formats**: `xz`/`zstd` write interoperable raw-block
+  streams (and Zstandard RLE blocks) rather than implementing general
+  compressed-block decoding.
 
 ## Build and verify
 
-The supported release target is Linux/amd64. The canonical build is static and
-installs a seccomp filter at process startup. For environments that cannot use
-the filter, invoke the binary as `ba6 --no-seccomp COMMAND ...` or
-`ba6 --seccomp=off COMMAND ...`. Other startup protections remain enabled.
-
-Applets that genuinely require a syscall denied by the normal filter
-automatically skip seccomp. Mount and network applets retain `no_new_privs`;
-execution frontends (`sh`, `env`, `xargs`, `timeout`, `chroot`, `login`, and
-`switch_root`) do not, because changing that state would silently prevent their
-children from using set-user-ID programs or file capabilities. A real PID 1
-`init` likewise runs without seccomp or
-`no_new_privs`. Core-dump protection remains active for every profile. Other
-applets, including `nano`, continue to run with the filter enabled.
-
 ```sh
 make build
-make verify
+make verify   # formatting, tests, vet, linters, static-build check
 ```
 
-`make verify` checks formatting, runs unit/regression tests, vet, the configured
-linters, and the static-build check.
+The release target is Linux/amd64, statically linked, with a seccomp filter
+installed at startup (plus `no_new_privs` and core-dump protection).
+Disable it with `ba6 --no-seccomp COMMAND` / `--seccomp=off` where the
+environment can't support it. Applets that genuinely need a denied syscall
+skip seccomp automatically; execution frontends (`sh`, `env`, `xargs`,
+`timeout`, `chroot`, `login`, `switch_root`) and a real PID-1 `init` also
+skip `no_new_privs`, so their children can still use set-user-ID programs
+and file capabilities.
 
 ## System init
 
-When invoked as PID 1 without a command, `init` reads `/etc/inittab`. The file
-uses the traditional `id:runlevels:action:process` layout; runlevels are parsed
-for compatibility but are not otherwise interpreted. A minimal configuration
-for a serial-console system is:
+As PID 1 with no command, `init` acts as a process-group signal forwarder,
+orphan reaper, and exit-status propagator, and reads `/etc/inittab`
+(`id:runlevels:action:process`; runlevels are parsed but not interpreted):
 
 ```text
 ::sysinit:/bin/mount -t proc proc /proc
@@ -159,55 +102,36 @@ ttyS0::respawn:/bin/login
 ::shutdown:/bin/umount -a -r
 ```
 
-`sysinit` and `wait` commands run synchronously in phase and file order. After
-the `sysinit` phase, where `/proc` should be mounted, init validates
-`/etc/hostname` and writes it to `/proc/sys/kernel/hostname`. Hostname errors
-are reported but do not stop boot. `once` commands start after the `wait` phase,
-and `respawn`/`askfirst` services are monitored with exponential crash backoff.
-The supported event actions are `shutdown`,
-`ctrlaltdel`, `powerfail`, `powerwait`, and `powerokwait`. SIGHUP reloads the
-file. SIGINT runs `ctrlaltdel` and reboots; SIGUSR1 halts; SIGUSR2 powers off;
-SIGTERM reboots; and SIGPWR runs power-failure actions before powering off.
-If `/etc/powerstatus` begins with `O`, SIGPWR instead runs `powerokwait` actions
-and resumes supervision.
+`sysinit`/`wait` entries run synchronously in file order; `/etc/hostname` is
+applied right after `sysinit`; `once` runs after `wait`; `respawn`/
+`askfirst` services are supervised with crash backoff. Signals: SIGHUP
+reloads the file; SIGINT runs `ctrlaltdel` and reboots; SIGUSR1 halts;
+SIGUSR2 powers off; SIGTERM reboots; SIGPWR runs `powerfail`/`powerwait`
+(or `powerokwait` if `/etc/powerstatus` starts with `O`). Shutdown signals
+remaining processes, flushes buffers, unmounts deepest-first, remounts root
+read-only, then reboots — a failed reboot is reported and init stays alive.
+`init -f FILE` selects an alternate inittab.
 
-PID 1 establishes `PATH=/sbin:/bin:/usr/sbin:/usr/bin` and standard root/console
-environment variables, reaps orphaned processes, and never returns. Shutdown
-runs configured actions, signals remaining processes, flushes buffers, unmounts
-filesystems deepest-first, remounts the root filesystem read-only, and invokes
-the kernel reboot operation. If reboot fails, PID 1 reports the error and stays
-alive. `init -f FILE` selects an alternate inittab.
-
-The bundled `login` applet authenticates against `/etc/passwd` and `/etc/shadow`
-and supports SHA-256 (`$5$`) and SHA-512 (`$6$`) crypt hashes. It rejects locked
-and expired accounts, initializes supplementary groups, drops all user and group
-IDs, clears the inherited environment except for `TERM`, and executes the shell
-from the passwd entry as a login shell. Configure `login` as a `respawn` service,
-as above, so logging out returns to a fresh credential prompt. `login` must be
-started by root and does not implement PAM-dependent policies or yescrypt/bcrypt
-password hashes.
-
-`passwd` complements `login` with interactive password changes. It verifies the
-current password for non-root callers, confirms the replacement, generates a
-randomly salted SHA-512 crypt hash, and atomically replaces the relevant account
-database while preserving its mode and ownership. Root can reset locked accounts
-and hashes unsupported by `login`; ordinary users still need filesystem permission
-to update the database (the multicall binary should not be installed set-user-ID).
+`login` authenticates against `/etc/passwd`/`/etc/shadow` (SHA-256/SHA-512
+crypt only — no PAM, no yescrypt/bcrypt), drops privileges, and execs a
+login shell; run it as a `respawn` service, as above. `passwd` changes a
+password in place with a freshly salted SHA-512 hash; root can reset locked
+accounts. The binary should not be installed set-user-ID.
 
 ## Scope
 
-The applets intentionally implement the options shown by each command's
-`--help`; unsupported options are rejected. They are not complete GNU
-coreutils, util-linux, procps, iproute2, or full POSIX-shell replacements. The
-shell supports quoting, variable expansion, command lists, `&&`/`||`, pipelines,
-redirections, and the `cd`, `pwd`, `echo`, `printf`, `read`, `export`, `unset`,
-`exit`, and `:` builtins;
-it intentionally omits a programming language (`if`, loops, functions, and
-command substitution). Destructive commands include same-file, self-copy, and
-filesystem-root safeguards.
+Applets implement the options shown by their own `--help`; unsupported
+options are rejected. This is not a complete GNU coreutils, util-linux,
+procps, iproute2, or POSIX-shell replacement — see
+[COVERAGE.md](COVERAGE.md) for exactly where each applet falls short of its
+original.
 
-See [COVERAGE.md](COVERAGE.md) for a measured, per-applet comparison against the
-original tools, and [PROVENANCE.md](PROVENANCE.md) for how the applets were written.
+## Bash completion
+
+```sh
+source <(ba6 completion bash)                                  # current session
+ba6 completion bash > ~/.local/share/bash-completion/completions/ba6  # persistent
+```
 
 ## License
 
