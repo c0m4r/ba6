@@ -40,9 +40,9 @@ validation, fixture-based tests, and clearly documented filesystem support.
 
 ## Boot and process recovery
 
-- [ ] `pivot_root`
+- [x] `pivot_root`
 - [x] `setsid`
-- [ ] `getty`
+- [x] `getty`
 - [x] `login`
 - [x] `nice`
 - [x] `renice`

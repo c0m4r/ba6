@@ -423,6 +423,24 @@ func cmdChroot(args []string) int {
 	return 0
 }
 
+// cmdPivotRoot is a thin wrapper around the pivot_root(2) syscall, matching
+// util-linux's pivot_root(8): it moves the root filesystem to PUT_OLD and
+// makes NEW_ROOT the new root. It does not chdir or exec anything; callers
+// are responsible for the chroot/chdir dance the syscall's man page
+// describes.
+func cmdPivotRoot(args []string) int {
+	if len(args) != 2 {
+		fatalf("pivot_root", "expected NEW_ROOT PUT_OLD")
+		return 1
+	}
+	newRoot, putOld := args[0], args[1]
+	if err := syscall.PivotRoot(newRoot, putOld); err != nil {
+		fatalf("pivot_root", "failed to change root from %q to %q: %v", newRoot, putOld, err)
+		return 1
+	}
+	return 0
+}
+
 func cmdSwitchRoot(args []string) int {
 	if len(args) < 2 {
 		fatalf("switch_root", "expected NEW_ROOT NEW_INIT [ARG]...")

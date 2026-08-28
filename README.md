@@ -15,10 +15,10 @@ ba6 help COMMAND        # or: ba6 COMMAND --help
 ```text
 [ adduser awk base64 basename blkid blockdev bunzip2 bzip2 cat cfdisk chgrp chmod chown chroot cmp completion cp
 cpio curl cut date dd df diff dig dirname dmesg du echo env expr false fdisk file find free fsck fsck.ext2
-fsck.ext3 fsck.ext4 grep groupadd gunzip gzip halt head help hexdump host hostname id iftop init insmod ip
+fsck.ext3 fsck.ext4 getty grep groupadd gunzip gzip halt head help hexdump host hostname id iftop init insmod ip
 iptables kill less ln login losetup ls lsblk lsmod lsof man md5sum mkdir mkfs mkfs.btrfs mkfs.ext2 mkfs.ext3
 mkfs.ext4 mkfs.xfs mknod mkswap mktemp modprobe mount mtr mv nano nc ncdu netstat nslookup od passwd pgrep pidof
-ping pkill poweroff printenv printf ps pwd readlink realpath reboot rm rmdir rmmod sed seq sfdisk sh sha1sum
+ping pivot_root pkill poweroff printenv printf ps pwd readlink realpath reboot rm rmdir rmmod sed seq sfdisk sh sha1sum
 sha256sum sha512sum sleep sort ss stat strings swapoff swapon switch_root sync sysctl tail tar tee test
 timeout top touch tr traceroute tree true tty udhcpc umount uname uniq unxz unzip unzstd uptime useradd watch
 wc wget which whoami xargs xz zip zstd
@@ -84,9 +84,9 @@ installed at startup (plus `no_new_privs` and core-dump protection).
 Disable it with `ba6 --no-seccomp COMMAND` / `--seccomp=off` where the
 environment can't support it. Applets that genuinely need a denied syscall
 skip seccomp automatically; execution frontends (`sh`, `env`, `xargs`,
-`timeout`, `chroot`, `login`, `switch_root`) and a real PID-1 `init` also
-skip `no_new_privs`, so their children can still use set-user-ID programs
-and file capabilities.
+`timeout`, `chroot`, `getty`, `login`, `switch_root`) and a real PID-1 `init`
+also skip `no_new_privs`, so their children can still use set-user-ID
+programs and file capabilities.
 
 ## System init
 
@@ -98,7 +98,7 @@ orphan reaper, and exit-status propagator, and reads `/etc/inittab`
 ::sysinit:/bin/mount -t proc proc /proc
 ::sysinit:/bin/mount -t sysfs sysfs /sys
 ::sysinit:/bin/mount -t devtmpfs devtmpfs /dev
-ttyS0::respawn:/bin/login
+tty1::respawn:/bin/getty 38400 tty1
 ::shutdown:/bin/umount -a -r
 ```
 
@@ -112,11 +112,17 @@ remaining processes, flushes buffers, unmounts deepest-first, remounts root
 read-only, then reboots — a failed reboot is reported and init stays alive.
 `init -f FILE` selects an alternate inittab.
 
-`login` authenticates against `/etc/passwd`/`/etc/shadow` (SHA-256/SHA-512
-crypt only — no PAM, no yescrypt/bcrypt), drops privileges, and execs a
-login shell; run it as a `respawn` service, as above. `passwd` changes a
-password in place with a freshly salted SHA-512 hash; root can reset locked
-accounts. The binary should not be installed set-user-ID.
+`getty` opens the given line, claims it as the controlling terminal, applies
+the requested baud rate and line discipline, shows `/etc/issue`, reads a
+login name, and execs a login program (`login` by default) with it — run it
+as a `respawn` service, as above; `-a USER` pre-fills the name for kiosk-style
+consoles but still asks for the password. `login` authenticates against
+`/etc/passwd`/`/etc/shadow` (SHA-256/SHA-512 crypt only — no PAM, no
+yescrypt/bcrypt), drops privileges, and execs a login shell; it can also run
+directly as the `respawn` service if a line's baud rate and issue banner
+don't matter. `passwd` changes a password in place with a freshly salted
+SHA-512 hash; root can reset locked accounts. The binary should not be
+installed set-user-ID.
 
 ## Scope
 

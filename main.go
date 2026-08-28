@@ -66,6 +66,7 @@ var applets = map[string]applet{
 	"fsck.ext2":   cmdFsckExt2,
 	"fsck.ext3":   cmdFsckExt3,
 	"fsck.ext4":   cmdFsckExt4,
+	"getty":       cmdGetty,
 	"free":        cmdFree,
 	"grep":        cmdGrep,
 	"groupadd":    cmdGroupadd,
@@ -126,6 +127,7 @@ var applets = map[string]applet{
 	"pgrep":       cmdPgrep,
 	"pidof":       cmdPidof,
 	"ping":        cmdPing,
+	"pivot_root":  cmdPivotRoot,
 	"pkill":       cmdPkill,
 	"poweroff":    cmdPoweroff,
 	"printenv":    cmdPrintenv,
@@ -247,8 +249,8 @@ func main() {
 
 func appletNeedsUnrestrictedSyscalls(name string) bool {
 	switch name {
-	case "chroot", "curl", "dig", "env", "host", "init", "insmod", "login", "modprobe", "mount", "mtr", "nc",
-		"nice", "nohup", "nslookup", "ping", "rmmod", "setsid", "sh", "switch_root", "timeout", "traceroute", "udhcpc", "umount", "watch",
+	case "chroot", "curl", "dig", "env", "getty", "host", "init", "insmod", "login", "modprobe", "mount", "mtr", "nc",
+		"nice", "nohup", "nslookup", "ping", "pivot_root", "rmmod", "setsid", "sh", "switch_root", "timeout", "traceroute", "udhcpc", "umount", "watch",
 		"wget", "xargs":
 		return true
 	}

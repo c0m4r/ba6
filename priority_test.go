@@ -223,7 +223,7 @@ func TestPrivilegedPriorityGuardsAndHardening(t *testing.T) {
 			t.Fatalf("switch_root guard = (%d, %q)", status, stderr)
 		}
 	}
-	for _, name := range []string{"chroot", "insmod", "modprobe", "rmmod", "switch_root", "timeout", "udhcpc"} {
+	for _, name := range []string{"chroot", "insmod", "modprobe", "pivot_root", "rmmod", "switch_root", "timeout", "udhcpc"} {
 		if !appletNeedsUnrestrictedSyscalls(name) {
 			t.Errorf("%s should bypass seccomp", name)
 		}
@@ -233,5 +233,21 @@ func TestPrivilegedPriorityGuardsAndHardening(t *testing.T) {
 		if profile.noNewPrivs || profile.seccomp {
 			t.Errorf("%s execution profile = %+v", name, profile)
 		}
+	}
+	// pivot_root keeps no_new_privs (it does not exec anything, unlike
+	// chroot/switch_root) and only sheds seccomp for the pivot_root(2) call.
+	if profile := hardeningForApplet("pivot_root", 42, true); !profile.noNewPrivs || profile.seccomp {
+		t.Errorf("pivot_root execution profile = %+v", profile)
+	}
+}
+
+func TestPivotRootArgumentGuard(t *testing.T) {
+	status, _, stderr := captureApplet(t, cmdPivotRoot, []string{"/new-root"}, "")
+	if status != 1 || !strings.Contains(stderr, "NEW_ROOT PUT_OLD") {
+		t.Fatalf("pivot_root missing arg = (%d, %q)", status, stderr)
+	}
+	status, _, stderr = captureApplet(t, cmdPivotRoot, []string{"/new-root", "/new-root/old", "extra"}, "")
+	if status != 1 || !strings.Contains(stderr, "NEW_ROOT PUT_OLD") {
+		t.Fatalf("pivot_root extra arg = (%d, %q)", status, stderr)
 	}
 }

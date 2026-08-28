@@ -86,6 +86,26 @@ Read-only structural validation for ext2, ext3, and ext4 filesystems.`,
 Read-only structural validation for ext2, ext3, and ext4 filesystems.`,
 	"groupadd": `Usage: groupadd [-g GID] GROUP
 Create a local group in /etc/group. Requires root.`,
+	"getty": `Usage: getty [OPTION]... LINE [BAUD_RATE[,BAUD_RATE...]] [TERM]
+Open LINE (a path under /dev, or "-" for an already-connected stdin), claim it
+as the controlling terminal, optionally show /etc/issue, read a login name,
+and exec a login program. TERM defaults to linux on a numbered virtual
+console and vt100 otherwise.
+
+Options:
+  -a, --autologin USER        skip the login-name prompt, pre-filling USER
+  -n, --skip-login            start the login program with no name at all
+  -l, --login-program PROGRAM run PROGRAM instead of login (default login)
+  -r, --chroot DIRECTORY      change root to DIRECTORY before the handoff
+  -L, --local-line[=MODE]     set CLOCAL to auto, always, or never
+  -J, --noclear               do not clear the screen first
+  -i, --noissue               do not display /etc/issue
+  -8, --8bits                 assume the line is 8-bit clean
+  -p, --login-pause           wait for a key before the login prompt
+  -t, --timeout SECONDS       give up if no name is entered in time
+
+Unlike the login program's own -f autologin bypass, --autologin here only
+pre-fills the name; the account's password is still required.`,
 	"cpio": `Usage: cpio -o|-i|-t [-v] [-F ARCHIVE] [-H newc]
 Create, extract, or list newc cpio archives. Create mode reads one input path
 per line from standard input; extraction rejects escaping paths.`,
@@ -244,6 +264,10 @@ modules.dep, modules.alias, and modules.builtin files.`,
 	"rmmod": `Usage: rmmod [-f] MODULE...
 Remove kernel modules. Requires CAP_SYS_MODULE; -f also requires kernel support
 for forced module unloading.`,
+	"pivot_root": `Usage: pivot_root NEW_ROOT PUT_OLD
+Move the root filesystem to PUT_OLD and make NEW_ROOT the new root. A thin
+wrapper around the pivot_root(2) syscall; it does not chdir or exec anything.
+Requires appropriate privilege.`,
 	"switch_root": `Usage: switch_root NEW_ROOT NEW_INIT [ARG]...
 As PID 1, pivot to NEW_ROOT, move API filesystem mounts, detach the old root,
 and execute NEW_INIT. NEW_ROOT must be a usable root filesystem.`,

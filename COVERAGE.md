@@ -6,12 +6,13 @@
 > installed on the measurement host, so nothing was compared. Everything below is
 > measured, not estimated — see [How this was measured](#how-this-was-measured).
 
-As of commit `5303302`, `ba6` implements 168 applets (`main.go`'s `applets` map).
-This document assesses 150 of them against their originals; the 18 it does not yet
-cover are listed under [Not yet assessed](#not-yet-assessed).
+As of commit `5303302` plus the `pivot_root` and `getty` additions below, `ba6`
+implements 170 applets (`main.go`'s `applets` map). This document assesses 152 of
+them against their originals; the 18 it does not yet cover are listed under
+[Not yet assessed](#not-yet-assessed).
 
-**Short answer to "which are 1:1?"** — of the 150 assessed, 25 are genuine drop-ins,
-33 more are near-complete, 83 are partial or a narrow subset in ways that stay
+**Short answer to "which are 1:1?"** — of the 152 assessed, 26 are genuine drop-ins,
+33 more are near-complete, 84 are partial or a narrow subset in ways that stay
 invisible until a script reaches for a flag, and 9 have no upstream counterpart to
 compare against; see the [verdict table](#verdict-in-one-table). `netstat`, `ps aux`/
 `ps ax` and `host` are the closest matches recorded: every invocation tested against
@@ -29,9 +30,9 @@ options listed per applet below.
 
 | Tier | Meaning | Applets |
 |---|---|---|
-| **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `pwd` `echo` `basename` `tr` `base64` `uname` `whoami` `true` `false` `printenv` `sleep` `mknod` `seq` `dirname` `tac` `fold` `expand` `unexpand` `cksum` `nl` `paste` `comm` `split` `join` `nice` |
+| **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `pwd` `echo` `basename` `tr` `base64` `uname` `whoami` `true` `false` `printenv` `sleep` `mknod` `seq` `dirname` `tac` `fold` `expand` `unexpand` `cksum` `nl` `paste` `comm` `split` `join` `nice` `pivot_root` |
 | **B — near-complete** | Common paths match; a handful of real gaps | `cat` `wc` `head` `tail` `rm` `mkdir` `tee` `test` `[` `expr` `printf` `id` `mktemp` `kill` `timeout` `chroot` `blockdev` `stat` `env` `cmp` `sync` `dd` `sha256sum` `which` `rmdir` `top` `host` `setsid` `nohup` `renice` `lsusb` `lspci` `hwclock` |
-| **C — partial** | Everyday cases work, well-known flags or output details missing | `ls` `cp` `mv` `ln` `touch` `sort` `uniq` `cut` `grep` `find` `du` `df` `date` `readlink` `realpath` `strings` `od` `hexdump` `diff` `sh` `awk` `sed` `file` `tar` `gzip` `gunzip` `chown` `chgrp` `chmod` `free` `uptime` `hostname` `wget` `lsof` `lsblk` `blkid` `mount` `umount` `losetup` `swapon` `swapoff` `mkswap` `ss` `ip` `iptables` `ping` `traceroute` `mtr` `nc` `nslookup` `curl` `iftop` `pgrep` `pkill` `pidof` `modprobe` `insmod` `rmmod` `lsmod` `fdisk` `sfdisk` `mkfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkfs.btrfs` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `login` `passwd` `ps` `netstat` `tree` `less` `dmesg` `xargs` `dig` `nano` `ncdu` `cfdisk` |
+| **C — partial** | Everyday cases work, well-known flags or output details missing | `ls` `cp` `mv` `ln` `touch` `sort` `uniq` `cut` `grep` `find` `du` `df` `date` `readlink` `realpath` `strings` `od` `hexdump` `diff` `sh` `awk` `sed` `file` `tar` `gzip` `gunzip` `chown` `chgrp` `chmod` `free` `uptime` `hostname` `wget` `lsof` `lsblk` `blkid` `mount` `umount` `losetup` `swapon` `swapoff` `mkswap` `ss` `ip` `iptables` `ping` `traceroute` `mtr` `nc` `nslookup` `curl` `iftop` `pgrep` `pkill` `pidof` `modprobe` `insmod` `rmmod` `lsmod` `fdisk` `sfdisk` `mkfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkfs.btrfs` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `login` `passwd` `getty` `ps` `netstat` `tree` `less` `dmesg` `xargs` `dig` `nano` `ncdu` `cfdisk` |
 | **D — narrow subset** | A slice of the original; do not treat as a replacement | _(none)_ |
 | **N/A** | ba6-specific, no upstream counterpart | `help` `man` `completion` `init` `halt` `reboot` `poweroff` `switch_root` `udhcpc` |
 
@@ -90,6 +91,7 @@ Absent behaviour rather than wrong behaviour, each of which touches many applets
 | `split` | 11/13 | `--filter` `-u`'s effect | `-l` `-b` `-C` `-n N|l/N|r/N|K/N` `-d` `-x` `-a` `-e` `-t` `--verbose` `--additional-suffix`, legacy `-N`, suffix widening sequence and byte-chunk arithmetic match _(run)_ |
 | `join` | 11/11 | — | `-1` `-2` `-a` `-v` `-o` `-t` `-e` `-i` `--header` `-z`, field re-join rules and unsorted-input reporting match _(run)_ |
 | `nice` | 2/2 | — | `-n` and the legacy `-N` form; niceness applies to the whole command run, exit codes match _(run)_ |
+| `pivot_root` | n/a | — | thin `pivot_root(2)` wrapper, no chdir/exec; success, `EBUSY` on a non-mount-point `new_root`, `EPERM` for a non-root caller, and the missing-argument guard all match util-linux, tested under `unshare --mount --propagation private` on a disposable VM so nothing touched a real root filesystem _(run)_ |
 
 ### Tier B — near-complete
 
@@ -510,6 +512,27 @@ flags are given separately (`-f -n`, not `-fn`), and it identifies itself as
 
 **`login` / `passwd`** — no options _(src)_; `login` is missing `-p -f -h`, `passwd`
 is missing the whole administrative set (`-l -u -d -e -S -n -x -w -i -a -R -s`).
+
+**`getty`** — 10/34 options against `agetty --help` (util-linux 2.42.2), counted by
+hand rather than by the automated man-page comparison behind the other rows: the
+real tool on the measurement host is only installed as `agetty`, and the
+comparison script matches ba6 applet names to their originals 1:1. Present: `-8`
+`-a` `-i` `-J` `-l` `-L` `-n` `-p` `-r` `-t`. Missing: modem/dial-up-era options
+(`-m`/`--extract-baud`, `-s`/`--keep-baud`, `-w`/`--wait-cr`, `-R`/`--hangup`,
+`-I`/`--init-string`), telnet-style remote-host spoofing (`-E`, `-H`), issue-file
+selection and cosmetics (`-f`, `--show-issue`, `-N`, `--nohints`, `--nohostname`,
+`--long-hostname`), `-c`/`--noreset`, `-h`/`--flow-control`, `-o`/`--login-options`,
+`-U`/`--detect-case`, `--erase-chars`, `--kill-chars`, `--chdir`, `--delay`,
+`--nice`, `--reload`, and `--list-speeds`. Requires root and a real terminal
+device, so it was validated end to end on a disposable VM rather than in the
+regular test suite _(run)_: opening a real pty, claiming it as the controlling
+terminal, applying a baud rate and CLOCAL, clearing the screen, expanding
+`/etc/issue`'s `\n`/`\l` escapes, reading a login name (and separately confirming
+`-a`/`--autologin` skips that prompt), and handing off to a real `login` that
+authenticated an actual `/etc/shadow` SHA-512 entry and landed in that account's
+shell with the correct uid/gid. The `\s`/`\r`/`\v`/`\m`/`\d`/`\t` issue escapes and
+all option parsing are covered by unit tests instead, since they need no
+privilege or terminal.
 
 **`nano`** _(run, driven under a pseudo-terminal and checked screen by screen —
 cursor-position escapes rendered by a small VT100 interpreter, matched against real
