@@ -194,57 +194,6 @@ database while preserving its mode and ownership. Root can reset locked accounts
 and hashes unsupported by `login`; ordinary users still need filesystem permission
 to update the database (the multicall binary should not be installed set-user-ID).
 
-## Network configuration
-
-The built-in `ip` applet uses Linux rtnetlink directly; it does not execute the
-host's `ip` program.
-
-```sh
-ba6 ip addr show
-ba6 ip addr add 192.0.2.10/24 dev eth0
-ba6 ip addr del 192.0.2.10/24 dev eth0
-
-ba6 ip route show
-ba6 ip route get 192.0.2.25
-ba6 ip route add default via 192.0.2.1 dev eth0 metric 100
-ba6 ip route del default via 192.0.2.1 dev eth0 metric 100
-
-ba6 ip neigh show dev eth0
-ba6 ip rule show
-```
-
-Basic bond and VLAN lifecycle operations are also supported:
-
-```sh
-ba6 ip link add bond0 type bond mode active-backup miimon 100
-ba6 ip link set dev eth0 master bond0
-ba6 ip link set dev eth1 master bond0
-ba6 ip link set dev bond0 up
-
-ba6 ip link add link bond0 name bond0.100 type vlan id 100
-ba6 ip link set dev bond0.100 up
-ba6 ip link set dev bond0.100 mtu 1400 alias tenant-vlan
-ba6 ip link show
-
-ba6 ip link set dev eth0 nomaster
-ba6 ip link delete bond0.100
-ba6 ip link delete bond0
-```
-
-Showing addresses and routes normally needs no special capability. Changing
-them requires the same `CAP_NET_ADMIN` privilege as iproute2.
-
-The `iptables` applet manages an isolated IPv4 filter table through nftables
-netlink without executing a host utility. Listing and changing firewall rules
-requires `CAP_NET_ADMIN`:
-
-```sh
-ba6 iptables -A INPUT -p tcp --dport 22 -j ACCEPT
-ba6 iptables -A INPUT -s 198.51.100.0/24 -j DROP
-ba6 iptables -L --line-numbers
-ba6 iptables -D INPUT 2
-```
-
 ## Scope
 
 The applets intentionally implement the options shown by each command's
