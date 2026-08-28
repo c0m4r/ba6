@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -20,6 +21,9 @@ type miniEditor struct {
 	rows, cols                     int
 	filename, message              string
 	dirty                          bool
+	lastSearch                     string
+	cutBuffer                      []byte
+	haveCut                        bool
 }
 
 func cmdNano(args []string) int {
@@ -39,7 +43,7 @@ func cmdNano(args []string) int {
 	return 0
 }
 func newMiniEditor(name string) *miniEditor {
-	e := &miniEditor{filename: name, message: "^S Save  ^X Exit  ^K Cut line", rows: 24, cols: 80}
+	e := &miniEditor{filename: name, message: "^G Help  ^O Save  ^X Exit  ^F Search  ^\\ Replace  ^K Cut  ^U Paste", rows: 24, cols: 80}
 	if name != "" {
 		if data, err := os.ReadFile(name); err == nil {
 			parts := bytes.Split(data, []byte{'\n'})
@@ -74,29 +78,186 @@ func (e *miniEditor) run() error {
 			return err
 		}
 		switch key {
-		case 24, 17:
+		case 24: // ^X Exit
 			if e.dirty {
-				e.message = "Unsaved changes: ^S save, ^X again to discard"
-				e.refresh()
-				next, _ := readEditorKey()
-				if next == 19 {
-					if e.save() != nil {
+				switch e.confirmPrompt("Save modified buffer? ") {
+				case 'y':
+					if !e.saveInteractive() {
 						continue
 					}
-				} else if next != 24 && next != 17 {
-					e.handleKey(next)
+				case 'c':
 					continue
 				}
 			}
 			return nil
-		case 19:
-			_ = e.save()
-		case 11:
+		case 15: // ^O Write Out
+			e.saveInteractive()
+		case 11: // ^K Cut
 			e.cutLine()
+		case 21: // ^U Paste
+			e.paste()
+		case 6: // ^F Where Is (search)
+			e.searchInteractive()
+		case 28: // ^\ Replace
+			e.replaceInteractive()
+		case 3: // ^C show cursor position
+			e.message = fmt.Sprintf("line %d/%d, col %d", e.row+1, len(e.lines), e.col+1)
+		case 31: // ^_ / ^/ Go To Line
+			e.goToLineInteractive()
+		case 7: // ^G Help
+			e.message = "^O Save  ^X Exit  ^F Search  ^\\ Replace  ^K Cut  ^U Paste  ^_ Go To Line  ^C Position"
 		default:
 			e.handleKey(key)
 		}
 	}
+}
+
+// confirmPrompt shows a yes/no/cancel question on the message line and
+// returns 'y', 'n', or 'c', the way nano's own exit confirmation does.
+func (e *miniEditor) confirmPrompt(label string) byte {
+	e.message = label + "(Y)es, (N)o, (^C) Cancel"
+	e.refresh()
+	key, err := readEditorKey()
+	if err != nil {
+		return 'c'
+	}
+	switch key {
+	case 'y', 'Y':
+		return 'y'
+	case 'n', 'N':
+		return 'n'
+	default:
+		return 'c'
+	}
+}
+
+// shellPromptResult is one answer from prompt: the text entered, and
+// whether it was confirmed with Enter rather than cancelled.
+type shellPromptResult struct {
+	text      string
+	confirmed bool
+}
+
+// prompt draws label followed by an editable line seeded with initial on
+// the message line, and reads keys until Enter (confirmed) or ^C/Esc
+// (cancelled).
+func (e *miniEditor) prompt(label, initial string) shellPromptResult {
+	input := []byte(initial)
+	for {
+		e.message = label + string(input)
+		e.refresh()
+		height := e.rows - 2
+		col := len(label) + len(input) + 1
+		if col > e.cols {
+			col = e.cols
+		}
+		fmt.Fprintf(os.Stdout, "\x1b[%d;%dH", height+2, col)
+		key, err := readEditorKey()
+		if err != nil {
+			return shellPromptResult{"", false}
+		}
+		switch key {
+		case '\r', '\n':
+			return shellPromptResult{string(input), true}
+		case 3, 27:
+			return shellPromptResult{"", false}
+		case 127, 8:
+			if len(input) > 0 {
+				input = input[:len(input)-1]
+			}
+		default:
+			if key >= 32 && key < 127 {
+				input = append(input, byte(key))
+			}
+		}
+	}
+}
+
+// saveInteractive prompts for a filename (seeded with the current one, as
+// nano's own ^O does) and saves to it, returning whether it succeeded.
+func (e *miniEditor) saveInteractive() bool {
+	result := e.prompt("File Name to Write: ", e.filename)
+	if !result.confirmed || result.text == "" {
+		e.message = "Cancelled"
+		return false
+	}
+	e.filename = result.text
+	return e.save() == nil
+}
+
+// searchInteractive prompts for a search string (seeded with the last one
+// searched, so pressing Enter alone repeats it) and jumps to the next match.
+func (e *miniEditor) searchInteractive() {
+	result := e.prompt("Search: ", e.lastSearch)
+	if !result.confirmed || result.text == "" {
+		return
+	}
+	e.lastSearch = result.text
+	if e.find(result.text) {
+		e.message = "Found"
+	} else {
+		e.message = fmt.Sprintf("%q not found", result.text)
+	}
+}
+
+// replaceInteractive prompts for a search string and a replacement, then
+// replaces every occurrence in the buffer. Real nano confirms each match
+// individually (Y/N/A); this always acts as if "All" were chosen, which is
+// simpler to reason about safely in a rescue tool and is documented as such.
+func (e *miniEditor) replaceInteractive() {
+	search := e.prompt("Search (to replace): ", e.lastSearch)
+	if !search.confirmed || search.text == "" {
+		return
+	}
+	e.lastSearch = search.text
+	replacement := e.prompt("Replace with: ", "")
+	if !replacement.confirmed {
+		return
+	}
+	count := e.replaceAll(search.text, replacement.text)
+	e.message = fmt.Sprintf("Replaced %d occurrence(s)", count)
+}
+
+// goToLineInteractive implements ^_ / ^/: jump the cursor to a 1-indexed
+// line (and, if given as "line,column", a column too).
+func (e *miniEditor) goToLineInteractive() {
+	result := e.prompt("Enter line number, column number: ", "")
+	if !result.confirmed || result.text == "" {
+		return
+	}
+	linePart, colPart, _ := strings.Cut(result.text, ",")
+	line, err := strconv.Atoi(strings.TrimSpace(linePart))
+	if err != nil || line < 1 {
+		e.message = "Invalid line number"
+		return
+	}
+	column := 0
+	if colPart != "" {
+		if c, err := strconv.Atoi(strings.TrimSpace(colPart)); err == nil && c > 0 {
+			column = c
+		}
+	}
+	e.goToLine(line, column)
+}
+
+// goToLine moves the cursor to 1-indexed line and, if column > 0, to that
+// 1-indexed column too, clamping both to the buffer's actual bounds.
+func (e *miniEditor) goToLine(line, column int) {
+	if line > len(e.lines) {
+		line = len(e.lines)
+	}
+	if line < 1 {
+		line = 1
+	}
+	e.row = line - 1
+	e.col = 0
+	if column > 0 {
+		e.col = column - 1
+		if e.col > len(e.lines[e.row]) {
+			e.col = len(e.lines[e.row])
+		}
+	}
+	e.scroll()
 }
 func (e *miniEditor) handleKey(key int) {
 	switch key {
@@ -187,6 +348,8 @@ func (e *miniEditor) newline() {
 	e.dirty = true
 }
 func (e *miniEditor) cutLine() {
+	e.cutBuffer = append([]byte{}, e.lines[e.row]...)
+	e.haveCut = true
 	if len(e.lines) == 1 {
 		e.lines[0] = nil
 		e.col = 0
@@ -201,6 +364,69 @@ func (e *miniEditor) cutLine() {
 	}
 	e.dirty = true
 	e.scroll()
+}
+
+// paste inserts the last cut line above the cursor's current line, the way
+// nano's ^U un-cuts (only single-line, not nano's multi-line cut
+// accumulation from repeated ^K -- a documented simplification).
+func (e *miniEditor) paste() {
+	if !e.haveCut {
+		return
+	}
+	e.lines = append(e.lines, nil)
+	copy(e.lines[e.row+1:], e.lines[e.row:])
+	e.lines[e.row] = append([]byte{}, e.cutBuffer...)
+	e.row++
+	e.col = 0
+	e.dirty = true
+	e.scroll()
+}
+
+// find searches for query starting just after the cursor (forward only --
+// nano's M-B backward search is a documented gap), wrapping around the
+// whole buffer once. On a match it moves the cursor there and returns true.
+func (e *miniEditor) find(query string) bool {
+	if query == "" || len(e.lines) == 0 {
+		return false
+	}
+	n := len(e.lines)
+	for offset := 0; offset <= n; offset++ {
+		row := (e.row + offset) % n
+		line := string(e.lines[row])
+		from := 0
+		if offset == 0 {
+			from = e.col + 1
+		}
+		if from > len(line) {
+			continue
+		}
+		if idx := strings.Index(line[from:], query); idx >= 0 {
+			e.row, e.col = row, from+idx
+			e.scroll()
+			return true
+		}
+	}
+	return false
+}
+
+// replaceAll substitutes every occurrence of from with to across the whole
+// buffer and reports how many it made.
+func (e *miniEditor) replaceAll(from, to string) int {
+	if from == "" {
+		return 0
+	}
+	count := 0
+	for i, line := range e.lines {
+		text := string(line)
+		if n := strings.Count(text, from); n > 0 {
+			e.lines[i] = []byte(strings.ReplaceAll(text, from, to))
+			count += n
+		}
+	}
+	if count > 0 {
+		e.dirty = true
+	}
+	return count
 }
 func (e *miniEditor) save() error {
 	if e.filename == "" {

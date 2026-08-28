@@ -6,6 +6,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -33,6 +34,21 @@ func treeFixture(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return root
+}
+
+// leafByteTotal sums the apparent size of every non-directory entry in the
+// tree, recursively. Unlike a directory's own .size, this is exactly what
+// the ncdu export format can carry, so it's the right thing to compare
+// across an export/import round trip.
+func leafByteTotal(e *ncduEntry) uint64 {
+	if !e.directory {
+		return e.size
+	}
+	var total uint64
+	for _, child := range e.children {
+		total += leafByteTotal(child)
+	}
+	return total
 }
 
 func TestTreeListing(t *testing.T) {
@@ -224,6 +240,83 @@ func TestNcduScanAndFormatting(t *testing.T) {
 	if status, _, stderr := captureApplet(t, cmdNcdu, []string{filepath.Join(root, "b.txt")}, ""); status == 0 ||
 		!strings.Contains(stderr, "not a directory") {
 		t.Fatalf("ncdu on a file = (%d,%q)", status, stderr)
+	}
+}
+
+func TestNcduExportImportRoundTrip(t *testing.T) {
+	root := treeFixture(t)
+	info, err := os.Lstat(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scanned := newNcduScan(root, ncduOptions{}).walk(root, info)
+	scanned.name = root
+
+	exportPath := filepath.Join(t.TempDir(), "export.json")
+	if err := ncduExport(scanned, exportPath); err != nil {
+		t.Fatal(err)
+	}
+
+	// The file must match ncdu's own documented schema: [major, minor,
+	// {metadata}, [rootObj, ...children]], so real ncdu can read it back too.
+	raw, err := os.ReadFile(exportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outer []json.RawMessage
+	if err := json.Unmarshal(raw, &outer); err != nil {
+		t.Fatalf("export is not valid JSON: %v", err)
+	}
+	if len(outer) != 4 {
+		t.Fatalf("export has %d top-level fields, want 4", len(outer))
+	}
+	var major, minor int
+	if err := json.Unmarshal(outer[0], &major); err != nil || major != 1 {
+		t.Fatalf("major version = %v, %v, want 1", major, err)
+	}
+	if err := json.Unmarshal(outer[1], &minor); err != nil || minor != 2 {
+		t.Fatalf("minor version = %v, %v, want 2", minor, err)
+	}
+
+	imported, err := ncduImport(exportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if imported.name != scanned.name {
+		t.Fatalf("imported name = %q, want %q", imported.name, scanned.name)
+	}
+	// Directory entries carry their own dirent/inode size in scanned.size
+	// (set from info.Size() before children are added in), but the export
+	// schema has no field for that -- only leaf sizes round-trip exactly, and
+	// any reader (real ncdu included) rebuilds a directory's total purely as
+	// the sum of its children. So compare leaf-byte totals, not raw .size.
+	if got, want := leafByteTotal(imported), leafByteTotal(scanned); got != want {
+		t.Fatalf("imported leaf byte total = %d, want %d", got, want)
+	}
+	if imported.items != scanned.items {
+		t.Fatalf("imported item count = %d, want %d", imported.items, scanned.items)
+	}
+	if len(imported.children) != len(scanned.children) {
+		t.Fatalf("imported %d children, want %d", len(imported.children), len(scanned.children))
+	}
+
+	// A file real ncdu itself could have written -- no "dsize" on
+	// directories, an explicit "dev" only on the root -- must import too.
+	handwritten := `[1, 2, {"progname":"ncdu","progver":"2.9.2"}, [` +
+		`{"name":"/mnt/data","asize":6,"dev":43}, ` +
+		`{"name":"f1.txt","asize":4,"dsize":4096}, ` +
+		`[{"name":"sub","asize":2}, {"name":"f2.txt","asize":2,"dsize":4096}]` +
+		`]]`
+	handwrittenPath := filepath.Join(t.TempDir(), "real-ncdu.json")
+	if err := os.WriteFile(handwrittenPath, []byte(handwritten), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fromReal, err := ncduImport(handwrittenPath)
+	if err != nil {
+		t.Fatalf("importing a real-ncdu-shaped export failed: %v", err)
+	}
+	if fromReal.size != 6 || fromReal.items != 3 || len(fromReal.children) != 2 {
+		t.Fatalf("imported real-ncdu export = %+v", fromReal)
 	}
 }
 

@@ -224,6 +224,7 @@ type cfdiskSession struct {
 	diskSectors                       uint64
 	sector                            []byte
 	partitions                        [4]mbrPartition
+	logical                           []cfdiskLogical
 	labelType                         cfdiskLabelKind
 	gpt                               cfdiskGPTTable
 	gptOriginal                       cfdiskGPTRawState
@@ -290,6 +291,13 @@ func newCfdiskSession(options cfdiskOptions) (_ *cfdiskSession, err error) {
 	} else if sector[510] == 0x55 && sector[511] == 0xaa {
 		session.labelType = cfdiskLabelDOS
 		session.partitions = cfdiskReadPartitions(sector)
+		if extIndex := cfdiskFindExtended(session.partitions); extIndex >= 0 {
+			logical, chainErr := cfdiskReadLogicalChain(file, session.partitions[extIndex], session.diskSectors)
+			if chainErr != nil {
+				return nil, chainErr
+			}
+			session.logical = logical
+		}
 	} else {
 		session.labelSelector = true
 		session.message = "No recognized partition table found"
@@ -321,18 +329,26 @@ func cfdiskHasProtectiveGPT(sector []byte) bool {
 func cfdiskReadPartitions(sector []byte) [4]mbrPartition {
 	var partitions [4]mbrPartition
 	for index := range partitions {
-		entry := sector[446+index*16 : 446+(index+1)*16]
-		partition := mbrPartition{
-			start:    binary.LittleEndian.Uint32(entry[8:12]),
-			size:     binary.LittleEndian.Uint32(entry[12:16]),
-			kind:     entry[4],
-			bootable: entry[0] == 0x80,
-		}
-		if partition.size != 0 {
-			partitions[index] = partition
-		}
+		partitions[index] = cfdiskReadEntry(sector, 446+index*16)
 	}
 	return partitions
+}
+
+// cfdiskReadEntry decodes one 16-byte MBR/EBR partition table entry. It is
+// shared by the four primary slots and, in cfdisk_extended_linux.go, the two
+// live entries of an extended boot record.
+func cfdiskReadEntry(sector []byte, offset int) mbrPartition {
+	entry := sector[offset : offset+16]
+	partition := mbrPartition{
+		start:    binary.LittleEndian.Uint32(entry[8:12]),
+		size:     binary.LittleEndian.Uint32(entry[12:16]),
+		kind:     entry[4],
+		bootable: entry[0] == 0x80,
+	}
+	if partition.size == 0 {
+		return mbrPartition{}
+	}
+	return partition
 }
 
 func (s *cfdiskSession) run() error {
@@ -385,7 +401,7 @@ func (s *cfdiskSession) handleKey(key int) (bool, error) {
 	case 1001, 'j':
 		if s.labelType == cfdiskLabelGPT {
 			s.moveGPTSelection(1)
-		} else if s.selected+1 < len(s.partitions) {
+		} else if s.selected+1 < len(s.partitionRows()) {
 			s.selected++
 		}
 		s.message = ""
@@ -495,6 +511,9 @@ func (s *cfdiskSession) newPartition() error {
 	if s.readOnly("create a partition") {
 		return nil
 	}
+	if row := s.selectedRow(); row.kind == cfdiskRowLogical || row.kind == cfdiskRowLogicalFree {
+		return s.newLogicalPartition()
+	}
 	slot := s.selected
 	if s.partitions[slot].size != 0 {
 		slot = -1
@@ -553,6 +572,93 @@ func (s *cfdiskSession) newPartition() error {
 	return nil
 }
 
+// newLogicalPartition creates a logical partition inside the disk's one
+// extended container. The boot record always goes at the front of whichever
+// free gap the chosen start sector falls into (cfdiskLogicalBootRecordFor),
+// mirroring how real fdisk places it -- there is no separate prompt for it.
+func (s *cfdiskSession) newLogicalPartition() error {
+	extIndex := cfdiskFindExtended(s.partitions)
+	if extIndex < 0 {
+		s.message = "No extended partition exists yet -- create one and set its type to Extended (t) first"
+		return nil
+	}
+	extended := s.partitions[extIndex]
+	suggested, err := cfdiskSuggestedLogicalRegion(extended, s.logical)
+	if err != nil {
+		s.message = "Cannot create a logical partition: " + err.Error()
+		return nil
+	}
+	startText, ok, err := s.prompt(fmt.Sprintf("Start sector [%d]: ", suggested.dataStart), "")
+	if err != nil || !ok {
+		return err
+	}
+	start := suggested.dataStart
+	if startText != "" {
+		start, err = parseSectorNumber(startText)
+		if err != nil {
+			s.message = fmt.Sprintf("Invalid start sector %q", startText)
+			return nil
+		}
+	}
+	ebrLBA, findErr := cfdiskLogicalBootRecordFor(extended, s.logical, start)
+	if findErr != nil {
+		s.message = "Cannot create a logical partition: " + findErr.Error()
+		return nil
+	}
+	defaultSize := uint64(extended.start) + uint64(extended.size) - start
+	if start == suggested.dataStart {
+		defaultSize = suggested.dataSize
+	}
+	sizeText, ok, err := s.prompt(fmt.Sprintf("Size in sectors [%d]: ", defaultSize), "")
+	if err != nil || !ok {
+		return err
+	}
+	size := defaultSize
+	if sizeText != "" {
+		size, err = cfdiskParseSize(sizeText, s.options.sectorSize)
+		if err != nil || size == 0 {
+			s.message = fmt.Sprintf("Invalid partition size %q", sizeText)
+			return nil
+		}
+	}
+	if start == 0 || start > uint64(^uint32(0)) || size > uint64(^uint32(0)) {
+		s.message = "Partition range is outside the DOS/MBR address space"
+		return nil
+	}
+	proposed := append(append([]cfdiskLogical{}, s.logical...), cfdiskLogical{
+		partition: mbrPartition{start: uint32(start), size: uint32(size), kind: 0x83}, //nolint:gosec // The bounds above make both conversions safe.
+		ebrLBA:    ebrLBA,
+	})
+	if err := validateCfdiskLogicalPartitions(extended, proposed); err != nil {
+		s.message = "Cannot create logical partition: " + err.Error()
+		return nil
+	}
+	sort.Slice(proposed, func(i, j int) bool { return proposed[i].partition.start < proposed[j].partition.start })
+	s.logical, s.dirty = proposed, true
+	s.selected = 4
+	for index, entry := range s.logical {
+		if uint64(entry.partition.start) == start {
+			s.selected = 4 + index
+			break
+		}
+	}
+	s.message = fmt.Sprintf("Created logical partition %d", s.selected+1)
+	return nil
+}
+
+// cfdiskLogicalBootRecordFor finds the free gap containing a chosen logical
+// partition start and returns where its boot record belongs: the start of
+// that gap, mirroring how fdisk always places a boot record at the front of
+// whichever run of free space its logical partition falls into.
+func cfdiskLogicalBootRecordFor(extended mbrPartition, logical []cfdiskLogical, start uint64) (uint64, error) {
+	for _, region := range cfdiskLogicalFreeRegions(extended, logical) {
+		if start > region.start && start < region.start+region.size {
+			return region.start, nil
+		}
+	}
+	return 0, fmt.Errorf("start sector %d is not inside a free region of the extended partition", start)
+}
+
 func (s *cfdiskSession) deletePartition() {
 	if s.labelType == cfdiskLabelGPT {
 		s.deleteGPTPartition()
@@ -561,13 +667,31 @@ func (s *cfdiskSession) deletePartition() {
 	if s.readOnly("delete a partition") {
 		return
 	}
-	if s.partitions[s.selected].size == 0 {
-		s.message = fmt.Sprintf("Partition %d is already empty", s.selected+1)
-		return
+	switch row := s.selectedRow(); row.kind {
+	case cfdiskRowLogical:
+		s.logical = append(s.logical[:row.index], s.logical[row.index+1:]...)
+		s.dirty = true
+		s.message = fmt.Sprintf("Deleted logical partition %d in memory", row.index+5)
+	case cfdiskRowLogicalFree:
+		s.message = "Select an existing partition first"
+	default:
+		if s.partitions[s.selected].size == 0 {
+			s.message = fmt.Sprintf("Partition %d is already empty", s.selected+1)
+			return
+		}
+		wasExtended := cfdiskExtendedType(s.partitions[s.selected].kind)
+		removedLogical := len(s.logical)
+		s.partitions[s.selected] = mbrPartition{}
+		if wasExtended {
+			s.logical = nil
+		}
+		s.dirty = true
+		if wasExtended && removedLogical > 0 {
+			s.message = fmt.Sprintf("Deleted extended partition %d and %d logical partition(s) in memory", s.selected+1, removedLogical)
+		} else {
+			s.message = fmt.Sprintf("Deleted partition %d in memory", s.selected+1)
+		}
 	}
-	s.partitions[s.selected] = mbrPartition{}
-	s.dirty = true
-	s.message = fmt.Sprintf("Deleted partition %d in memory", s.selected+1)
 }
 
 func (s *cfdiskSession) resizePartition() error {
@@ -575,6 +699,14 @@ func (s *cfdiskSession) resizePartition() error {
 		return s.resizeGPTPartition()
 	}
 	if s.readOnly("resize a partition") {
+		return nil
+	}
+	row := s.selectedRow()
+	if row.kind == cfdiskRowLogical {
+		return s.resizeLogicalPartition(row.index)
+	}
+	if row.kind == cfdiskRowLogicalFree {
+		s.message = "Select an existing partition first"
 		return nil
 	}
 	partition := s.partitions[s.selected]
@@ -600,6 +732,12 @@ func (s *cfdiskSession) resizePartition() error {
 		s.message = "Cannot resize partition: " + err.Error()
 		return nil
 	}
+	if cfdiskExtendedType(proposed[s.selected].kind) {
+		if err := validateCfdiskLogicalPartitions(proposed[s.selected], s.logical); err != nil {
+			s.message = "Cannot resize extended partition: " + err.Error()
+			return nil
+		}
+	}
 	if proposed == s.partitions {
 		s.message = fmt.Sprintf("Partition %d size is unchanged", s.selected+1)
 		return nil
@@ -609,12 +747,55 @@ func (s *cfdiskSession) resizePartition() error {
 	return nil
 }
 
+// resizeLogicalPartition resizes a logical partition's data. Its boot
+// record's own position is untouched, so this only ever needs to re-check
+// bounds and overlap with the other logical partitions.
+func (s *cfdiskSession) resizeLogicalPartition(index int) error {
+	partition := s.logical[index].partition
+	value, ok, err := s.prompt(fmt.Sprintf("New size in sectors [%d]: ", partition.size), "")
+	if err != nil || !ok {
+		return err
+	}
+	if value == "" {
+		return nil
+	}
+	size, parseErr := cfdiskParseSize(value, s.options.sectorSize)
+	if parseErr != nil || size == 0 || size > uint64(^uint32(0)) {
+		s.message = fmt.Sprintf("Invalid partition size %q", value)
+		return nil
+	}
+	proposed := make([]cfdiskLogical, len(s.logical))
+	copy(proposed, s.logical)
+	proposed[index].partition.size = uint32(size) //nolint:gosec // The upper bound is checked above.
+	extIndex := cfdiskFindExtended(s.partitions)
+	if err := validateCfdiskLogicalPartitions(s.partitions[extIndex], proposed); err != nil {
+		s.message = "Cannot resize logical partition: " + err.Error()
+		return nil
+	}
+	s.logical, s.dirty = proposed, true
+	s.message = fmt.Sprintf("Resized logical partition %d to %d sectors", index+5, size)
+	return nil
+}
+
 func (s *cfdiskSession) sortPartitions() {
 	if s.labelType == cfdiskLabelGPT {
 		s.sortGPTPartitions()
 		return
 	}
 	if s.readOnly("sort partitions") {
+		return
+	}
+	if s.selected >= len(s.partitions) {
+		// A logical row, or the free-space-in-extended row: sorting only
+		// reassigns which of the four *primary* slots holds which
+		// partition, so a selection past those four needs no fix-up.
+		sorted := cfdiskSortedPartitions(s.partitions)
+		if sorted == s.partitions {
+			s.message = "Partitions are already ordered by start sector"
+			return
+		}
+		s.partitions, s.dirty = sorted, true
+		s.message = "Sorted partition slots by start sector"
 		return
 	}
 	selected := s.partitions[s.selected]
@@ -673,7 +854,7 @@ func (s *cfdiskSession) dump() error {
 		s.message = "Cannot inspect dump path: " + statErr.Error()
 		return nil
 	}
-	dump := cfdiskDump(s.options.device, s.partitions)
+	dump := cfdiskDump(s.options.device, s.partitions, s.logical)
 	if s.labelType == cfdiskLabelGPT {
 		dump = cfdiskGPTDump(s.options.device, s.gpt)
 	}
@@ -689,7 +870,7 @@ func (s *cfdiskSession) dump() error {
 	return nil
 }
 
-func cfdiskDump(device string, partitions [4]mbrPartition) string {
+func cfdiskDump(device string, partitions [4]mbrPartition, logical []cfdiskLogical) string {
 	var dump strings.Builder
 	dump.WriteString("label: dos\nunit: sectors\n")
 	for index, partition := range partitions {
@@ -697,6 +878,14 @@ func cfdiskDump(device string, partitions [4]mbrPartition) string {
 			continue
 		}
 		fmt.Fprintf(&dump, "%s : start=%d, size=%d, type=%02x", partitionName(device, index+1), partition.start, partition.size, partition.kind)
+		if partition.bootable {
+			dump.WriteString(", bootable")
+		}
+		dump.WriteByte('\n')
+	}
+	for index, entry := range logical {
+		partition := entry.partition
+		fmt.Fprintf(&dump, "%s : start=%d, size=%d, type=%02x", partitionName(device, index+5), partition.start, partition.size, partition.kind)
 		if partition.bootable {
 			dump.WriteString(", bootable")
 		}
@@ -727,11 +916,51 @@ func (s *cfdiskSession) changeType() error {
 	if s.readOnly("change a partition type") {
 		return nil
 	}
+	row := s.selectedRow()
+	if row.kind == cfdiskRowLogicalFree {
+		s.message = "Select an existing partition first"
+		return nil
+	}
+	if row.kind == cfdiskRowLogical {
+		return s.changeLogicalType(row.index)
+	}
 	partition := &s.partitions[s.selected]
 	if partition.size == 0 {
 		s.message = "Select an existing partition first"
 		return nil
 	}
+	value, ok, err := s.prompt(fmt.Sprintf("Hex type [%02x]: ", partition.kind), "")
+	if err != nil || !ok {
+		return err
+	}
+	if value == "" {
+		return nil
+	}
+	value = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(value)), "0x")
+	kind, parseErr := strconv.ParseUint(value, 16, 8)
+	if parseErr != nil || kind == 0 {
+		s.message = fmt.Sprintf("Unsupported partition type %q", value)
+		return nil
+	}
+	wasExtended, willBeExtended := cfdiskExtendedType(partition.kind), cfdiskExtendedType(byte(kind))
+	if willBeExtended && !wasExtended && cfdiskFindExtended(s.partitions) >= 0 {
+		s.message = "Partition table already has an extended partition"
+		return nil
+	}
+	if wasExtended && !willBeExtended && len(s.logical) > 0 {
+		s.message = fmt.Sprintf("Delete its %d logical partition(s) first", len(s.logical))
+		return nil
+	}
+	partition.kind = byte(kind)
+	s.dirty = true
+	s.message = fmt.Sprintf("Changed partition %d type to %02x", s.selected+1, kind)
+	return nil
+}
+
+// changeLogicalType sets a logical partition's type. It cannot itself become
+// extended: DOS only nests one level of extended/logical partitions.
+func (s *cfdiskSession) changeLogicalType(index int) error {
+	partition := &s.logical[index].partition
 	value, ok, err := s.prompt(fmt.Sprintf("Hex type [%02x]: ", partition.kind), "")
 	if err != nil || !ok {
 		return err
@@ -747,7 +976,7 @@ func (s *cfdiskSession) changeType() error {
 	}
 	partition.kind = byte(kind)
 	s.dirty = true
-	s.message = fmt.Sprintf("Changed partition %d type to %02x", s.selected+1, kind)
+	s.message = fmt.Sprintf("Changed logical partition %d type to %02x", index+5, kind)
 	return nil
 }
 
@@ -759,14 +988,24 @@ func (s *cfdiskSession) toggleBootable() {
 	if s.readOnly("toggle the boot flag") {
 		return
 	}
-	partition := &s.partitions[s.selected]
-	if partition.size == 0 {
+	switch row := s.selectedRow(); row.kind {
+	case cfdiskRowLogical:
+		partition := &s.logical[row.index].partition
+		partition.bootable = !partition.bootable
+		s.dirty = true
+		s.message = fmt.Sprintf("Logical partition %d boot flag is now %v", row.index+5, partition.bootable)
+	case cfdiskRowLogicalFree:
 		s.message = "Select an existing partition first"
-		return
+	default:
+		partition := &s.partitions[s.selected]
+		if partition.size == 0 {
+			s.message = "Select an existing partition first"
+			return
+		}
+		partition.bootable = !partition.bootable
+		s.dirty = true
+		s.message = fmt.Sprintf("Partition %d boot flag is now %v", s.selected+1, partition.bootable)
 	}
-	partition.bootable = !partition.bootable
-	s.dirty = true
-	s.message = fmt.Sprintf("Partition %d boot flag is now %v", s.selected+1, partition.bootable)
 }
 
 func (s *cfdiskSession) write() error {
@@ -783,6 +1022,12 @@ func (s *cfdiskSession) write() error {
 	if err := validateCfdiskPartitions(s.partitions, s.diskSectors); err != nil {
 		s.message = "Cannot write partition table: " + err.Error()
 		return nil
+	}
+	if extIndex := cfdiskFindExtended(s.partitions); extIndex >= 0 {
+		if err := validateCfdiskLogicalPartitions(s.partitions[extIndex], s.logical); err != nil {
+			s.message = "Cannot write partition table: " + err.Error()
+			return nil
+		}
 	}
 	if err := s.verifyWriteTarget(); err != nil {
 		s.message = "Cannot write partition table: " + err.Error()
@@ -801,6 +1046,20 @@ func (s *cfdiskSession) write() error {
 	if err := s.verifyWriteTarget(); err != nil {
 		s.message = "Cannot write partition table: " + err.Error()
 		return nil
+	}
+	if extIndex := cfdiskFindExtended(s.partitions); extIndex >= 0 {
+		writes, chainErr := cfdiskBuildEBRChain(s.partitions[extIndex], s.logical)
+		if chainErr != nil {
+			s.message = "Cannot write partition table: " + chainErr.Error()
+			return nil
+		}
+		// Boot records are written before the primary MBR: if a crash
+		// interrupts the write, the extended partition's own entry (written
+		// last, below) never points at a chain that wasn't fully committed.
+		if err := writeCfdiskEBRChain(s.options.device, writes); err != nil {
+			s.message = "Write failed: " + err.Error()
+			return nil
+		}
 	}
 	sector := cfdiskBuildMBR(s.sector, s.partitions)
 	if err := writeCfdiskMBR(s.options.device, sector); err != nil {
@@ -967,6 +1226,7 @@ func validateCfdiskPartitions(partitions [4]mbrPartition, sectors uint64) error 
 		index      int
 	}
 	ranges := make([]rangeWithIndex, 0, len(partitions))
+	extendedSeen := false
 	for index, partition := range partitions {
 		if partition.size == 0 {
 			continue
@@ -978,7 +1238,10 @@ func validateCfdiskPartitions(partitions [4]mbrPartition, sectors uint64) error 
 			return fmt.Errorf("partition %d has no type", index+1)
 		}
 		if cfdiskExtendedType(partition.kind) {
-			return fmt.Errorf("partition %d is extended, which is unsupported", index+1)
+			if extendedSeen {
+				return fmt.Errorf("partition %d is extended, but partition table already has one", index+1)
+			}
+			extendedSeen = true
 		}
 		end := uint64(partition.start) + uint64(partition.size)
 		if end > sectors {
@@ -1229,6 +1492,7 @@ func (s *cfdiskSession) lines() []string {
 		"",
 		"    # Boot      Start        End    Sectors    Size Type",
 	}
+	rows := s.partitionRows()
 	for index, partition := range s.partitions {
 		marker := " "
 		if index == s.selected {
@@ -1247,6 +1511,27 @@ func (s *cfdiskSession) lines() []string {
 			partition.start, end, partition.size, humanSizeUint64(uint64(partition.size)*512), partition.kind,
 			cfdiskTypeName(partition.kind)))
 	}
+	for rowIndex := 4; rowIndex < len(rows); rowIndex++ {
+		row := rows[rowIndex]
+		marker := " "
+		if rowIndex == s.selected {
+			marker = ">"
+		}
+		if row.kind == cfdiskRowLogicalFree {
+			lines = append(lines, fmt.Sprintf("%s  -   %10s %10s %10d %7s     Free space",
+				marker, "", "", row.region.dataSize, humanSizeUint64(row.region.dataSize*512)))
+			continue
+		}
+		partition := s.logical[row.index].partition
+		boot := " "
+		if partition.bootable {
+			boot = "*"
+		}
+		end := uint64(partition.start) + uint64(partition.size) - 1
+		lines = append(lines, fmt.Sprintf("%s %2d   %s %10d %10d %10d %7s %02x %s", marker, row.index+5, boot,
+			partition.start, end, partition.size, humanSizeUint64(uint64(partition.size)*512), partition.kind,
+			cfdiskTypeName(partition.kind)))
+	}
 	if regions, err := cfdiskFreeRegions(s.partitions, s.diskSectors); err == nil {
 		var free uint64
 		for _, region := range regions {
@@ -1259,10 +1544,22 @@ func (s *cfdiskSession) lines() []string {
 	if s.extra {
 		lines = append(lines, fmt.Sprintf(" MBR disk identifier: 0x%08x  Label: dos  Primary slots: 4",
 			binary.LittleEndian.Uint32(s.sector[440:444])))
-		if partition := s.partitions[s.selected]; partition.size != 0 {
+		selected := rows[0]
+		if s.selected < len(rows) {
+			selected = rows[s.selected]
+		}
+		switch selected.kind {
+		case cfdiskRowPrimary:
+			if partition := s.partitions[s.selected]; partition.size != 0 {
+				end := uint64(partition.start) + uint64(partition.size) - 1
+				lines = append(lines, fmt.Sprintf(" Selected %d: LBA %d-%d, %d sectors, type 0x%02x (%s)",
+					s.selected+1, partition.start, end, partition.size, partition.kind, cfdiskTypeName(partition.kind)))
+			}
+		case cfdiskRowLogical:
+			partition := s.logical[selected.index].partition
 			end := uint64(partition.start) + uint64(partition.size) - 1
 			lines = append(lines, fmt.Sprintf(" Selected %d: LBA %d-%d, %d sectors, type 0x%02x (%s)",
-				s.selected+1, partition.start, end, partition.size, partition.kind, cfdiskTypeName(partition.kind)))
+				selected.index+5, partition.start, end, partition.size, partition.kind, cfdiskTypeName(partition.kind)))
 		}
 	}
 	return lines
@@ -1287,9 +1584,9 @@ func cfdiskHelpLines() []string {
 		" q               quit; modified tables require a discard confirmation",
 		"",
 		" An unlabeled disk opens a GPT/DOS selector with GPT selected. GPT uses",
-		" 512-byte-sector, 128-entry layout; DOS supports four primary partitions.",
-		" GPT validates and writes matching primary and backup tables. Extended and",
-		" logical MBR partitions, SGI, and SUN labels are not supported.",
+		" 512-byte-sector, 128-entry layout; DOS supports four primary partitions",
+		" plus one extended partition (t sets a primary's type to 5) holding any",
+		" number of logical partitions. SGI and SUN labels are not supported.",
 		" It never writes until the Write confirmation, and refuses mounted or",
 		" active-swap disks. Commands may be entered in upper or lower case.",
 		" K/M/G/T and KiB/MiB suffixes are accepted for New and Resize sizes.",
@@ -1306,6 +1603,12 @@ func cfdiskTypeName(kind byte) string {
 		return "HPFS/NTFS/exFAT"
 	case 0x0b, 0x0c:
 		return "W95 FAT32"
+	case 0x05:
+		return "Extended"
+	case 0x0f:
+		return "W95 Ext'd (LBA)"
+	case 0x85:
+		return "Linux extended"
 	case 0x82:
 		return "Linux swap"
 	case 0x83:

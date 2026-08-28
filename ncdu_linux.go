@@ -6,12 +6,15 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // ncduOptions is one ncdu(1) command line. Nothing here can modify the
@@ -40,7 +43,7 @@ type ncduEntry struct {
 
 func cmdNcdu(args []string) int {
 	var options ncduOptions
-	path := ""
+	path, exportPath, importPath := "", "", ""
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
@@ -57,6 +60,20 @@ func cmdNcdu(args []string) int {
 			}
 			i++
 			options.excludes = append(options.excludes, args[i])
+		case arg == "-o" || arg == "--output":
+			if i+1 >= len(args) {
+				fatalf("ncdu", "-o requires a file")
+				return 1
+			}
+			i++
+			exportPath = args[i]
+		case arg == "-f":
+			if i+1 >= len(args) {
+				fatalf("ncdu", "-f requires a file")
+				return 1
+			}
+			i++
+			importPath = args[i]
 		case arg == "-r", arg == "-rr", arg == "--read-only":
 			// Accepted for compatibility: this browser never writes anything.
 		case arg == "-q", arg == "--slow-ui-updates":
@@ -81,40 +98,172 @@ func cmdNcdu(args []string) int {
 			path = arg
 		}
 	}
-	if path == "" {
-		path = "."
+
+	var root *ncduEntry
+	if importPath != "" {
+		if path != "" {
+			fatalf("ncdu", "-f cannot be combined with a directory to scan")
+			return 1
+		}
+		imported, err := ncduImport(importPath)
+		if err != nil {
+			fatalf("ncdu", "%v", err)
+			return 1
+		}
+		root = imported
+	} else {
+		if path == "" {
+			path = "."
+		}
+		absolute, err := filepath.Abs(path)
+		if err != nil {
+			fatalf("ncdu", "%s: %v", path, err)
+			return 1
+		}
+		info, err := os.Lstat(absolute)
+		if err != nil {
+			fatalf("ncdu", "%v", err)
+			return 1
+		}
+		if !info.IsDir() {
+			fatalf("ncdu", "%s: not a directory", path)
+			return 1
+		}
+		fmt.Print("Scanning...")
+		scan := newNcduScan(absolute, options)
+		root = scan.walk(absolute, info)
+		root.name = absolute
+		fmt.Print("\r\x1b[K")
+		if exportPath != "" {
+			if err := ncduExport(root, exportPath); err != nil {
+				fatalf("ncdu", "%v", err)
+				return 1
+			}
+		}
 	}
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		fatalf("ncdu", "%s: %v", path, err)
-		return 1
-	}
-	info, err := os.Lstat(absolute)
-	if err != nil {
-		fatalf("ncdu", "%v", err)
-		return 1
-	}
-	if !info.IsDir() {
-		fatalf("ncdu", "%s: not a directory", path)
-		return 1
-	}
+
 	// The browser paints a full screen and reads single keys, so it needs a
 	// terminal on both ends.
 	if !isTerminal(os.Stdin.Fd()) || !isTerminal(os.Stdout.Fd()) {
 		fatalf("ncdu", "standard input and output must be a terminal")
 		return 1
 	}
-	fmt.Print("Scanning...")
-	scan := newNcduScan(absolute, options)
-	root := scan.walk(absolute, info)
-	root.name = absolute
-	fmt.Print("\r\x1b[K")
 	browser := &ncduBrowser{root: root, current: root, options: options, sortBySize: true}
 	if err := browser.run(); err != nil {
 		fatalf("ncdu", "%v", err)
 		return 1
 	}
 	return 0
+}
+
+// ncduExportEntry is one node of ncdu's own JSON export format: a leaf file
+// is one such object, and a directory is a JSON array whose first element is
+// its own object followed by one entry (object or, for a subdirectory,
+// another such array) per child.
+type ncduExportEntry struct {
+	Name  string  `json:"name"`
+	ASize uint64  `json:"asize"`
+	DSize *uint64 `json:"dsize,omitempty"`
+	Dev   *uint64 `json:"dev,omitempty"`
+}
+
+func ncduEntryToExport(e *ncduEntry, isRoot bool) any {
+	obj := ncduExportEntry{Name: e.name, ASize: e.size}
+	if !e.directory && e.disk != e.size {
+		disk := e.disk
+		obj.DSize = &disk
+	}
+	if isRoot {
+		var status syscall.Stat_t
+		if err := syscall.Lstat(e.path(), &status); err == nil {
+			dev := status.Dev
+			obj.Dev = &dev
+		}
+	}
+	if !e.directory {
+		return obj
+	}
+	array := make([]any, 0, len(e.children)+1)
+	array = append(array, obj)
+	for _, child := range e.children {
+		array = append(array, ncduEntryToExport(child, false))
+	}
+	return array
+}
+
+// ncduExport writes root in ncdu's own export format (the "ncdu -o" format,
+// version 1.2), so a scan taken now -- on a disk that might not stay mounted
+// or readable -- can be browsed again later, on this machine or another,
+// without needing the filesystem itself.
+func ncduExport(root *ncduEntry, path string) error {
+	payload := []any{
+		1, 2,
+		map[string]any{"progname": "ba6-ncdu", "progver": "1", "timestamp": time.Now().Unix()},
+		ncduEntryToExport(root, true),
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o600)
+}
+
+// ncduImport reads back a tree written by ncduExport, or by real ncdu's own
+// -o: either one is just the array-of-arrays schema above.
+func ncduImport(path string) (*ncduEntry, error) {
+	data, err := os.ReadFile(path) //nolint:gosec // G304: ncdu -f intentionally reads a user-named export file
+	if err != nil {
+		return nil, err
+	}
+	var outer []json.RawMessage
+	if err := json.Unmarshal(data, &outer); err != nil {
+		return nil, fmt.Errorf("not an ncdu export: %w", err)
+	}
+	if len(outer) < 4 {
+		return nil, fmt.Errorf("not an ncdu export: too few top-level fields")
+	}
+	return ncduImportEntry(outer[3], nil)
+}
+
+func ncduImportEntry(raw json.RawMessage, parent *ncduEntry) (*ncduEntry, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return nil, fmt.Errorf("empty entry in ncdu export")
+	}
+	if trimmed[0] != '[' {
+		var leaf ncduExportEntry
+		if err := json.Unmarshal(raw, &leaf); err != nil {
+			return nil, err
+		}
+		disk := leaf.ASize
+		if leaf.DSize != nil {
+			disk = *leaf.DSize
+		}
+		return &ncduEntry{name: leaf.Name, size: leaf.ASize, disk: disk, parent: parent}, nil
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return nil, fmt.Errorf("directory entry has no fields")
+	}
+	var obj ncduExportEntry
+	if err := json.Unmarshal(items[0], &obj); err != nil {
+		return nil, err
+	}
+	dir := &ncduEntry{name: obj.Name, directory: true, parent: parent}
+	for _, child := range items[1:] {
+		imported, err := ncduImportEntry(child, dir)
+		if err != nil {
+			return nil, err
+		}
+		dir.children = append(dir.children, imported)
+		dir.size += imported.size
+		dir.disk += imported.disk
+		dir.items += imported.items + 1
+	}
+	return dir, nil
 }
 
 // ncduScan holds the state a single scan carries across directories: the

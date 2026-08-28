@@ -13,20 +13,23 @@ import (
 	"unicode/utf8"
 )
 
-// awk implements the small but useful record-processing subset most often
-// needed in recovery scripts: patterns, actions, if/else, statement blocks,
-// field assignment, and sub/gsub. It deliberately keeps the language bounded:
-// no arrays, loops, user functions, getline, redirection, or external command
-// execution.
+// awk implements the record-processing subset most often needed in recovery
+// scripts and one-liners: patterns (including /a/,/b/ ranges), actions,
+// if/else, for/while/do loops, break/continue, associative arrays,
+// statement blocks, field assignment, and the common string builtins. It
+// deliberately keeps the language bounded: no user-defined functions,
+// getline, output redirection, or external command execution.
 
 // awkFieldLimit caps how far a field assignment may extend a record so a stray
 // expression such as $999999999 = "" cannot exhaust memory.
 const awkFieldLimit = 1 << 16
 
 type awkRule struct {
-	pattern string
-	action  string
-	kind    string
+	pattern  string
+	pattern2 string // non-empty for a "/a/,/b/" range pattern
+	inRange  bool   // range state, mutated as records are processed
+	action   string
+	kind     string
 }
 
 type awkValue struct {
@@ -60,18 +63,23 @@ func (v awkValue) truth() bool {
 }
 
 type awkContext struct {
-	vars          map[string]awkValue
-	record        string
-	fields        []string
-	nr, fnr       int
-	next, exiting bool
-	exitStatus    int
+	vars                 map[string]awkValue
+	arrays               map[string]map[string]awkValue
+	record               string
+	fields               []string
+	nr, fnr              int
+	next, exiting        bool
+	breaking, continuing bool
+	exitStatus           int
 }
 
 func cmdAwk(args []string) int {
-	ctx := &awkContext{vars: map[string]awkValue{
-		"FS": awkString(" "), "OFS": awkString(" "), "ORS": awkString("\n"),
-	}}
+	ctx := &awkContext{
+		vars: map[string]awkValue{
+			"FS": awkString(" "), "OFS": awkString(" "), "ORS": awkString("\n"), "SUBSEP": awkString("\x1c"),
+		},
+		arrays: map[string]map[string]awkValue{},
+	}
 	program := ""
 	for len(args) > 0 {
 		switch {
@@ -168,11 +176,12 @@ func (ctx *awkContext) processAwkFile(name string, rules []awkRule) error {
 			return err
 		}
 		ctx.next = false
-		for _, rule := range rules {
+		for i := range rules {
+			rule := &rules[i]
 			if rule.kind != "record" {
 				continue
 			}
-			matches, err := ctx.matches(rule.pattern)
+			matches, err := ctx.matchesRule(rule)
 			if err != nil {
 				return err
 			}
@@ -287,12 +296,18 @@ func (ctx *awkContext) setField(number int, value string) error {
 
 // awkLvalue names an assignable location: either a variable or a field.
 type awkLvalue struct {
-	name  string
-	field int
-	isSet bool
+	name      string
+	field     int
+	arrayName string
+	arrayKey  string
+	isArray   bool
+	isSet     bool
 }
 
 func (ctx *awkContext) read(target awkLvalue) awkValue {
+	if target.isArray {
+		return ctx.arrays[target.arrayName][target.arrayKey]
+	}
 	if target.name == "" {
 		return ctx.field(target.field)
 	}
@@ -300,6 +315,13 @@ func (ctx *awkContext) read(target awkLvalue) awkValue {
 }
 
 func (ctx *awkContext) assign(target awkLvalue, value awkValue) error {
+	if target.isArray {
+		if ctx.arrays[target.arrayName] == nil {
+			ctx.arrays[target.arrayName] = map[string]awkValue{}
+		}
+		ctx.arrays[target.arrayName][target.arrayKey] = value
+		return nil
+	}
 	if target.name == "" {
 		return ctx.setField(target.field, value.text)
 	}
@@ -307,12 +329,20 @@ func (ctx *awkContext) assign(target awkLvalue, value awkValue) error {
 	return nil
 }
 
-// target resolves the left-hand side of an assignment, which is either a plain
-// variable name or a field reference such as $1 or $(NF - 1).
+// target resolves the left-hand side of an assignment: a plain variable
+// name, an array element such as a["x"], or a field reference such as $1
+// or $(NF - 1).
 func (ctx *awkContext) target(text string) (awkLvalue, error) {
 	text = strings.TrimSpace(text)
 	if validAwkName(text) {
 		return awkLvalue{name: text, isSet: true}, nil
+	}
+	if name, keyExpr, ok := splitAwkArrayRef(text); ok {
+		key, err := ctx.evalArrayKey(keyExpr)
+		if err != nil {
+			return awkLvalue{}, err
+		}
+		return awkLvalue{arrayName: name, arrayKey: key, isArray: true, isSet: true}, nil
 	}
 	if strings.HasPrefix(text, "$") {
 		index, err := ctx.eval(text[1:])
@@ -322,6 +352,43 @@ func (ctx *awkContext) target(text string) (awkLvalue, error) {
 		return awkLvalue{field: int(index.asNumber()), isSet: true}, nil
 	}
 	return awkLvalue{}, fmt.Errorf("invalid assignment target %q", text)
+}
+
+// evalArrayKey evaluates a subscript expression, joining a comma-separated
+// multi-dimensional subscript such as "i, j" with SUBSEP the way real awk
+// simulates multi-dimensional arrays with a single string-keyed map.
+func (ctx *awkContext) evalArrayKey(keyExpr string) (string, error) {
+	parts := splitAwkTopLevel(keyExpr, ',')
+	if len(parts) == 1 {
+		value, err := ctx.eval(parts[0])
+		return value.text, err
+	}
+	keys := make([]string, len(parts))
+	for i, part := range parts {
+		value, err := ctx.eval(part)
+		if err != nil {
+			return "", err
+		}
+		keys[i] = value.text
+	}
+	return strings.Join(keys, ctx.get("SUBSEP").text), nil
+}
+
+// splitAwkArrayRef recognizes "name[key]" and returns the array name and the
+// (unevaluated) key expression text.
+func splitAwkArrayRef(text string) (name, keyExpr string, ok bool) {
+	if !strings.HasSuffix(text, "]") {
+		return "", "", false
+	}
+	open := strings.IndexByte(text, '[')
+	if open <= 0 {
+		return "", "", false
+	}
+	name = text[:open]
+	if !validAwkName(name) {
+		return "", "", false
+	}
+	return name, text[open+1 : len(text)-1], true
 }
 
 func (ctx *awkContext) matches(pattern string) (bool, error) {
@@ -336,6 +403,42 @@ func (ctx *awkContext) matches(pattern string) (bool, error) {
 	return value.truth(), nil
 }
 
+// matchesRule evaluates a rule's pattern against the current record,
+// including a "/a/,/b/" range pattern's state: once the first pattern has
+// matched, every record matches up to and including the one the second
+// pattern matches.
+func (ctx *awkContext) matchesRule(rule *awkRule) (bool, error) {
+	if rule.pattern2 == "" {
+		return ctx.matches(rule.pattern)
+	}
+	if !rule.inRange {
+		started, err := ctx.matches(rule.pattern)
+		if err != nil || !started {
+			return false, err
+		}
+		rule.inRange = true
+	}
+	ended, err := ctx.matches(rule.pattern2)
+	if err != nil {
+		return false, err
+	}
+	if ended {
+		rule.inRange = false
+	}
+	return true, nil
+}
+
+// splitAwkRangePattern recognizes a "/a/,/b/"-style range pattern (any two
+// comma-separated patterns, not just regex literals) and splits it in two;
+// an ordinary pattern is returned unchanged with pattern2 empty.
+func splitAwkRangePattern(pattern string) (string, string) {
+	parts := splitAwkTopLevel(pattern, ',')
+	if len(parts) != 2 {
+		return pattern, ""
+	}
+	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+}
+
 func (ctx *awkContext) runAction(action string) error {
 	for position := 0; ; {
 		position = skipAwkSpace(action, position)
@@ -346,7 +449,7 @@ func (ctx *awkContext) runAction(action string) error {
 		if err := ctx.runStatement(action[position:end]); err != nil {
 			return err
 		}
-		if ctx.next || ctx.exiting {
+		if ctx.next || ctx.exiting || ctx.breaking || ctx.continuing {
 			return nil
 		}
 		position = end
@@ -369,6 +472,20 @@ func (ctx *awkContext) runStatement(statement string) error {
 		return ctx.runAction(statement[1:close])
 	case awkKeyword(statement, "if"):
 		return ctx.runIf(statement)
+	case awkKeyword(statement, "for"):
+		return ctx.runFor(statement)
+	case awkKeyword(statement, "while"):
+		return ctx.runWhile(statement)
+	case awkKeyword(statement, "do"):
+		return ctx.runDo(statement)
+	case awkKeyword(statement, "delete"):
+		return ctx.runDelete(statement)
+	case statement == "break":
+		ctx.breaking = true
+		return nil
+	case statement == "continue":
+		ctx.continuing = true
+		return nil
 	case statement == "next":
 		ctx.next = true
 		return nil
@@ -428,6 +545,159 @@ func splitAwkIf(statement string) (condition, thenPart, elsePart string, err err
 		return "", "", "", fmt.Errorf("unexpected text after if %q", remainder)
 	}
 	return condition, thenPart, elsePart, nil
+}
+
+// loopBody runs one loop iteration's body statement, translating break and
+// continue into a signal the caller's loop can act on: (stop, err) where
+// stop means "leave the loop now" (true for break, and for next/exit/a
+// propagated error, which the caller must also check for itself).
+func (ctx *awkContext) loopBody(body string) (stop bool, err error) {
+	if err := ctx.runStatement(body); err != nil {
+		return true, err
+	}
+	if ctx.breaking {
+		ctx.breaking = false
+		return true, nil
+	}
+	ctx.continuing = false
+	if ctx.next || ctx.exiting {
+		return true, nil
+	}
+	return false, nil
+}
+
+// runWhile implements "while (condition) body".
+func (ctx *awkContext) runWhile(statement string) error {
+	rest := strings.TrimSpace(statement[len("while"):])
+	if !strings.HasPrefix(rest, "(") {
+		return fmt.Errorf("while requires a condition")
+	}
+	close, err := matchingAwkBracket(rest, 0)
+	if err != nil {
+		return err
+	}
+	condition, body := rest[1:close], rest[close+1:]
+	for {
+		value, err := ctx.eval(condition)
+		if err != nil {
+			return err
+		}
+		if !value.truth() {
+			return nil
+		}
+		if stop, err := ctx.loopBody(body); stop {
+			return err
+		}
+	}
+}
+
+// runDo implements "do body while (condition)".
+func (ctx *awkContext) runDo(statement string) error {
+	body := strings.TrimSpace(statement[len("do"):])
+	bodyEnd := awkStatementEnd(body, 0)
+	bodyStatement := body[:bodyEnd]
+	tail := skipAwkSpace(body, bodyEnd)
+	if !awkKeyword(body[tail:], "while") {
+		return fmt.Errorf("do requires a trailing while")
+	}
+	rest := strings.TrimSpace(body[tail+len("while"):])
+	if !strings.HasPrefix(rest, "(") {
+		return fmt.Errorf("while requires a condition")
+	}
+	close, err := matchingAwkBracket(rest, 0)
+	if err != nil {
+		return err
+	}
+	condition := rest[1:close]
+	for {
+		if stop, err := ctx.loopBody(bodyStatement); stop {
+			return err
+		}
+		value, err := ctx.eval(condition)
+		if err != nil {
+			return err
+		}
+		if !value.truth() {
+			return nil
+		}
+	}
+}
+
+// runFor implements both "for (init; condition; post) body" and
+// "for (key in array) body".
+func (ctx *awkContext) runFor(statement string) error {
+	rest := strings.TrimSpace(statement[len("for"):])
+	if !strings.HasPrefix(rest, "(") {
+		return fmt.Errorf("for requires a condition")
+	}
+	close, err := matchingAwkBracket(rest, 0)
+	if err != nil {
+		return err
+	}
+	clause, body := rest[1:close], rest[close+1:]
+
+	if idx := findAwkTopLevelWord(clause, "in"); idx >= 0 {
+		keyName := strings.TrimSpace(clause[:idx])
+		arrayName := strings.TrimSpace(clause[idx+len("in"):])
+		if !validAwkName(keyName) || !validAwkName(arrayName) {
+			return fmt.Errorf("invalid for-in clause %q", clause)
+		}
+		for key := range ctx.arrays[arrayName] {
+			ctx.vars[keyName] = awkLiteral(key)
+			if stop, err := ctx.loopBody(body); stop {
+				return err
+			}
+		}
+		return nil
+	}
+
+	parts := splitAwkTopLevel(clause, ';')
+	if len(parts) != 3 {
+		return fmt.Errorf("for requires init; condition; post")
+	}
+	if init := strings.TrimSpace(parts[0]); init != "" {
+		if err := ctx.runStatement(init); err != nil {
+			return err
+		}
+	}
+	condition, post := strings.TrimSpace(parts[1]), strings.TrimSpace(parts[2])
+	for {
+		if condition != "" {
+			value, err := ctx.eval(condition)
+			if err != nil {
+				return err
+			}
+			if !value.truth() {
+				return nil
+			}
+		}
+		if stop, err := ctx.loopBody(body); stop {
+			return err
+		}
+		if post != "" {
+			if err := ctx.runStatement(post); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// runDelete implements "delete array[key]" and whole-array "delete array".
+func (ctx *awkContext) runDelete(statement string) error {
+	rest := strings.TrimSpace(statement[len("delete"):])
+	if name, keyExpr, ok := splitAwkArrayRef(rest); ok {
+		key, err := ctx.eval(keyExpr)
+		if err != nil {
+			return err
+		}
+		delete(ctx.arrays[name], key.text)
+		return nil
+	}
+	if validAwkName(rest) {
+		delete(ctx.arrays, rest)
+		return nil
+	}
+	return fmt.Errorf("invalid delete target %q", rest)
 }
 
 func (ctx *awkContext) awkPrint(expressions string) error {
@@ -499,6 +769,24 @@ func (ctx *awkContext) awkAssignment(statement string) error {
 		target, err := ctx.target(strings.TrimSuffix(statement, "++"))
 		if err == nil {
 			return ctx.assign(target, awkNumber(ctx.read(target).asNumber()+1))
+		}
+	}
+	if strings.HasSuffix(statement, "--") {
+		target, err := ctx.target(strings.TrimSuffix(statement, "--"))
+		if err == nil {
+			return ctx.assign(target, awkNumber(ctx.read(target).asNumber()-1))
+		}
+	}
+	if strings.HasPrefix(statement, "++") {
+		target, err := ctx.target(strings.TrimPrefix(statement, "++"))
+		if err == nil {
+			return ctx.assign(target, awkNumber(ctx.read(target).asNumber()+1))
+		}
+	}
+	if strings.HasPrefix(statement, "--") {
+		target, err := ctx.target(strings.TrimPrefix(statement, "--"))
+		if err == nil {
+			return ctx.assign(target, awkNumber(ctx.read(target).asNumber()-1))
 		}
 	}
 	// Anything else is an expression statement, evaluated for its side effects
@@ -608,7 +896,7 @@ func tokenizeAwk(expression string) ([]awkToken, error) {
 		if matched {
 			continue
 		}
-		if strings.ContainsRune("$()+-*/%<>!~,", rune(expression[i])) {
+		if strings.ContainsRune("$()+-*/%<>!~,[]", rune(expression[i])) {
 			tokens = append(tokens, awkToken{kind: "operator", text: expression[i : i+1]})
 			i++
 			continue
@@ -645,17 +933,104 @@ func (p *awkExpressionParser) parseOr() (awkValue, error) {
 }
 
 func (p *awkExpressionParser) parseAnd() (awkValue, error) {
-	left, err := p.parseCompare()
+	left, err := p.parseIn()
 	for err == nil && p.take("&&") {
 		var right awkValue
-		right, err = p.parseCompare()
+		right, err = p.parseIn()
 		left = awkBool(left.truth() && right.truth())
 	}
 	return left, err
 }
 
-func (p *awkExpressionParser) parseCompare() (awkValue, error) {
+// parseArrayKey parses a subscript expression up to its closing "]",
+// joining a comma-separated multi-dimensional subscript ("i, j") with
+// SUBSEP the way real awk simulates multi-dimensional arrays with a single
+// string-keyed map.
+func (p *awkExpressionParser) parseArrayKey() (string, error) {
+	first, err := p.parseOr()
+	if err != nil {
+		return "", err
+	}
+	keys := []string{first.text}
+	for p.take(",") {
+		next, err := p.parseOr()
+		if err != nil {
+			return "", err
+		}
+		keys = append(keys, next.text)
+	}
+	if !p.take("]") {
+		return "", fmt.Errorf("missing ]")
+	}
+	if len(keys) == 1 {
+		return keys[0], nil
+	}
+	return strings.Join(keys, p.ctx.get("SUBSEP").text), nil
+}
+
+// parseIn handles "key in array", awk's array-membership test.
+func (p *awkExpressionParser) parseIn() (awkValue, error) {
+	left, err := p.parseCompare()
+	if err != nil {
+		return left, err
+	}
+	for p.position < len(p.tokens) && p.tokens[p.position].kind == "name" && p.tokens[p.position].text == "in" {
+		p.position++
+		if p.position >= len(p.tokens) || p.tokens[p.position].kind != "name" {
+			return awkValue{}, fmt.Errorf("in requires an array name")
+		}
+		arrayName := p.tokens[p.position].text
+		p.position++
+		_, ok := p.ctx.arrays[arrayName][left.text]
+		left = awkBool(ok)
+	}
+	return left, nil
+}
+
+// parseConcat implements awk's string concatenation: two expressions with no
+// operator between them, as in "print \"x=\" x". By the time parseAdd
+// returns, it has already consumed every +/- it can reach, so a term here
+// can only follow if it starts with something other than +/- -- which is
+// why unary +/- are deliberately not among the tokens that start one.
+func (p *awkExpressionParser) parseConcat() (awkValue, error) {
 	left, err := p.parseAdd()
+	if err != nil {
+		return left, err
+	}
+	for p.canStartTerm() {
+		right, err := p.parseAdd()
+		if err != nil {
+			return left, err
+		}
+		left = awkString(left.text + right.text)
+	}
+	return left, nil
+}
+
+// canStartTerm reports whether the next token could begin another
+// concatenation operand, without consuming it.
+func (p *awkExpressionParser) canStartTerm() bool {
+	if p.position >= len(p.tokens) {
+		return false
+	}
+	switch p.tokens[p.position].kind {
+	case "string", "regex", "number":
+		return true
+	case "name":
+		// "in" is a contextual keyword (parseIn handles "key in array"
+		// above this level); it can never itself start a concat operand.
+		return p.tokens[p.position].text != "in"
+	case "operator":
+		switch p.tokens[p.position].text {
+		case "(", "$", "!":
+			return true
+		}
+	}
+	return false
+}
+
+func (p *awkExpressionParser) parseCompare() (awkValue, error) {
+	left, err := p.parseConcat()
 	if err != nil || p.position >= len(p.tokens) {
 		return left, err
 	}
@@ -677,7 +1052,7 @@ func (p *awkExpressionParser) parseCompare() (awkValue, error) {
 		}
 		return awkBool(re.MatchString(left.text) != (op == "!~")), nil
 	}
-	right, err := p.parseAdd()
+	right, err := p.parseConcat()
 	if err != nil {
 		return left, err
 	}
@@ -800,10 +1175,29 @@ func (p *awkExpressionParser) parsePrimary() (awkValue, error) {
 		return awkNumber(number), err
 	case "name":
 		if p.take("(") {
-			if token.text == "sub" || token.text == "gsub" {
+			switch token.text {
+			case "sub", "gsub":
 				return p.substitute(token.text == "gsub")
+			case "split":
+				return p.splitCall()
+			case "match":
+				return p.matchCall()
+			case "length":
+				return p.lengthCall()
 			}
 			return p.call(token.text)
+		}
+		if token.text == "length" {
+			// "length" alone, with no parentheses, is a GNU extension for
+			// the current record's length.
+			return awkNumber(float64(len(p.ctx.record))), nil
+		}
+		if p.take("[") {
+			key, err := p.parseArrayKey()
+			if err != nil {
+				return awkValue{}, err
+			}
+			return p.ctx.arrays[token.text][key], nil
 		}
 		return p.ctx.get(token.text), nil
 	}
@@ -834,6 +1228,13 @@ func (p *awkExpressionParser) parseLvalue() (awkLvalue, error) {
 	if p.position < len(p.tokens) && p.tokens[p.position].kind == "name" {
 		name := p.tokens[p.position].text
 		p.position++
+		if p.take("[") {
+			key, err := p.parseArrayKey()
+			if err != nil {
+				return awkLvalue{}, err
+			}
+			return awkLvalue{arrayName: name, arrayKey: key, isArray: true, isSet: true}, nil
+		}
 		return awkLvalue{name: name, isSet: true}, nil
 	}
 	return awkLvalue{}, fmt.Errorf("substitution target must be a field or variable")
@@ -933,6 +1334,116 @@ func awkReplacement(replacement, matched string) string {
 	return builder.String()
 }
 
+// splitCall implements split(string, array [, fs]), populating array with
+// the string's fields (1-indexed, awk's own convention) and returning the
+// count. The array argument is a bare name, not a general expression, since
+// arrays cannot appear as ordinary values in this implementation.
+func (p *awkExpressionParser) splitCall() (awkValue, error) {
+	str, err := p.parseOr()
+	if err != nil {
+		return awkValue{}, err
+	}
+	if !p.take(",") {
+		return awkValue{}, fmt.Errorf("split requires an array")
+	}
+	if p.position >= len(p.tokens) || p.tokens[p.position].kind != "name" {
+		return awkValue{}, fmt.Errorf("split requires an array name")
+	}
+	arrayName := p.tokens[p.position].text
+	p.position++
+	separator := p.ctx.get("FS").text
+	if p.take(",") {
+		sepValue, err := p.parseRegexOperand()
+		if err != nil {
+			return awkValue{}, err
+		}
+		separator = sepValue
+	}
+	if !p.take(")") {
+		return awkValue{}, fmt.Errorf("missing )")
+	}
+	var parts []string
+	if separator == " " || separator == "" {
+		parts = strings.Fields(str.text)
+	} else if literal, ok := awkSingleCharacterFS(separator); ok {
+		parts = strings.Split(str.text, literal)
+	} else {
+		re, err := compilePOSIXRegexp(separator, posixERE, false)
+		if err != nil {
+			return awkValue{}, fmt.Errorf("invalid field separator: %w", err)
+		}
+		parts = re.Split(str.text, -1)
+	}
+	if str.text == "" {
+		parts = nil
+	}
+	array := map[string]awkValue{}
+	for i, part := range parts {
+		array[strconv.Itoa(i+1)] = awkLiteral(part)
+	}
+	p.ctx.arrays[arrayName] = array
+	return awkNumber(float64(len(parts))), nil
+}
+
+// matchCall implements match(string, regex), setting RSTART/RLENGTH and
+// returning the 1-indexed match position (0 if none). Its regex argument
+// needs the pattern text itself, not the "matched against $0" boolean a
+// bare /regex/ literal evaluates to elsewhere, so it is parsed the same way
+// sub/gsub's pattern argument is.
+func (p *awkExpressionParser) matchCall() (awkValue, error) {
+	str, err := p.parseOr()
+	if err != nil {
+		return awkValue{}, err
+	}
+	if !p.take(",") {
+		return awkValue{}, fmt.Errorf("match requires a pattern")
+	}
+	pattern, err := p.parseRegexOperand()
+	if err != nil {
+		return awkValue{}, err
+	}
+	if !p.take(")") {
+		return awkValue{}, fmt.Errorf("missing )")
+	}
+	re, err := compilePOSIXRegexp(pattern, posixERE, false)
+	if err != nil {
+		return awkValue{}, err
+	}
+	loc := re.FindStringIndex(str.text)
+	if loc == nil {
+		p.ctx.vars["RSTART"], p.ctx.vars["RLENGTH"] = awkNumber(0), awkNumber(-1)
+		return awkNumber(0), nil
+	}
+	p.ctx.vars["RSTART"] = awkNumber(float64(loc[0] + 1))
+	p.ctx.vars["RLENGTH"] = awkNumber(float64(loc[1] - loc[0]))
+	return awkNumber(float64(loc[0] + 1)), nil
+}
+
+// lengthCall implements length() (the record), length(string), and
+// length(array) (its element count). The array form needs special-casing
+// because a bare array name isn't an evaluable value anywhere else in this
+// implementation.
+func (p *awkExpressionParser) lengthCall() (awkValue, error) {
+	if p.take(")") {
+		return awkNumber(float64(len(p.ctx.record))), nil
+	}
+	if p.position+1 < len(p.tokens) && p.tokens[p.position].kind == "name" &&
+		p.tokens[p.position+1].kind == "operator" && p.tokens[p.position+1].text == ")" {
+		if array, ok := p.ctx.arrays[p.tokens[p.position].text]; ok {
+			p.position += 2
+			return awkNumber(float64(len(array))), nil
+		}
+	}
+	value, err := p.parseOr()
+	if err != nil {
+		return awkValue{}, err
+	}
+	if !p.take(")") {
+		return awkValue{}, fmt.Errorf("missing )")
+	}
+	return awkNumber(float64(len(value.text))), nil
+}
+
 func (p *awkExpressionParser) call(name string) (awkValue, error) {
 	var arguments []awkValue
 	if !p.take(")") {
@@ -951,11 +1462,6 @@ func (p *awkExpressionParser) call(name string) (awkValue, error) {
 		}
 	}
 	switch name {
-	case "length":
-		if len(arguments) == 0 {
-			return awkNumber(float64(len(p.ctx.record))), nil
-		}
-		return awkNumber(float64(len(arguments[0].text))), nil
 	case "int":
 		if len(arguments) != 1 {
 			return awkValue{}, fmt.Errorf("int requires one argument")
@@ -984,6 +1490,23 @@ func (p *awkExpressionParser) call(name string) (awkValue, error) {
 			}
 			return awkString(arguments[0].text[start:end]), nil
 		}
+	case "index":
+		if len(arguments) == 2 {
+			return awkNumber(float64(strings.Index(arguments[0].text, arguments[1].text) + 1)), nil
+		}
+	case "sprintf":
+		if len(arguments) == 0 {
+			return awkValue{}, fmt.Errorf("sprintf requires a format")
+		}
+		values := make([]string, len(arguments)-1)
+		for i, argument := range arguments[1:] {
+			values[i] = argument.text
+		}
+		var out strings.Builder
+		if _, _, err := writePrintf(&out, arguments[0].text, values); err != nil {
+			return awkValue{}, err
+		}
+		return awkString(out.String()), nil
 	}
 	return awkValue{}, fmt.Errorf("unsupported function %s", name)
 }
@@ -1016,7 +1539,8 @@ func parseAwkProgram(program string) ([]awkRule, error) {
 		if open < 0 {
 			pattern := strings.TrimSpace(awkStripComments(program[position:]))
 			if pattern != "" {
-				rules = append(rules, awkRule{pattern: pattern, action: "print", kind: "record"})
+				pattern, pattern2 := splitAwkRangePattern(pattern)
+				rules = append(rules, awkRule{pattern: pattern, pattern2: pattern2, action: "print", kind: "record"})
 			}
 			break
 		}
@@ -1026,10 +1550,13 @@ func parseAwkProgram(program string) ([]awkRule, error) {
 			return nil, err
 		}
 		kind := "record"
+		var pattern2 string
 		if pattern == "BEGIN" || pattern == "END" {
 			kind, pattern = pattern, ""
+		} else {
+			pattern, pattern2 = splitAwkRangePattern(pattern)
 		}
-		rules = append(rules, awkRule{pattern: pattern, action: program[open+1 : close], kind: kind})
+		rules = append(rules, awkRule{pattern: pattern, pattern2: pattern2, action: program[open+1 : close], kind: kind})
 		position = close + 1
 	}
 	return rules, nil
@@ -1059,9 +1586,9 @@ func awkScan(value string, start int, visit func(i, depth int) bool) {
 			}
 			previous = 0
 			continue
-		case character == '(', character == '{':
+		case character == '(', character == '{', character == '[':
 			depth++
-		case character == ')', character == '}':
+		case character == ')', character == '}', character == ']':
 			depth--
 		}
 		if !visit(i, depth) {
@@ -1182,6 +1709,40 @@ func awkStatementEnd(value string, start int) int {
 		}
 		return end
 	}
+	for _, keyword := range []string{"for", "while"} {
+		if !awkKeyword(value[start:], keyword) {
+			continue
+		}
+		open := skipAwkSpace(value, start+len(keyword))
+		if open >= len(value) || value[open] != '(' {
+			return len(value)
+		}
+		close, err := matchingAwkBracket(value, open)
+		if err != nil {
+			return len(value)
+		}
+		return awkStatementEnd(value, close+1)
+	}
+	if awkKeyword(value[start:], "do") {
+		bodyEnd := awkStatementEnd(value, start+len("do"))
+		tail := skipAwkSpace(value, bodyEnd)
+		if !awkKeyword(value[tail:], "while") {
+			return bodyEnd
+		}
+		open := skipAwkSpace(value, tail+len("while"))
+		if open >= len(value) || value[open] != '(' {
+			return bodyEnd
+		}
+		close, err := matchingAwkBracket(value, open)
+		if err != nil {
+			return bodyEnd
+		}
+		after := skipAwkSpace(value, close+1)
+		if after < len(value) && value[after] == ';' {
+			after++
+		}
+		return after
+	}
 	end := len(value)
 	awkScan(value, start, func(i, depth int) bool {
 		if depth == 0 && (value[i] == ';' || value[i] == '\n') {
@@ -1205,16 +1766,44 @@ func awkKeyword(value, keyword string) bool {
 // splitAwkArguments splits a comma-separated expression list, ignoring commas
 // nested inside brackets or literals.
 func splitAwkArguments(value string) []string {
+	return splitAwkTopLevel(value, ',')
+}
+
+// splitAwkTopLevel splits value on sep, ignoring occurrences nested inside
+// brackets, strings, or regular expressions.
+func splitAwkTopLevel(value string, sep byte) []string {
 	var parts []string
 	start := 0
 	awkScan(value, 0, func(i, depth int) bool {
-		if value[i] == ',' && depth == 0 {
+		if value[i] == sep && depth == 0 {
 			parts = append(parts, value[start:i])
 			start = i + 1
 		}
 		return true
 	})
 	return append(parts, value[start:])
+}
+
+// findAwkTopLevelWord returns the index of word's first occurrence in value
+// as a whole word at bracket depth 0 (not inside a string, regex, or a
+// nested pair), or -1 if there is none. It is used to find the "in" keyword
+// in a "for (key in array)" clause.
+func findAwkTopLevelWord(value, word string) int {
+	found := -1
+	awkScan(value, 0, func(i, depth int) bool {
+		if depth != 0 || !strings.HasPrefix(value[i:], word) {
+			return true
+		}
+		before := i == 0 || !isAwkNameStart(value[i-1]) && (value[i-1] < '0' || value[i-1] > '9')
+		after := i+len(word) >= len(value) ||
+			!isAwkNameStart(value[i+len(word)]) && (value[i+len(word)] < '0' || value[i+len(word)] > '9')
+		if before && after {
+			found = i
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 func findAwkOperator(value, operator string) int {

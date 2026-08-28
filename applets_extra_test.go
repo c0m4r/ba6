@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -90,6 +91,111 @@ func TestChmodRecursiveAndOwnership(t *testing.T) {
 	}
 	if status := cmdChgrp([]string{strconv.Itoa(os.Getgid()), file}); status != 0 {
 		t.Fatalf("chgrp to current group returned %d", status)
+	}
+}
+
+func TestChmodSymbolicModes(t *testing.T) {
+	cases := []struct {
+		name string
+		init os.FileMode
+		mode string
+		want os.FileMode
+	}{
+		{"add-owner-exec", 0o644, "u+x", 0o744},
+		{"remove-group-other-read", 0o644, "go-r", 0o600},
+		{"set-all-rw-clears-special", fileModeFromOctal(0o1755), "a=rw", 0o666},
+		{"chained-ops-same-who", 0o644, "u+x-w", 0o544},
+		{"remove-only-requested-bit", fileModeFromOctal(0o4755), "u-x", fileModeFromOctal(0o4655)},
+		{"capital-x-skips-plain-file", 0o644, "a+X", 0o644},
+		{"capital-x-extends-existing-exec", 0o744, "a+X", 0o755},
+		{"copy-from-owner", 0o700, "go=u", 0o777},
+		{"equals-preserves-other-special-bit", fileModeFromOctal(0o4755), "g=rx", fileModeFromOctal(0o4755)},
+		{"multiple-clauses", 0o000, "u=rwx,g=rx", 0o750},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "f")
+			if err := os.WriteFile(path, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(path, tc.init); err != nil { //nolint:gosec // G302: exercising chmod's symbolic-mode math needs the exact starting bits
+				t.Fatal(err)
+			}
+			if status := cmdChmod([]string{tc.mode, path}); status != 0 {
+				t.Fatalf("chmod %s returned %d", tc.mode, status)
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode() != tc.want {
+				t.Fatalf("chmod %s on %v: got %v, want %v", tc.mode, tc.init, info.Mode(), tc.want)
+			}
+		})
+	}
+}
+
+func TestChmodOmittedWhoHonoursUmask(t *testing.T) {
+	old := syscall.Umask(0o022)
+	defer syscall.Umask(old)
+
+	path := filepath.Join(t.TempDir(), "f")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o444); err != nil { //nolint:gosec // G302: read-only starting mode is the point of this test
+		t.Fatal(err)
+	}
+	if status := cmdChmod([]string{"+w", path}); status != 0 {
+		t.Fatalf("chmod +w returned %d", status)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// umask 022 masks the write bit out of group/other, so only the owner
+	// gains it: 0444 -> 0644, not 0666.
+	if info.Mode().Perm() != 0o644 {
+		t.Fatalf("mode is %v, want 0644", info.Mode().Perm())
+	}
+}
+
+func TestChmodReferenceAndReporting(t *testing.T) {
+	dir := t.TempDir()
+	ref := filepath.Join(dir, "ref")
+	target := filepath.Join(dir, "target")
+	if err := os.WriteFile(ref, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(ref, 0o640); err != nil { //nolint:gosec // G302: --reference needs a specific source mode to copy
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, nil, 0o644); err != nil { //nolint:gosec // G306: chmod --reference target starts wider than 0600 to prove the mode actually narrows
+		t.Fatal(err)
+	}
+	if status := cmdChmod([]string{"--reference=" + ref, target}); status != 0 {
+		t.Fatalf("chmod --reference returned %d", status)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("target mode is %v, want 0640", info.Mode())
+	}
+
+	unchanged := filepath.Join(dir, "unchanged")
+	if err := os.WriteFile(unchanged, nil, 0o644); err != nil { //nolint:gosec // G306: chmod -c must observe the file is already 0644 to correctly report no change
+		t.Fatal(err)
+	}
+	if status := cmdChmod([]string{"-c", "644", unchanged}); status != 0 {
+		t.Fatalf("chmod -c returned %d", status)
+	}
+	if status := cmdChmod([]string{"zz", unchanged}); status == 0 {
+		t.Fatal("chmod with an invalid symbolic mode should fail")
+	}
+	if status := cmdChmod([]string{"+x"}); status == 0 {
+		t.Fatal("chmod with a mode but no file operand should fail")
 	}
 }
 

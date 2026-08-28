@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 func cmdEnv(args []string) int {
@@ -141,7 +142,10 @@ func setEnvironment(env []string, value string) []string {
 
 func cmdXargs(args []string) int {
 	null, maxArgs, noRun := false, 0, false
-	replace := ""
+	replace, delim, eofStr, argFile := "", "", "", ""
+	haveDelim := false
+	verbose, interactive, exitOnOverflow := false, false, false
+	maxChars, maxProcs := 0, 1
 	commandArgs := []string{}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -153,6 +157,12 @@ func cmdXargs(args []string) int {
 			null = true
 		case arg == "-r" || arg == "--no-run-if-empty":
 			noRun = true
+		case arg == "-t" || arg == "--verbose":
+			verbose = true
+		case arg == "-p" || arg == "--interactive":
+			verbose, interactive = true, true
+		case arg == "-x" || arg == "--exit":
+			exitOnOverflow = true
 		case strings.HasPrefix(arg, "-n") || strings.HasPrefix(arg, "--max-args"):
 			text, next, ok := optionArgument(args, i, "-n", "--max-args")
 			count, convErr := strconv.Atoi(text)
@@ -161,6 +171,22 @@ func cmdXargs(args []string) int {
 				return 1
 			}
 			maxArgs, i = count, next
+		case strings.HasPrefix(arg, "-P") || strings.HasPrefix(arg, "--max-procs"):
+			text, next, ok := optionArgument(args, i, "-P", "--max-procs")
+			count, convErr := strconv.Atoi(text)
+			if !ok || convErr != nil || count < 0 {
+				fatalf("xargs", "invalid max-procs count %q", text)
+				return 1
+			}
+			maxProcs, i = count, next
+		case strings.HasPrefix(arg, "-s") || strings.HasPrefix(arg, "--max-chars"):
+			text, next, ok := optionArgument(args, i, "-s", "--max-chars")
+			count, convErr := strconv.Atoi(text)
+			if !ok || convErr != nil || count < 1 {
+				fatalf("xargs", "invalid max-chars count %q", text)
+				return 1
+			}
+			maxChars, i = count, next
 		case strings.HasPrefix(arg, "-I") || strings.HasPrefix(arg, "--replace"):
 			text, next, ok := optionArgument(args, i, "-I", "--replace")
 			if !ok || text == "" {
@@ -168,22 +194,68 @@ func cmdXargs(args []string) int {
 				return 1
 			}
 			replace, i = text, next
+		case strings.HasPrefix(arg, "-a") || strings.HasPrefix(arg, "--arg-file"):
+			text, next, ok := optionArgument(args, i, "-a", "--arg-file")
+			if !ok || text == "" {
+				fatalf("xargs", "option requires an argument -- 'a'")
+				return 1
+			}
+			argFile, i = text, next
+		case strings.HasPrefix(arg, "-d") || strings.HasPrefix(arg, "--delimiter"):
+			text, next, ok := optionArgument(args, i, "-d", "--delimiter")
+			if !ok {
+				fatalf("xargs", "option requires an argument -- 'd'")
+				return 1
+			}
+			decoded := decodeEscapes(text, false)
+			if len(decoded) != 1 {
+				fatalf("xargs", "the argument to -d must be a single character")
+				return 1
+			}
+			delim, haveDelim, i = decoded, true, next
+		case strings.HasPrefix(arg, "-E"):
+			text, next, ok := optionArgument(args, i, "-E")
+			if !ok {
+				fatalf("xargs", "option requires an argument -- 'E'")
+				return 1
+			}
+			eofStr, i = text, next
+		case arg == "-e" || arg == "--eof":
+			// The EOF string is optional here (unlike -E) and never consumes
+			// the next argument: bare -e/--eof defaults to "_".
+			eofStr = "_"
+		case strings.HasPrefix(arg, "--eof="):
+			eofStr = strings.TrimPrefix(arg, "--eof=")
+		case strings.HasPrefix(arg, "-e"):
+			eofStr = strings.TrimPrefix(arg, "-e")
 		default:
 			commandArgs = append(commandArgs, args[i:]...)
 			i = len(args)
 		}
 	}
-	data, err := io.ReadAll(io.LimitReader(os.Stdin, 1<<30))
+
+	var data []byte
+	var err error
+	if argFile != "" {
+		data, err = os.ReadFile(argFile)
+	} else {
+		data, err = io.ReadAll(io.LimitReader(os.Stdin, 1<<30))
+	}
 	if err != nil {
+		fatalf("xargs", "%v", errText(err))
 		return 1
 	}
 	var items []string
 	switch {
+	case haveDelim:
+		items = strings.Split(string(data), delim)
+		if len(items) > 0 && items[len(items)-1] == "" {
+			items = items[:len(items)-1]
+		}
 	case null:
-		for _, v := range strings.Split(string(data), "\x00") {
-			if v != "" {
-				items = append(items, v)
-			}
+		items = strings.Split(string(data), "\x00")
+		if len(items) > 0 && items[len(items)-1] == "" {
+			items = items[:len(items)-1]
 		}
 	case replace != "":
 		// -I substitutes a whole line at a time, so blanks inside a line do not
@@ -200,6 +272,14 @@ func cmdXargs(args []string) int {
 			return 1
 		}
 	}
+	if eofStr != "" {
+		for idx, item := range items {
+			if item == eofStr {
+				items = items[:idx]
+				break
+			}
+		}
+	}
 	if replace != "" {
 		// One command per line, which is what -I means.
 		maxArgs = 1
@@ -210,37 +290,148 @@ func cmdXargs(args []string) int {
 	if len(items) == 0 && noRun {
 		return 0
 	}
-	if maxArgs <= 0 {
-		maxArgs = len(items)
-		if maxArgs == 0 {
-			maxArgs = 1
+
+	batches := xargsBatches(items, maxArgs, maxChars, commandArgs)
+	if exitOnOverflow && maxChars > 0 {
+		prefixLen := xargsLineLen(commandArgs)
+		for _, item := range items {
+			if prefixLen+len(item)+1 > maxChars {
+				fatalf("xargs", "argument line too long")
+				return 1
+			}
 		}
 	}
-	status := 0
-	for start := 0; start < len(items) || start == 0 && len(items) == 0; start += maxArgs {
-		end := start + maxArgs
-		if end > len(items) {
-			end = len(items)
-		}
+
+	run := func(batch []string) int {
 		current := append([]string{}, commandArgs...)
 		if replace != "" {
-			joined := strings.Join(items[start:end], " ")
+			joined := strings.Join(batch, " ")
 			for i := range current {
 				current[i] = strings.ReplaceAll(current[i], replace, joined)
 			}
 		} else {
-			current = append(current, items[start:end]...)
+			current = append(current, batch...)
+		}
+		if verbose {
+			fmt.Fprintln(os.Stderr, xargsQuoteLine(current))
+		}
+		if interactive {
+			if !xargsConfirm() {
+				return 0
+			}
 		}
 		cmd := exec.Command(current[0], current[1:]...) //nolint:gosec // G204: xargs intentionally executes user-selected commands.
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 		if err := cmd.Run(); err != nil {
-			status = commandStatus("xargs", err)
+			return commandStatus("xargs", err)
 		}
-		if len(items) == 0 {
-			break
+		return 0
+	}
+
+	if maxProcs == 1 || len(batches) <= 1 {
+		status := 0
+		for _, batch := range batches {
+			if s := run(batch); s != 0 {
+				status = s
+			}
+		}
+		return status
+	}
+
+	limit := maxProcs
+	if limit <= 0 {
+		limit = len(batches)
+	}
+	sem := make(chan struct{}, limit)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	status := 0
+	for _, batch := range batches {
+		batch := batch
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if s := run(batch); s != 0 {
+				mu.Lock()
+				status = s
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	return status
+}
+
+// xargsBatches groups items into command invocations honouring both -n's
+// item-count limit and -s's total command-line-length limit (0 means
+// unlimited). A single item that alone exceeds maxChars still gets its own
+// batch rather than being dropped; -x turns that case into a hard error
+// before any command runs.
+func xargsBatches(items []string, maxArgs, maxChars int, prefixArgs []string) [][]string {
+	if len(items) == 0 {
+		return [][]string{{}}
+	}
+	if maxArgs <= 0 {
+		maxArgs = len(items)
+	}
+	prefixLen := xargsLineLen(prefixArgs)
+	var batches [][]string
+	var current []string
+	curLen := prefixLen
+	for _, item := range items {
+		addLen := len(item) + 1
+		if len(current) > 0 && (len(current) >= maxArgs || (maxChars > 0 && curLen+addLen > maxChars)) {
+			batches = append(batches, current)
+			current, curLen = nil, prefixLen
+		}
+		current = append(current, item)
+		curLen += addLen
+	}
+	batches = append(batches, current)
+	return batches
+}
+
+func xargsLineLen(args []string) int {
+	n := 0
+	for _, a := range args {
+		n += len(a) + 1
+	}
+	return n
+}
+
+// xargsQuoteLine renders a command line the way -t/-p echo it: space-joined,
+// with any argument containing whitespace wrapped in single quotes.
+func xargsQuoteLine(args []string) string {
+	parts := make([]string, len(args))
+	for i, a := range args {
+		if strings.ContainsAny(a, " \t\n") {
+			parts[i] = "'" + a + "'"
+		} else {
+			parts[i] = a
 		}
 	}
-	return status
+	return strings.Join(parts, " ")
+}
+
+// xargsConfirm implements -p: read a yes/no answer from the controlling
+// terminal (never from stdin, which may be the item source) and run the
+// command only if it starts with 'y' or 'Y'.
+func xargsConfirm() bool {
+	fmt.Fprint(os.Stderr, "?...")
+	tty, err := os.OpenFile("/dev/tty", os.O_RDONLY, 0)
+	if err != nil {
+		fatalf("xargs", "failed to open /dev/tty for reading: %v", errText(err))
+		return false
+	}
+	defer tty.Close()
+	scanner := bufio.NewScanner(tty)
+	if !scanner.Scan() {
+		return false
+	}
+	answer := strings.TrimSpace(scanner.Text())
+	return len(answer) > 0 && (answer[0] == 'y' || answer[0] == 'Y')
 }
 
 // optionArgument returns the value belonging to an option, which may be written
@@ -348,6 +539,7 @@ func cmdSh(args []string) int {
 	// child process must not inherit $0 and $1 from its caller.
 	shellVariables = map[string]string{}
 	shellStatus = 0
+	shellBreaking, shellContinuing = false, false
 	for i, value := range append([]string{name}, scriptArgs...) {
 		shellVariables[strconv.Itoa(i)] = value
 	}
@@ -386,35 +578,307 @@ func runShellSourceControl(source string) (int, bool) {
 		fatalf("sh", "%v", err)
 		return 2, false
 	}
-	status := 0
-	exit := false
-	segment := []shellToken{}
-	connector := ";"
-	run := func() {
-		if len(segment) == 0 {
-			return
-		}
-		if connector == "&&" && status != 0 || connector == "||" && status == 0 {
-			return
-		}
-		status, exit = runShellPipeline(segment)
-		shellStatus = status
+	statements, pos, err := parseShellList(tokens, 0, shellStopAt())
+	if err != nil {
+		fatalf("sh", "%v", err)
+		return 2, false
 	}
-	for _, token := range tokens {
-		if token.operator && (token.text == ";" || token.text == "\n" ||
-			token.text == "&&" || token.text == "||") {
-			run()
+	if pos != len(tokens) {
+		fatalf("sh", "unexpected token %q", tokens[pos].text)
+		return 2, false
+	}
+	return runShellStatements(statements)
+}
+
+// shellStatement is one parsed unit of a shellList: a simple pipeline, or a
+// compound if/for/while command. guard records the connector (";"/"\n" for
+// unconditional, "&&"/"||" for short-circuit) that preceded it in its list,
+// which is what decides whether it runs at all.
+type shellStatement struct {
+	kind   string // "pipeline", "if", "for", "while"
+	guard  string
+	tokens []shellToken // kind == "pipeline"
+
+	ifClauses []shellIfClause // kind == "if"
+	elseBody  []shellStatement
+
+	forVar  string // kind == "for"
+	forList []shellToken
+	forBody []shellStatement
+
+	whileCond []shellStatement // kind == "while"
+	whileBody []shellStatement
+}
+
+type shellIfClause struct {
+	cond []shellStatement
+	body []shellStatement
+}
+
+// shellBreaking and shellContinuing are break/continue's signal to the
+// nearest enclosing for/while, mirroring shellStatus as script-wide state:
+// runShellStatements stops a list early when either is set (the same way it
+// does for a real exit), and the loop that owns the flag clears it.
+var shellBreaking, shellContinuing bool
+
+// shellStopAt builds a predicate matching any of the given bare words --
+// the keywords (then, fi, done, ...) that end a parsed statement list.
+func shellStopAt(words ...string) func(string) bool {
+	return func(word string) bool {
+		for _, w := range words {
+			if word == w {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+func skipShellSeparators(tokens []shellToken, pos int) int {
+	for pos < len(tokens) && tokens[pos].operator && (tokens[pos].text == ";" || tokens[pos].text == "\n") {
+		pos++
+	}
+	return pos
+}
+
+func shellIsWord(tokens []shellToken, pos int, word string) bool {
+	return pos < len(tokens) && !tokens[pos].operator && tokens[pos].text == word
+}
+
+// parseShellList parses a ";"/"\n"/"&&"/"||"-connected sequence of
+// statements, stopping at end of input or at a bare word stop accepts (a
+// keyword belonging to whichever compound command is calling it).
+func parseShellList(tokens []shellToken, pos int, stop func(string) bool) ([]shellStatement, int, error) {
+	var statements []shellStatement
+	guard := ""
+	for {
+		pos = skipShellSeparators(tokens, pos)
+		if pos >= len(tokens) || (!tokens[pos].operator && stop(tokens[pos].text)) {
+			return statements, pos, nil
+		}
+		stmt, next, err := parseShellStatement(tokens, pos)
+		if err != nil {
+			return nil, 0, err
+		}
+		stmt.guard = guard
+		statements = append(statements, stmt)
+		pos = next
+		guard = ""
+		if pos < len(tokens) && tokens[pos].operator {
+			switch tokens[pos].text {
+			case ";", "\n":
+				pos++
+				continue
+			case "&&", "||":
+				guard = tokens[pos].text
+				pos++
+				continue
+			}
+		}
+		return statements, pos, nil
+	}
+}
+
+func parseShellStatement(tokens []shellToken, pos int) (shellStatement, int, error) {
+	if pos < len(tokens) && !tokens[pos].operator {
+		switch tokens[pos].text {
+		case "if":
+			return parseShellIf(tokens, pos)
+		case "for":
+			return parseShellFor(tokens, pos)
+		case "while":
+			return parseShellWhile(tokens, pos)
+		}
+	}
+	start := pos
+	for pos < len(tokens) {
+		if tokens[pos].operator {
+			switch tokens[pos].text {
+			case ";", "\n", "&&", "||":
+				return shellStatement{kind: "pipeline", tokens: tokens[start:pos]}, pos, nil
+			}
+		}
+		pos++
+	}
+	return shellStatement{kind: "pipeline", tokens: tokens[start:pos]}, pos, nil
+}
+
+func parseShellIf(tokens []shellToken, pos int) (shellStatement, int, error) {
+	stmt := shellStatement{kind: "if"}
+	pos++ // consume "if"
+	for {
+		cond, next, err := parseShellList(tokens, pos, shellStopAt("then"))
+		if err != nil {
+			return stmt, 0, err
+		}
+		if !shellIsWord(tokens, next, "then") {
+			return stmt, 0, fmt.Errorf("expected 'then'")
+		}
+		pos = next + 1
+		body, next2, err := parseShellList(tokens, pos, shellStopAt("elif", "else", "fi"))
+		if err != nil {
+			return stmt, 0, err
+		}
+		stmt.ifClauses = append(stmt.ifClauses, shellIfClause{cond: cond, body: body})
+		pos = next2
+		if shellIsWord(tokens, pos, "elif") {
+			pos++
+			continue
+		}
+		break
+	}
+	if shellIsWord(tokens, pos, "else") {
+		elseBody, next, err := parseShellList(tokens, pos+1, shellStopAt("fi"))
+		if err != nil {
+			return stmt, 0, err
+		}
+		stmt.elseBody = elseBody
+		pos = next
+	}
+	if !shellIsWord(tokens, pos, "fi") {
+		return stmt, 0, fmt.Errorf("expected 'fi'")
+	}
+	return stmt, pos + 1, nil
+}
+
+func parseShellFor(tokens []shellToken, pos int) (shellStatement, int, error) {
+	pos++ // consume "for"
+	if pos >= len(tokens) || tokens[pos].operator {
+		return shellStatement{}, 0, fmt.Errorf("expected name after 'for'")
+	}
+	stmt := shellStatement{kind: "for", forVar: tokens[pos].text}
+	pos++
+	pos = skipShellSeparators(tokens, pos)
+	if shellIsWord(tokens, pos, "in") {
+		pos++
+		for pos < len(tokens) && (!tokens[pos].operator || tokens[pos].text != ";" && tokens[pos].text != "\n") {
+			stmt.forList = append(stmt.forList, tokens[pos])
+			pos++
+		}
+		pos = skipShellSeparators(tokens, pos)
+	}
+	if !shellIsWord(tokens, pos, "do") {
+		return stmt, 0, fmt.Errorf("expected 'do'")
+	}
+	body, next, err := parseShellList(tokens, pos+1, shellStopAt("done"))
+	if err != nil {
+		return stmt, 0, err
+	}
+	stmt.forBody = body
+	if !shellIsWord(tokens, next, "done") {
+		return stmt, 0, fmt.Errorf("expected 'done'")
+	}
+	return stmt, next + 1, nil
+}
+
+func parseShellWhile(tokens []shellToken, pos int) (shellStatement, int, error) {
+	pos++ // consume "while"
+	cond, next, err := parseShellList(tokens, pos, shellStopAt("do"))
+	if err != nil {
+		return shellStatement{}, 0, err
+	}
+	if !shellIsWord(tokens, next, "do") {
+		return shellStatement{}, 0, fmt.Errorf("expected 'do'")
+	}
+	body, next2, err := parseShellList(tokens, next+1, shellStopAt("done"))
+	if err != nil {
+		return shellStatement{}, 0, err
+	}
+	if !shellIsWord(tokens, next2, "done") {
+		return shellStatement{}, 0, fmt.Errorf("expected 'done'")
+	}
+	return shellStatement{kind: "while", whileCond: cond, whileBody: body}, next2 + 1, nil
+}
+
+// runShellStatements runs a parsed list in order, honouring each
+// statement's short-circuit guard and stopping early on exit, break, or
+// continue so the signal can reach the construct that owns it.
+func runShellStatements(statements []shellStatement) (int, bool) {
+	status := 0
+	for _, stmt := range statements {
+		if stmt.guard == "&&" && status != 0 || stmt.guard == "||" && status == 0 {
+			continue
+		}
+		var exit bool
+		status, exit = runShellStatement(stmt)
+		shellStatus = status
+		if exit || shellBreaking || shellContinuing {
+			return status, exit
+		}
+	}
+	return status, false
+}
+
+func runShellStatement(stmt shellStatement) (int, bool) {
+	switch stmt.kind {
+	case "pipeline":
+		return runShellPipeline(stmt.tokens)
+	case "if":
+		for _, clause := range stmt.ifClauses {
+			condStatus, exit := runShellStatements(clause.cond)
+			if exit {
+				return condStatus, true
+			}
+			if condStatus == 0 {
+				return runShellStatements(clause.body)
+			}
+		}
+		if stmt.elseBody != nil {
+			return runShellStatements(stmt.elseBody)
+		}
+		return 0, false
+	case "for":
+		status := 0
+		var values []string
+		for _, item := range stmt.forList {
+			expanded := expandShellWord(item.text)
+			if item.quoted {
+				values = append(values, expanded)
+			} else {
+				// An unquoted word's expansion is field-split, the same as
+				// an unquoted command's arguments: "for f in $(cmd)" must
+				// see each of cmd's output words as a separate iteration.
+				values = append(values, strings.Fields(expanded)...)
+			}
+		}
+		for _, value := range values {
+			setShellVariable(stmt.forVar, value)
+			var exit bool
+			status, exit = runShellStatements(stmt.forBody)
 			if exit {
 				return status, true
 			}
-			segment = nil
-			connector = token.text
-		} else {
-			segment = append(segment, token)
+			if shellBreaking {
+				shellBreaking = false
+				break
+			}
+			shellContinuing = false
 		}
+		return status, false
+	case "while":
+		status := 0
+		for {
+			condStatus, exit := runShellStatements(stmt.whileCond)
+			if exit {
+				return condStatus, true
+			}
+			if condStatus != 0 {
+				break
+			}
+			var bodyExit bool
+			status, bodyExit = runShellStatements(stmt.whileBody)
+			if bodyExit {
+				return status, true
+			}
+			if shellBreaking {
+				shellBreaking = false
+				break
+			}
+			shellContinuing = false
+		}
+		return status, false
 	}
-	run()
-	return status, exit
+	return 0, false
 }
 
 func runShellPipeline(tokens []shellToken) (int, bool) {
@@ -587,7 +1051,7 @@ func shellCommand(tokens []shellToken) (shellCommandParts, error) {
 // than as a separate process. The list has to agree with runShellBuiltin.
 func isShellBuiltin(name string) bool {
 	switch name {
-	case "echo", "printf", "read", "cd", "pwd", "export", "unset", "exit", ":":
+	case "echo", "printf", "read", "cd", "pwd", "export", "unset", "exit", ":", "break", "continue":
 		return true
 	}
 	return false
@@ -712,6 +1176,12 @@ func runShellBuiltin(args []string) (int, bool, bool) {
 		return code, true, true
 	case ":":
 		return 0, true, false
+	case "break":
+		shellBreaking = true
+		return 0, true, false
+	case "continue":
+		shellContinuing = true
+		return 0, true, false
 	}
 	return 0, false, false
 }
@@ -722,6 +1192,10 @@ func runShellBuiltin(args []string) (int, bool, bool) {
 type shellToken struct {
 	text     string
 	operator bool
+	// quoted marks a word that had any part of it inside '...' or "...",
+	// which protects the whole word from the field-splitting an unquoted
+	// expansion's result undergoes (as in "for f in $(cmd)").
+	quoted bool
 }
 
 // shellTokens splits source into words and operators without expanding
@@ -732,12 +1206,12 @@ func shellTokens(source string) ([]shellToken, error) {
 	tokens := []shellToken{}
 	var word strings.Builder
 	quote := byte(0)
-	wordStarted := false
+	wordStarted, wordQuoted := false, false
 	flush := func() {
 		if wordStarted {
-			tokens = append(tokens, shellToken{text: word.String()})
+			tokens = append(tokens, shellToken{text: word.String(), quoted: wordQuoted})
 			word.Reset()
-			wordStarted = false
+			wordStarted, wordQuoted = false, false
 		}
 	}
 	for i := 0; i < len(source); i++ {
@@ -754,6 +1228,13 @@ func shellTokens(source string) ([]shellToken, error) {
 				// its backslash intact.
 				i++
 				word.WriteByte(source[i])
+			} else if quote == '"' && c == '$' {
+				if end, ok := shellSubstitutionSpan(source, i); ok {
+					word.WriteString(source[i : end+1])
+					i = end
+				} else {
+					word.WriteByte(c)
+				}
 			} else {
 				word.WriteByte(c)
 			}
@@ -762,6 +1243,14 @@ func shellTokens(source string) ([]shellToken, error) {
 		switch c {
 		case '\'', '"':
 			quote = c
+			wordStarted, wordQuoted = true, true
+		case '$':
+			if end, ok := shellSubstitutionSpan(source, i); ok {
+				word.WriteString(source[i : end+1])
+				i = end
+			} else {
+				word.WriteByte(c)
+			}
 			wordStarted = true
 		case '\\':
 			if i+1 < len(source) {
@@ -805,6 +1294,64 @@ func shellTokens(source string) ([]shellToken, error) {
 	}
 	flush()
 	return tokens, nil
+}
+
+// shellSubstitutionSpan recognizes a "$(...)" command substitution or
+// "$((...))" arithmetic expansion starting at source[dollar] (which must be
+// '$'), and returns the index of its final ')' so the tokenizer can copy the
+// whole span into the current word without splitting it on internal
+// whitespace or quotes. It reports ok=false for a bare '$' that isn't
+// followed by '(' at all, leaving that case to the caller.
+func shellSubstitutionSpan(source string, dollar int) (int, bool) {
+	if dollar+1 >= len(source) || source[dollar+1] != '(' {
+		return 0, false
+	}
+	if dollar+2 < len(source) && source[dollar+2] == '(' {
+		end, err := shellScanParens(source, dollar+3, 2)
+		if err != nil {
+			return 0, false
+		}
+		return end, true
+	}
+	end, err := shellScanParens(source, dollar+2, 1)
+	if err != nil {
+		return 0, false
+	}
+	return end, true
+}
+
+// shellScanParens scans forward from start, which is just past initialDepth
+// parens already considered open, until nesting returns to zero, honouring
+// quotes so an unbalanced paren inside a quoted string doesn't end the scan
+// early. It returns the index of the final matching ')'.
+func shellScanParens(source string, start, initialDepth int) (int, error) {
+	depth := initialDepth
+	quote := byte(0)
+	for i := start; i < len(source); i++ {
+		c := source[i]
+		if quote != 0 {
+			if c == '\\' && quote == '"' && i+1 < len(source) {
+				i++
+				continue
+			}
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '\'', '"':
+			quote = c
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i, nil
+			}
+		}
+	}
+	return 0, fmt.Errorf("unterminated substitution")
 }
 
 // shellVariables holds the variables a script assigns without exporting them.
@@ -878,6 +1425,25 @@ func expandShellWord(value string) string {
 			out.WriteString(shellVariable(value[i : i+1]))
 			continue
 		}
+		if value[i] == '(' {
+			if end, ok := shellSubstitutionSpan(value, i-1); ok {
+				if value[i+1] == '(' {
+					body := strings.TrimSuffix(value[i+2:end], ")")
+					result, err := shellArithEval(body)
+					if err != nil {
+						fatalf("sh", "%v", err)
+					} else {
+						out.WriteString(strconv.FormatInt(result, 10))
+					}
+				} else {
+					captured, status := shellCommandSubstitution(value[i+1 : end])
+					shellStatus = status
+					out.WriteString(captured)
+				}
+				i = end
+				continue
+			}
+		}
 		name := ""
 		if value[i] == '{' {
 			end := strings.IndexByte(value[i+1:], '}')
@@ -899,6 +1465,197 @@ func expandShellWord(value string) string {
 	}
 	return strings.ReplaceAll(out.String(), "\x00dollar\x00", "$")
 }
+
+// shellCommandSubstitution runs source through the same interpreter as the
+// top-level script, capturing what it writes to stdout (trailing newlines
+// stripped, as $(...) always does) instead of letting it reach the real
+// terminal. Variable assignments made inside still land in the single
+// shared shellVariables map, unlike a real subshell's isolated copy -- an
+// accepted simplification, since the common uses of $(...) (command output,
+// not stateful scripts) never depend on that isolation.
+func shellCommandSubstitution(source string) (string, int) {
+	read, write, err := os.Pipe()
+	if err != nil {
+		return "", 1
+	}
+	old := os.Stdout
+	os.Stdout = write
+	captured := make(chan []byte, 1)
+	go func() {
+		data, _ := io.ReadAll(read)
+		captured <- data
+	}()
+	status, _ := runShellSourceControl(source)
+	os.Stdout = old
+	write.Close()
+	data := <-captured
+	read.Close()
+	return strings.TrimRight(string(data), "\n"), status
+}
+
+// shellArithToken and shellArithParser implement $((...)) arithmetic
+// expansion: signed 64-bit integers, +-*/%, unary +/-, parens, and bare
+// names read as shell variables (so both "i+1" and "$i+1" work, matching
+// real shells' arithmetic context). Comparison and assignment operators are
+// not supported -- a documented gap, since i=$((i+1)) already covers the
+// common loop-counter idiom without them.
+type shellArithToken struct{ kind, text string }
+
+func shellArithTokenize(expression string) ([]shellArithToken, error) {
+	var tokens []shellArithToken
+	for i := 0; i < len(expression); i++ {
+		c := expression[i]
+		switch {
+		case c == ' ' || c == '\t':
+		case c == '$':
+			// "$i" and "i" are equivalent inside arithmetic; the $ is just skipped.
+		case c >= '0' && c <= '9':
+			start := i
+			for i < len(expression) && expression[i] >= '0' && expression[i] <= '9' {
+				i++
+			}
+			tokens = append(tokens, shellArithToken{"number", expression[start:i]})
+			i--
+		case c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z':
+			start := i
+			for i < len(expression) && (expression[i] == '_' || expression[i] >= 'a' && expression[i] <= 'z' ||
+				expression[i] >= 'A' && expression[i] <= 'Z' || expression[i] >= '0' && expression[i] <= '9') {
+				i++
+			}
+			tokens = append(tokens, shellArithToken{"name", expression[start:i]})
+			i--
+		case strings.ContainsRune("+-*/%()", rune(c)):
+			tokens = append(tokens, shellArithToken{"op", string(c)})
+		default:
+			return nil, fmt.Errorf("invalid character %q in arithmetic expression", c)
+		}
+	}
+	return tokens, nil
+}
+
+type shellArithParser struct {
+	tokens []shellArithToken
+	pos    int
+}
+
+func shellArithEval(expression string) (int64, error) {
+	tokens, err := shellArithTokenize(expression)
+	if err != nil {
+		return 0, err
+	}
+	p := &shellArithParser{tokens: tokens}
+	value, err := p.parseAdd()
+	if err != nil {
+		return 0, err
+	}
+	if p.pos != len(p.tokens) {
+		return 0, fmt.Errorf("unexpected token %q in arithmetic expression", p.tokens[p.pos].text)
+	}
+	return value, nil
+}
+
+func (p *shellArithParser) parseAdd() (int64, error) {
+	left, err := p.parseMultiply()
+	if err != nil {
+		return 0, err
+	}
+	for p.opIs("+") || p.opIs("-") {
+		op := p.tokens[p.pos].text
+		p.pos++
+		right, err := p.parseMultiply()
+		if err != nil {
+			return 0, err
+		}
+		if op == "+" {
+			left += right
+		} else {
+			left -= right
+		}
+	}
+	return left, nil
+}
+
+func (p *shellArithParser) parseMultiply() (int64, error) {
+	left, err := p.parseUnary()
+	if err != nil {
+		return 0, err
+	}
+	for p.opIs("*") || p.opIs("/") || p.opIs("%") {
+		op := p.tokens[p.pos].text
+		p.pos++
+		right, err := p.parseUnary()
+		if err != nil {
+			return 0, err
+		}
+		switch op {
+		case "*":
+			left *= right
+		case "/", "%":
+			if right == 0 {
+				return 0, fmt.Errorf("division by zero")
+			}
+			if op == "/" {
+				left /= right
+			} else {
+				left %= right
+			}
+		}
+	}
+	return left, nil
+}
+
+func (p *shellArithParser) parseUnary() (int64, error) {
+	if p.opIs("-") {
+		p.pos++
+		value, err := p.parseUnary()
+		return -value, err
+	}
+	if p.opIs("+") {
+		p.pos++
+		return p.parseUnary()
+	}
+	return p.parsePrimary()
+}
+
+func (p *shellArithParser) parsePrimary() (int64, error) {
+	if p.opIs("(") {
+		p.pos++
+		value, err := p.parseAdd()
+		if err != nil {
+			return 0, err
+		}
+		if !p.opIs(")") {
+			return 0, fmt.Errorf("missing ) in arithmetic expression")
+		}
+		p.pos++
+		return value, nil
+	}
+	if p.pos >= len(p.tokens) {
+		return 0, fmt.Errorf("expected an arithmetic expression")
+	}
+	token := p.tokens[p.pos]
+	p.pos++
+	switch token.kind {
+	case "number":
+		return strconv.ParseInt(token.text, 10, 64)
+	case "name":
+		value := strings.TrimSpace(shellVariable(token.text))
+		if value == "" {
+			return 0, nil
+		}
+		n, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return 0, nil // a non-numeric variable reads as 0, as real shells do
+		}
+		return n, nil
+	}
+	return 0, fmt.Errorf("unexpected token %q in arithmetic expression", token.text)
+}
+
+func (p *shellArithParser) opIs(text string) bool {
+	return p.pos < len(p.tokens) && p.tokens[p.pos].kind == "op" && p.tokens[p.pos].text == text
+}
+
 func commandStatus(prog string, err error) int {
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {

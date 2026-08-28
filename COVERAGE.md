@@ -45,6 +45,46 @@ Several entries were re-measured later the same day as fixes landed: `wget` and
 `rm` `mkdir` `stat` `cut` `tee` `base64` `env` `printenv` `blkid` `which`
 `losetup` and `swapoff` after the second round of defects was fixed.
 
+`chmod`, `dmesg`, `od` and `hexdump` were reworked and re-measured on 2026-08-28,
+moving all four from Tier D to Tier C: `chmod` gained the full symbolic-mode grammar
+(verified clause by clause against real chmod, including its umask and special-bit
+quirks); `dmesg` gained decoding, filtering and console-control options, diffed
+whole against a live root VPS's real ~570-line kernel ring buffer (util-linux 2.41,
+one documented byte difference from a multi-line `KERN_CONT` message); `od` and
+`hexdump` were rewritten from a shared `hexdump -C` stand-in into real, distinct
+implementations of each tool's own default and legacy formats, diffed against real
+od/hexdump (util-linux 2.41) on the same VPS plus locally. This pass is the first to
+use root access on a disposable test VPS, which is what made verifying `dmesg`'s
+privileged paths (`-c`/`-C`/`-n`/`-D`/`-E`, and the real kernel buffer's exact
+formatting) possible — everything above this paragraph predates that access and was
+measured as `unrestricted-only` where noted.
+
+The remaining ten Tier D applets were reworked the same day, clearing the tier
+entirely: `xargs` gained real `-a -d -E/-e -t -p -s -x -P` semantics (fixed an
+`-0` bug that dropped empty items) diffed against GNU findutils; `diff` got a
+real default (`NcN`/`NaN`/`NdN`) format instead of always emitting unified
+hunks; `file` moved to genuine ELF introspection via `debug/elf`; `dig` reused
+`host`'s DNS-report machinery for a full-report `+`-option renderer; `sed`
+was rewritten around a program-counter executor for its whole command
+language (`{ } b t T : a i c y n N D P h H g G x`) plus `-i`; `awk` gained
+`for`/`while`/`do-while`, associative arrays, string concatenation and several
+builtins over a recursive-descent expression parser; `sh` gained `if`/`for`/
+`while`, `break`/`continue`, integer arithmetic and command substitution over
+a new recursive statement parser; `nano` had its entire keybinding set
+corrected to GNU nano's real `^O ^X ^F ^\ ^K ^U ^_ ^C ^G`, discovered by
+driving the real editor under a pseudo-terminal since the original scheme
+(`^S` to save, no search) was invented rather than observed; `ncdu` gained an
+`-o`/`-f` export/import pair matching real ncdu's own JSON schema, checked by
+exporting to and importing from the real tool in both directions; and
+`cfdisk` gained DOS extended/logical partitions, with the boot-record chain
+layout measured sector-for-sector from a table real fdisk wrote to a
+disposable image rather than assumed from documentation. A latent regex bug
+surfaced along the way: `translatePOSIXBRE` quoted `\n`/`\t`/`\r`/`\f`/`\v`/`\a`
+down to their literal letters instead of passing them through, silently
+breaking every `sed 'N;s/\n/x/'`-style multiline idiom and any `grep` pattern
+relying on those escapes; fixing it improved `grep`, `sed` and `diff`'s
+line-matching at once.
+
 **Short answer to "which are 1:1?"** — 14 applets are genuine drop-ins, 26 more are
 near-complete, 81 are partial or a narrow subset in ways that stay invisible until a
 script reaches for a flag, and 9 have no upstream counterpart to compare against.
@@ -65,8 +105,8 @@ the missing options listed per applet below.
 |---|---|---|
 | **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `pwd` `echo` `basename` `tr` `base64` `uname` `whoami` `true` `false` `printenv` `sleep` `mknod` `seq` `dirname` |
 | **B — near-complete** | Common paths match; a handful of real gaps | `cat` `wc` `head` `tail` `rm` `mkdir` `tee` `test` `[` `expr` `printf` `id` `mktemp` `kill` `timeout` `chroot` `blockdev` `stat` `env` `cmp` `sync` `dd` `sha256sum` `which` `rmdir` `top` `host` |
-| **C — partial** | Everyday cases work, well-known flags or output details missing | `ls` `cp` `mv` `ln` `touch` `sort` `uniq` `cut` `grep` `find` `du` `df` `date` `readlink` `realpath` `strings` `tar` `gzip` `gunzip` `chown` `chgrp` `free` `uptime` `hostname` `wget` `lsof` `lsblk` `blkid` `mount` `umount` `losetup` `swapon` `swapoff` `mkswap` `ss` `ip` `iptables` `ping` `traceroute` `mtr` `nc` `nslookup` `curl` `iftop` `pgrep` `pkill` `pidof` `modprobe` `insmod` `rmmod` `lsmod` `fdisk` `sfdisk` `mkfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkfs.btrfs` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `login` `passwd` `ps` `netstat` `tree` `less` |
-| **D — narrow subset** | A slice of the original; do not treat as a replacement | `sh` `awk` `sed` `chmod` `od` `hexdump` `file` `diff` `xargs` `cfdisk` `ncdu` `dig` `nano` `dmesg` |
+| **C — partial** | Everyday cases work, well-known flags or output details missing | `ls` `cp` `mv` `ln` `touch` `sort` `uniq` `cut` `grep` `find` `du` `df` `date` `readlink` `realpath` `strings` `od` `hexdump` `diff` `sh` `awk` `sed` `file` `tar` `gzip` `gunzip` `chown` `chgrp` `chmod` `free` `uptime` `hostname` `wget` `lsof` `lsblk` `blkid` `mount` `umount` `losetup` `swapon` `swapoff` `mkswap` `ss` `ip` `iptables` `ping` `traceroute` `mtr` `nc` `nslookup` `curl` `iftop` `pgrep` `pkill` `pidof` `modprobe` `insmod` `rmmod` `lsmod` `fdisk` `sfdisk` `mkfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkfs.btrfs` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `login` `passwd` `ps` `netstat` `tree` `less` `dmesg` `xargs` `dig` `nano` `ncdu` `cfdisk` |
+| **D — narrow subset** | A slice of the original; do not treat as a replacement | _(none)_ |
 | **N/A** | ba6-specific, no upstream counterpart | `help` `man` `completion` `init` `halt` `reboot` `poweroff` `switch_root` `udhcpc` |
 
 ## Open defects
@@ -247,6 +287,146 @@ directives: `%Y %m %d %H %M %S %F %T %s %a %b %e %j %z %Z %N` work; `%U` (and li
 **`strings`** — 1/13 _(run)_. Only `-n`, whose output matches binutils exactly.
 Missing `-a -t -f -o -e -d -w -T -s`.
 
+**`od`** _(run, plus behaviour-diffed against util-linux 2.41's od on a live VPS)_ —
+14/26 option groups, and a real od implementation rather than a `hexdump -C` clone:
+default output is 2-byte octal words with an octal address column, matching GNU's
+own field widths, zero-extension of a trailing partial word, and the `*` elision of
+runs of identical lines (disabled by `-v`). Present and byte-identical on every case
+tested: default/`-o` (octal words), `-b` (octal bytes), `-c` (the C escape set:
+`\0 \a \b \t \n \v \f \r \\`, literal printable ASCII, `\NNN` octal for everything
+else), `-a` (named mnemonics for the C0 controls plus `sp`/`del`, masking the high
+bit the way real od's `-a` does — confirmed against real od's own high-byte output,
+which is not what its `-c` does), `-x` (hex words), `-i` (4-byte signed decimal),
+`-A o/d/x/n` (address radix, including suppressing the column entirely), `-j`
+(skip), `-N` (max bytes), and multiple file operands read as one concatenated
+stream. Missing: the modern `-t TYPE` spec, `-f` (float), `-s`/`-l` variants,
+`-w` (line width), `--endian`.
+
+**`hexdump`** _(run, plus behaviour-diffed against util-linux 2.41's hexdump on a
+live VPS)_ — 11/17 option groups, now a real hexdump rather than a bare `-C` clone.
+`-n`/`-s` (byte count and skip, including past EOF) work on every mode, not just
+`-C`. Present and byte-identical: `-C` (the classic hex+ASCII gutter), the bare
+default (tight 2-byte hex, hex address — narrower field spacing than the explicit
+`-x`, matching a real quirk where hexdump's default format and its own `-x` flag are
+not the same width), `-c` (C escapes), `-b`/`-d`/`-o`/`-x` (octal bytes and 2-byte
+octal/decimal/hex words, all zero-padded to a fixed 8-column field, wider than od's
+equivalents — a real, verified difference between the two tools' conventions, not an
+inconsistency). Both the trailing-line suppression on empty input (hexdump prints
+nothing for a 0-byte read; od still prints one address line) and the interaction
+between `-s` past EOF (prints the real end offset) versus an explicit `-n 0` (prints
+nothing) were checked against the real tool. Missing: `-e`/`-f` (custom format
+strings — the feature both tools' other flags are shorthand for), `-v`, `-L`.
+
+**`diff`** _(run)_ — 15/48 options, and the default output is now GNU diff's actual
+classic format (`NcN`/`NaN`/`NdN` headers, `<`/`>`/`---`) rather than always printing
+`-u`'s format regardless of flags. Present and diffed line-for-line against GNU
+diffutils 3.10/3.12 across single-line, pure-insert, pure-delete, replace-block,
+identical-file, and boundary (insert/delete at the very first or last line) cases:
+default and `-u`/`--unified` — the latter with real hunk splitting (up to 3 lines of
+context, hunks within 6 lines of each other merged into one, matched against a
+60-line file with both a close pair and a far-apart pair of edits) and file
+modification-time headers, `-q`/`--brief`, `-s`/`--report-identical-files`,
+`-i`/`--ignore-case`, `-w`/`--ignore-all-space`, `-b`/`--ignore-space-change`
+(collapses a run of whitespace to one space and drops trailing whitespace, but a run
+where the other side has none is still a difference — a real, non-obvious asymmetry
+in GNU diff's own `-b` confirmed empirically before matching it), `-N`/`--new-file`
+(a missing operand reads as empty instead of erroring), and `--label` (one or two,
+suppressing that side's timestamp rather than appending one). A missing trailing
+newline is treated as a real difference and reported with `\ No newline at end of
+file`, even when the visible line text is otherwise identical on both sides — matched
+against GNU diff including the case where *both* files lack a final newline with
+matching text, which correctly reports no difference at all. Missing: normal format
+has no context diff (`-c`) or side-by-side (`-y`) alternative, `-r` (recursive
+directory diff), `-B`, `-E`/`-Z`, `-a`, `-X`/`-x`, `--color`.
+
+**`sh`** _(run)_ — control flow now exists alongside the working simple-command
+engine, checked line by line against bash across every construct below. Present:
+`if`/`then`/`elif`/`else`/`fi`, `for VAR in LIST; do ... done` (an unquoted list
+item's expansion is field-split on whitespace before iterating — `for f in
+$(echo a b c)` visits three items, not one — while a quoted item or quoted `"$var"`
+is protected and stays one iteration value, matched to bash for both cases),
+`while ... do ... done`, `break` and `continue` (correctly stopping only the
+*nearest* enclosing loop when nested), **`$(...)` command substitution** (including
+nested and piped: `x=$(cmd1 | cmd2)`, and inside double quotes), and **`$((...))`
+arithmetic expansion** (`+ - * / %`, unary `-`, parens, bare names read as
+variables, so `i=$((i+1))` — the standard POSIX loop-counter idiom — now works).
+Everything the previous pass already had (pipelines, `&&`/`||`, `;`, quoting,
+variable assignment/read-back, prefix assignments, `$?`/`$$`/positional
+parameters, `cd`/`pwd`/`export`/`unset`/`read`/`exit`/`:` builtins, `<`/`>`/`>>`)
+is unchanged. Missing: `case`/`esac`, functions, subshells `( )`, brace groups
+`{ }`, backticks (only the modern `$(...)` form works), globbing, here-documents,
+`2>` redirection, `trap`, `set`, `local`, and multi-line control structures typed
+interactively line-by-line (a `for`/`if`/`while` spanning several lines works in
+a script or `-c` string, since the whole text parses at once, but the interactive
+REPL still submits one line at a time with no continuation prompt). A command
+substitution's own variable assignments are not isolated the way a real subshell's
+are — a documented simplification, since the common uses of `$(...)` are read-only
+queries (`$(hostname)`, `$(date)`), not stateful scripts.
+
+**`awk`** _(run)_ — control flow and associative arrays now exist alongside the
+existing pattern/action/field engine, verified line by line against gawk 5.4.1.
+Present: `if`/`else` (already there), `for` (both `for(init;cond;post)` and
+`for (key in array)`), `while`, `do`/`while`, `break`, `continue`, associative
+arrays (`a[x]=v`, `a[x]`, `delete a[x]`, whole-array `delete a`, and multi-dimensional
+`a[i,j]` joined on `SUBSEP`), the `in` operator, string concatenation by
+juxtaposition (`print "x=" x`, the single most-used awk idiom that a pure
+expression-precedence chain with no concatenation level had been silently
+unable to parse), prefix/postfix `++`/`--`, range patterns (`/a/,/b/`), and the
+builtins `split`, `match` (setting `RSTART`/`RLENGTH`), `sprintf`, and `index`
+(`length`, `substr`, `int`, `tolower`, `toupper` were already present). A real
+word-frequency program (`{for(i=1;i<=NF;i++)count[$i]++} END{for(w in count)...}`)
+and FizzBuzz both run and match gawk's output. Fixed in the same pass: the
+bracket/brace/paren depth tracker several other pieces of the parser share
+(statement boundaries, argument-list splitting, the `for`-clause's semicolons)
+didn't count `[`/`]` at all, so any comma or semicolon inside an array
+subscript — `print a[i,j]`, `for(i=0;i<n;i++)a[i]=x` — misparsed; `break`/
+`continue` inside a block executed every statement after them instead of
+stopping. Missing: user-defined functions, `getline`, output/input redirection
+(`print > file`, `cmd | getline`), `ARGV`/`ENVIRON`, `(i,j) in array` (only
+`a[i,j]` itself works), and gawk-specific extensions beyond POSIX.
+
+**`sed`** _(run)_ — the command language is now a real program-counter-based
+interpreter rather than one pass over an unconditional command list, verified line
+by line against GNU sed 4.10 across every idiom below. Present: `{ }` block
+grouping (including nested blocks — the missing piece that made every bracketed
+GNU sed one-liner a syntax error before), `a`/`i`/`c` (both the classic backslash-
+continued form and the GNU one-line form, with the same backslash escapes —
+`\t`, `\n`, a bare `\x` dropping the backslash — real sed applies to that text,
+and `a`'s queued output still appears even when the same cycle later runs `d`),
+`y///`, `n`/`N` (N at end of input keeps the pattern space and falls to the end
+of the script rather than quitting, matching GNU's non-POSIX default), `D`/`P`
+(the blank-line-squeezing `/^$/{N;/^\n$/D}` idiom and its relatives), `h`/`H`/`g`/
+`G`/`x` (hold space, including the classic `1!G;h;$!d` reverse-lines idiom), `b`/
+`t`/`T`/`:label` (arbitrary forward and backward jumps, `t`/`T` correctly tracking
+"has a substitution happened since the last input line or branch"), `q`/`Q` with
+an optional exit code, `r`/`w` (whole-file append and pattern-space write, with
+`s///w file` too), `l`, and **`-i`/`--in-place`** (with a `-i.suffix`/`-i*pattern*`
+backup, each file processed with its own fresh hold space and line numbering, and
+a same-directory temp file renamed over the original only once the script finished
+without error). Fixed in the same pass, in the regex layer both grep and sed
+share: `\n`/`\t`/`\r`/`\f`/`\v`/`\a` in a BRE pattern used to be quoted down to
+the literal letter, so `s/\n/x/` could never match a real newline — the single
+bug that made every `N`-based multi-line sed idiom silently do nothing. Missing:
+`R`/`W` (the rarer per-invocation-one-line variants of `r`/`w`), `-s`, `-z`,
+`--posix`, `z`/`F`/`e` (GNU's newest extensions), the numeric `s///2` occurrence
+flag, and `l`'s line-wrap width (lines are never wrapped).
+
+**`file`** _(run)_ — real ELF introspection via Go's `debug/elf`, not a fixed string.
+Diffed against real `file` (5.46) on a dynamically-linked PIE executable (`/bin/ls`),
+a shared object (`ld-linux-x86-64.so.2`), a statically-linked binary and its stripped
+copy, and ba6's own binary — every case byte-identical, including class, data
+encoding, type (with the `pie executable`/`shared object` distinction based on
+`PT_INTERP`), architecture, ABI, interpreter path, the GNU and Go BuildID notes, the
+`.note.ABI-tag` "for GNU/Linux X.Y.Z" line, and stripped/not-stripped (and
+`with debug_info`) from the section table. Also fixed: plain ASCII was misreported as
+`Unicode text` (now `ASCII text`, matching the original's own distinction); special
+files now show `(major/minor)`; directories report `setuid`/`setgid`/`sticky` state.
+Present: `-b`, `-L`/`--dereference`, `-i`/`--mime`/`--mime-type` (a description-to-MIME
+table covering every case this applet's own probe can produce, including the
+`inode/*` types for non-regular files). Missing: `-z`, `-s`, `-f`, `-m`, and the wider
+libmagic database (image/audio/font formats beyond the handful of magic bytes already
+matched, non-x86 architecture names beyond the common set, core files).
+
 **`tar`** — 8/154 _(run)_. Works and is **format-compatible both ways** with GNU tar
 (ba6 reads real `.tar`/`.tar.gz`, GNU reads ba6's). Present: `-c -x -t -f -z -C -v -p`.
 Missing: **`-j` `-J` `--zstd` `--exclude` `-T` `--strip-components` `--numeric-owner`
@@ -260,6 +440,25 @@ tools in both directions. Present: `-c -d -k`. Missing **`-1`…`-9` `-t` `-l` `
 **`chown` / `chgrp`** — 1/12 _(run)_. Present: `-R -h`; recursive ownership and group
 changes produced identical results to coreutils. Missing `-c -f -v --reference
 --from --dereference -H -L -P --preserve-root`.
+
+**`chmod`** _(run)_ — full symbolic mode grammar alongside octal, matched
+clause by clause against GNU chmod: multiple `who` letters (`u` `g` `o` `a`),
+chained operations sharing one `who` (`u+x-w`), comma-separated clauses
+(`u=rwx,g=rx`), `+`/`-`/`=`, the permission letters `r w x X s t`, and the
+`u`/`g`/`o` permission-copy form (`go=u`). `X` only sets execute when the file
+is a directory or already has an execute bit, `s` maps to setuid/setgid on
+`u`/`g` respectively, `t` is the sticky bit, and `=` clears the special bit
+tied to any class it touches unless that same clause also sets it — all
+verified against real chmod, including the case where an omitted `who`
+defaults to `a` but is masked by the process umask (`chmod +w` under `022`
+only reaches the owner) where an explicit `a` is not. `-v`/`-c` print GNU's
+`mode of 'FILE' changed from 0NNN (rwx...) to 0NNN (rwx...)` and `retained as`
+lines byte-for-byte; `-f` suppresses error text without changing the exit
+status; `--reference FILE`/`--reference=FILE` copies another file's mode
+outright. Missing: `-R`'s recursive traversal order differs from GNU's on
+adversarial recursive modes that lock out traversal mid-walk (GNU's
+`fts`-based walker stops partway in ways this project's directory-unlock
+recovery walker does not reproduce byte for byte).
 
 **`free`** — 4/19 _(run)_. Present: `-b -k -m -h`(sizes). Missing `-t -s -c -w -l -v
 --si --kilo/--mega/…`. `free` and `free -h` are byte-identical to procps.
@@ -432,68 +631,82 @@ flags are given separately (`-f -n`, not `-fn`), and it identifies itself as
 **`login` / `passwd`** — no options _(src)_; `login` is missing `-p -f -h`, `passwd`
 is missing the whole administrative set (`-l -u -d -e -S -n -x -w -i -a -R -s`).
 
+**`nano`** _(run, driven under a pseudo-terminal and checked screen by screen —
+cursor-position escapes rendered by a small VT100 interpreter, matched against
+real GNU nano 9.2's own responses to the same keystrokes)_ — still 6/50
+command-line options (`cmdNano` takes only a filename; `+LINE`, `--tabsize`
+and the rest are unaffected by this pass), but **the key map is now GNU
+nano's own** rather than an invented one, the gap the previous pass's entry
+called out by name — command-line flags were never nano's main interface,
+its in-editor keys are, and those are what changed. Present:
+`^O` Write Out (prompts "File Name to Write: " seeded with the current name,
+matching real nano), `^X` Exit (prompting "Save modified buffer?" with
+Y/N/^C when there are unsaved changes, verified for all three answers —
+discard, save-and-exit, and cancel-the-exit), `^K` Cut and `^U` Paste
+(single-line only — real nano accumulates consecutive `^K`s into one
+multi-line cut, which is a documented simplification here), **`^F` Search**
+(seeded with the last search so pressing Enter alone repeats it, wrapping
+around the whole buffer — checked finding the second match, then wrapping
+back to the first), **`^\` Replace** (prompts for the search and replacement
+text and replaces every occurrence at once, rather than real nano's
+per-instance Y/N/A confirmation — a deliberate simplification favouring a
+bounded, easy-to-reason-about operation in a recovery tool over an
+interactive loop that risks hanging), `^_`/`^/` Go To Line (with an optional
+`,column`, clamped to the buffer's actual bounds rather than erroring on an
+out-of-range line), `^C` show cursor position, and `^G` a one-line help
+reminder. Missing: syntax highlighting, multi-buffer support, undo/redo,
+soft-wrapping, `M-B` backward search, mouse support, and most of nano's
+`-`/`--` options (line/column positioning via `+LINE`, `--tabsize`, etc.).
+
+**`dig`** _(run, vs BIND 9.20.26 dig against a live resolver, plus a synthetic
+local-UDP-server test harness for NXDOMAIN/reverse-lookup/error cases)_ — the full
+multi-section default report, not a one-line summary: `;; ->>HEADER<<-` status and
+id, the `qr`/`aa`/`tc`/`rd`/`ra`/`ad`/`cd` flags line (only the bits actually set, in
+dig's own order) with real QUERY/ANSWER/AUTHORITY/ADDITIONAL counts read from the
+header, `;; QUESTION SECTION:` and `;; ANSWER SECTION:` in the same tab-stop-aligned
+columns `host`'s `-v` dump already used, `;; AUTHORITY SECTION:` (the SOA an NXDOMAIN
+returns), and the `;; Query time:` / `;; SERVER:` / `;; WHEN:` / `;; MSG SIZE  rcvd:`
+footer. Present: `-x` (reverse lookup, building the `in-addr.arpa`/`ip6.arpa` name),
+`-t` and `-c` (IN only) alongside the existing bare-type-operand form, `-p`,
+`+short` (unchanged), `+noall`/`+question`/`+noquestion`/`+answer`/`+noanswer`/
+`+comments`/`+nocomments`/`+stats`/`+nostats` (enough for the common `+noall +answer`
+scripting idiom, which also correctly suppresses the section headers, not just the
+other sections), and `+time=`/`+tcp` (unchanged). Exit status now matches dig's own
+convention: 0 for any answer actually received (including NXDOMAIN — dig's exit code
+reflects whether the query was answered, not whether the name resolved) and 9 for
+a query that reached no server, with the same `;; communications error to ADDR#port`
+/ `;; no servers could be reached` narration `host` uses. **By design, ba6's query
+never attaches an EDNS OPT record** (every response behaves as if `+noedns` were
+given), so `ADDITIONAL` is always the server's own count minus any OPT record and
+there is no `OPT PSEUDOSECTION`; a resolver that only sets the `ad` (DNSSEC
+authenticated) flag on EDNS-signalled queries won't set it here either — a real,
+one-line difference from a bare `dig` invocation confirmed side by side, not a bug.
+Missing: `-b -f -q -y`, `+dnssec` and every DNSSEC-related option, the `; <<>> DiG
+VERSION <<>>` command-line banner and `+cmd`'s `global options:` line (ba6 isn't
+claiming to be a specific dig build), zone transfers, and most other `+option`s.
+
 ### Tier D — narrow subset
 
-**`sh`** _(run)_ — still the largest gap in the project, but it now runs a script
-that keeps state. Works: simple commands, pipelines, `&&`/`||`, `;`, multi-line
-scripts, quoting (including the backslash rules inside double quotes), variable
-assignment and read-back, prefix assignments scoped to one command, `$VAR`, `$?`,
-`$$`, positional `$0`…`$n`, `cd`/`pwd`/`export`/`unset`/`read`/`exit`/`:` builtins,
-and `<`/`>`/`>>` for both external commands and builtins. Words are expanded when
-each command runs, so a variable set earlier in the script is visible to everything
-after it, and an unexported one stays out of the environment children inherit.
-**Does not work: `if`, `for`, `while`, `case`, functions, subshells `( )`, brace
-groups `{ }`, `$(…)` and backticks, `$((…))`, globbing, here-documents, `2>`
-redirection, `trap`, `set`, `local`.** TODO.md tracks the control flow and
-substitution.
+**`xargs`** _(run)_ — input splitting, quoting and `-I` semantics match GNU, verified
+against real xargs (findutils, GNU/Linux). Present: `-0 -r -n -I` (attached, spaced
+and `=` forms), plus `-a` (read items from a file instead of stdin), `-d` (custom
+single-character delimiter, decoding `\n`/`\t`/escape forms), `-E`/`-e` (stop reading
+at a sentinel item), `-t`/`-p` (echo each command line to stderr before running it,
+`-p` additionally prompting on `/dev/tty` — never stdin, which may be the item
+source — and running only on a `y`/`Y` answer), `-s` (cap the assembled command
+line's length, splitting into more invocations as needed) and `-x` (fail outright
+if a single item can never fit under `-s`, matched to real xargs's exact
+`argument line too long` wording and exit status), and `-P` (genuine concurrent
+batches, not a sequential simulation — verified with a workload whose optimal
+makespan under 4-way concurrency was checked by hand). Fixed in the same pass:
+`-0` used to silently drop empty items between two consecutive NUL bytes, where
+real xargs (and now ba6) preserves them as empty arguments. Missing `-L`,
+`--process-slot-var`.
 
-**`awk`** _(run)_ — works: `BEGIN`/`END`, `/re/` and `$n ~ /re/` patterns, field and
-record variables (`NR NF FS OFS ORS FNR`), `print`, `printf`, `-F`, `-v`, `exit`,
-`next`, and the builtins `length`, `substr`, `index`, `int`, `tolower`, `toupper`.
-AWK regexes are POSIX EREs; a one-character `FS` is literal and a longer `FS`
-is an ERE. Pattern backreferences are rejected because RE2 cannot implement them.
-**Missing: `if`/`else`, `for`, `while`, `do`, arrays and `in`, user-defined functions,
-`split`, `gsub`/`sub`, `match`, `sprintf`, `getline`, assignment to fields (`$1="x"`),
-range patterns (`/a/,/b/`), output redirection, `ARGV`/`ENVIRON`/`SUBSEP`/`RSTART`.**
-Roughly: one-liner projection and counting works, programs do not.
-
-**`sed`** _(run)_ — works: addresses (line number, `$`, `/re/`, and ranges of both),
-`s///` with `g`, `p`, `I` flags and `&`/`\1` backrefs, `d`, `p`, `=`, `q`, `-n`, `-e`,
-`-E`/`-r`, `-f`. The default syntax is POSIX BRE and `-E`/`-r` selects POSIX
-ERE; pattern backreferences are rejected because RE2 cannot implement them.
-**Missing commands: `a` `i` `c` `y` `n` `N` `D` `P` `h` `H` `g` `G`
-`x` `b` `t` `T` `:label` `r` `R` `w` `W` `l` `z` `F` `e`, and the numeric occurrence
-flag (`s///2`).** Missing options: **`-i`**, `-s`, `-z`, `-u`, `-l`, `--posix`.
-
-**`chmod`** _(run)_ — **octal modes only.** `u+x`, `go-r`, `a=rw`, `+x`, `u=rwx,g=rx`,
-`u+s` are all rejected with `invalid octal mode`. Also missing `-c -f -v --reference`.
-
-**`od`** _(run)_ — despite the name it prints `hexdump -C` output. GNU `od` defaults to
-octal words and `od -c` prints escaped characters; ba6 ignores the format entirely.
-Missing `-a -b -c -d -f -i -o -x -t -A -j -N -v -w`.
-
-**`hexdump`** _(run)_ — `-C` and `-c` only; **`-n` and `-s` are rejected**, so you
-cannot dump a slice of a file. Missing `-b -d -o -x -e -f -v -L`.
-
-**`file`** _(run)_ — a small built-in magic table. Misclassifies plain ASCII as
-`Unicode text`; reports `ELF 64-bit executable or object` where the original gives
-class, ABI, interpreter, BuildID and strip state; omits device numbers for specials.
-No `-i`/`--mime`, `-z`, `-L`, `-s`, `-f`, `-m`.
-
-**`diff`** _(run)_ — unified output only (`-u`). Missing normal/context/side-by-side
-output, `-q -s -r -N -i -w -b -B -E -Z -y -W -a -X -x --color --label` — 1 of 48 options.
-
-**`xargs`** _(run)_ — input splitting, quoting and `-I` semantics match GNU.
-Present: `-0 -r -n -I` (attached, spaced and `=` forms). Missing `-a -d -E -e -L -P
--p -s -t -x --process-slot-var`.
-
-**`nano`** _(run, help)_ — 6/50 options; a minimal full-screen editor, not GNU nano's
-key map, syntax highlighting, search/replace or multi-buffer support.
-
-**`cfdisk`** _(run, vs util-linux 2.42.2)_ — a deliberately narrow terminal
-partition editor. It recognizes util-linux's seven option groups: `-L`/`--color`,
-`--lock`, `-r`/`--read-only`, `-b`/`--sector-size`, `-z`/`--zero`, `-h`/`--help`,
-and `-V`/`--version`. A pseudo-terminal session on a disposable image exercised
+**`cfdisk`** _(run, vs util-linux 2.42.2)_ — a terminal partition editor. It
+recognizes util-linux's seven option groups: `-L`/`--color`, `--lock`,
+`-r`/`--read-only`, `-b`/`--sector-size`, `-z`/`--zero`, `-h`/`--help`, and
+`-V`/`--version`. A pseudo-terminal session on a disposable image exercised
 create, delete, resize, sort, type, boot flag, extra information, dump, confirmed
 write, and quit for DOS. A second pseudo-terminal run selected GPT, created a 1 MiB
 partition, changed it to `swap`, and wrote it; real `fdisk -l` recognized the GPT
@@ -507,36 +720,63 @@ partition entries. On an unlabelled disk, a selector presents GPT and DOS only,
 with GPT selected by default. Up/Down selects a partition or label, and
 Left/Right plus Enter navigates the New/Quit/Help/Write/Dump action bar.
 
-This is **not** a general replacement for cfdisk: it supports 512-byte-sector DOS
-with four primary partitions, plus GPT only in the conventional 128-entry,
-128-byte-entry layout (primary entries at LBAs 2–33, with a mirrored backup array
-immediately before the final backup header). GPT `t` handles `linux`, `swap`, `efi`,
-or an explicit GUID and preserves partition names and attributes; it has no MBR boot
-flag. Extended/logical partitions, SGI and SUN labels, nonstandard GPT geometry,
-cfdisk script input, the full curses menu/type UI, and colour themes are absent.
-`u` emits a GPT sfdisk-style dump for inspection or compatible external tooling;
-ba6 `sfdisk` replays DOS only. `--color=never` disables reverse-video styling and
-`--sector-size` accepts 512 only. The screen layout and key presentation intentionally
-differ from util-linux's curses interface.
+**DOS extended/logical partitions are supported**, added and measured
+2026-08-28: `t` on a primary sets its type to `5`/`f`/`85` to make it the disk's
+one extended container, `n` on the free space inside it adds a logical
+partition (numbered from 5, as real fdisk does), and `d`/`r`/`t`/`b` work on a
+selected logical partition the same way they do on a primary. Deleting the
+extended partition itself drops every logical partition inside it; retyping
+it away while it still holds any is refused. The boot-record chain layout —
+one boot record per logical partition, its own entry's start relative to its
+own LBA, its link entry's start relative to the extended partition's own
+start — was not guessed from a spec: it was measured sector-for-sector from a
+three-logical-partition table util-linux's own fdisk 2.41.5 wrote to a
+disposable image on a test VPS, and `cfdiskBuildEBRChain`'s tests check its
+output against those exact numbers. Verified bidirectionally, both with
+util-linux 2.42.2 locally: a table ba6 built with a primary, an extended
+partition and two logical partitions was read correctly by real `fdisk -l`
+and `sfdisk --verify` (byte-identical start/size/type down to the sector),
+and a three-logical-partition table real fdisk built was read back correctly
+by ba6's own cfdisk. DOS is still one label instance: only one
+extended partition is allowed, and a logical partition cannot itself be
+extended.
 
-**`ncdu`** _(run, vs ncdu 2.9.2)_ — 6/37 options. The scan and the browser are
+This is **not** a general replacement for cfdisk: DOS is 512-byte-sector with
+four primary partitions (one of which may be extended, holding any number of
+logical partitions), and GPT is conventional-geometry only (128-entry,
+128-byte-entry, primary entries at LBAs 2–33, with a mirrored backup array
+immediately before the final backup header). GPT `t` handles `linux`, `swap`,
+`efi`, or an explicit GUID and preserves partition names and attributes; it has
+no MBR boot flag. SGI and SUN labels, nonstandard GPT geometry, cfdisk script
+input, the full curses menu/type UI, and colour themes are absent. `u` emits a
+GPT sfdisk-style dump for inspection or compatible external tooling; ba6
+`sfdisk` replays DOS only (primary and logical partitions alike).
+`--color=never` disables reverse-video styling and `--sector-size` accepts 512
+only. The screen layout and key presentation intentionally differ from
+util-linux's curses interface.
+
+**`ncdu`** _(run, vs ncdu 2.9.2)_ — 8/37 options. The scan and the browser are
 there: the same nine-column size field, the same bar width (`columns / 7`) drawn
 against the largest entry in the directory, the `/..` row, the reverse-video header
 and footer, and the `*` that marks whether the totals are disk usage or apparent
 size. Compared screen against screen under a pseudo-terminal, the listing and both
 totals match. Keys present: arrows/`jkhl`, enter, `n`, `s`, `a`, `?`, `q`. Options
-present: `-x`, `--apparent-size`, `--exclude`, `--si`, with `-r`, `-q` and `-0/-1/-2`
-accepted. **Deliberately absent: file deletion, the shell escape and directory
-refresh** — the header says `[readonly]`, as ncdu's own `-r` does. Also missing the
-export/import pair `-o`/`-f`, extended mode `-e`, `--exclude-from`,
-`--exclude-caches`, `--exclude-kernfs`, `-L`, `-t`, the display toggles
-(`--show-itemcount`, `--show-mtime`, `--show-graph`, `--show-percent`,
-`--group-directories-first`, `--sort`), and the config file.
+present: `-x`, `--apparent-size`, `--exclude`, `--si`, `-o`/`--output`, `-f`, with
+`-r`, `-q` and `-0/-1/-2` accepted. `-o` writes the same
+`[major, minor, {metadata}, [rootObj, ...children]]` export ncdu itself uses — a
+directory is a JSON array whose first element is its own info object followed by
+its children, a file is a plain object, `dsize` is omitted when it equals `asize`,
+and `dev` appears only on the root — verified by exporting a scanned tree and
+re-importing it with real ncdu's `-f`, and by importing an export written by real
+ncdu. `-f` browses a saved export instead of scanning; because the export schema
+carries no field for a directory's own dirent overhead, a directory's size on
+import is always the sum of its children, same as ncdu's own `-f` reader.
+**Deliberately absent: file deletion, the shell escape and directory refresh** —
+the header says `[readonly]`, as ncdu's own `-r` does. Also missing extended mode
+`-e`, `--exclude-from`, `--exclude-caches`, `--exclude-kernfs`, `-L`, `-t`, the
+display toggles (`--show-itemcount`, `--show-mtime`, `--show-graph`,
+`--show-percent`, `--group-directories-first`, `--sort`), and the config file.
 
-**`dig`** _(run)_ — no flags at all; the name and type may now be given in either
-order. Formerly `dig +short A example.com` failed,
-only the `dig NAME TYPE` order parses. Missing `-x` (reverse lookup), `-t -c -p -b -f
--q -y`, every `+option` except `+short`, and the full answer/authority section layout.
 
 **`host`** _(run, vs BIND 9.20.26)_ — 18/19 option groups, and every invocation
 tested matches byte for byte. Present: `-t -c -p -R -W -w -T -U -4 -6 -r -s -a -d
@@ -566,31 +806,50 @@ matching, `-P` prompts, the `LESS` variable, lesskey files, `-b -h -j -k -o -O
 -t -T -y -D -#`, and — by design, since this binary starts no child processes —
 the `v`, `!` and `|` commands and `LESSOPEN` filters.
 
-**`dmesg`** _(run)_ — no options at all (0/30). Missing `-w -H -T -t -l -f -x -C -c
--k -u -n -S -r --since`.
+**`dmesg`** _(run, plus a full-buffer diff against util-linux 2.41 on a live VPS's real
+boot log)_ — 20/30 option groups. Present and verified byte-for-byte against a ~570-line
+real kernel ring buffer, apart from one documented gap below: the default view (strips
+the `<PRI>` prefix real dmesg also hides), `-r`/`--raw` (keeps it), `-t`/`--notime`,
+`-x`/`--decode` (`kern  :info  : ` style facility/level prefixes), `-k`/`--kernel`,
+`-u`/`--userspace`, `-l`/`--level` (including the `err+` "and more severe" suffix),
+`-f`/`--facility`, `-c`/`--read-clear`, `-C`/`--clear`, `-s`/`--buffer-size`,
+`-F`/`--file` (reads the same `<PRI>[sec.usec] text` format from an arbitrary file
+instead of the kernel buffer — useful for testing without root), and `--since`/`--until`
+(absolute timestamps or `"N unit(s) ago"`). `-T`/`--ctime` and `--time-format iso`
+reconstruct wall-clock time from `CLOCK_MONOTONIC` the same way dmesg documents doing
+it — matched to the real tool's own output down to the microsecond on the live VPS,
+day-name/month-name spelling aside (the project's standing C-locale-only gap). `-n`/
+`--console-level`, `-D`/`--console-off` and `-E`/`--console-on` drive the same
+`syslog(2)` console actions dmesg does and were verified against `/proc/sys/kernel/printk`
+and a `strace` of the real tool's own syscall (the level belongs in `syslog`'s third
+argument, not its second — an easy transposition this VPS check caught). `-p`/
+`--force-prefix`, `-S`/`--syslog`, `-P`/`--nopager` and `--noescape` are accepted as
+no-ops (ba6 already behaves as they'd request: no pager, no colour, no escaping).
+One real gap found on the live comparison: ba6 reads the legacy `syslog(2)` ring buffer
+rather than `/dev/kmsg`, so a multi-line `KERN_CONT` kernel message (one appeared,
+covering a BIOS-CPPC notice, in the full boot log) reprints its own `<PRI>[timestamp]`
+on the continuation line instead of the blank-padded alignment `/dev/kmsg`-backed dmesg
+produces — the only byte difference across the whole compared log. Missing: `-H`/
+`--human`, `-e`/`--reltime`, `-d`/`--show-delta`, `-w`/`--follow`, `-W`/`--follow-new`,
+`-J`/`--json`, `-L`/`--color`, `-K`/`--kmsg-file`, `--time-format delta`.
 
 ## What to fix first
 
 Ordered by how many applets each item moves, not by effort.
 
-1. **`sh` control flow** — `if`, `for`, `while` and `$(…)`. Now that assignment,
-   variable read-back and `$?` work, this is what still stops a real script. TODO.md
-   tracks it; `shellCommand` in `execution_tools.go` is where each command is already
-   assembled, so the pieces have somewhere to attach.
-2. **`chmod` symbolic modes** — `chmod +x` is the most common chmod invocation there
-   is, and it currently fails outright.
-3. **`sort -k`/`-t`** — field sorting is what sort is for; without it the applet
+1. **`sort -k`/`-t`** — field sorting is what sort is for; without it the applet
    handles only whole-line ordering.
-4. **`--version` for the remaining applets** — the last thing most originals have;
+2. **`--version` for the remaining applets** — the last thing most originals have;
    only `top` and `cfdisk` provide it here. `expandShortOptions` and the per-applet
    parsers now agree enough on shape that one shared entry point could carry it,
    along with `Try 'x --help'`.
-5. **`touch -d`/`-t`/`-r`** — the only reason to reach for touch besides creating a file.
-6. **`grep -o`/`-A`/`-B`/`-C`** and **`sed -i`** — the highest-frequency missing
-   options in the two most-used text tools.
-7. **`ps` process selection** — `-u`, `-C`, `-t` and `--sort`. `ps aux` now matches
+3. **`touch -d`/`-t`/`-r`** — the only reason to reach for touch besides creating a file.
+4. **`grep -o`/`-A`/`-B`/`-C`** — the highest-frequency missing options in the
+   most-used text tool now that `sed -i` (and sed's whole command language —
+   `a i c y n N D P h H g G x b t T { }` — see COVERAGE.md's `sed` entry) is done.
+5. **`ps` process selection** — `-u`, `-C`, `-t` and `--sort`. `ps aux` now matches
    procps byte for byte, so picking *which* processes to list is the remaining gap.
-8. **`ss` `Recv-Q`/`Send-Q`** — the netlink query added for `IPV6_V6ONLY` already
+6. **`ss` `Recv-Q`/`Send-Q`** — the netlink query added for `IPV6_V6ONLY` already
    returns `idiag_rqueue` and `idiag_wqueue`; only the columns are missing.
 
 ## How this was measured

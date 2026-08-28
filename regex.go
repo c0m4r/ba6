@@ -117,6 +117,15 @@ func translatePOSIXBRE(pattern string) (string, error) {
 				atStart = next == '|'
 				i += 2
 				continue
+			case 'n', 't', 'r', 'f', 'v', 'a':
+				// GNU grep/sed's own extension: these match the control
+				// character, not the literal letter. RE2 gives the same
+				// escape the same meaning, so it passes through unchanged.
+				result.WriteByte('\\')
+				result.WriteByte(next)
+				atStart = false
+				i += 2
+				continue
 			default:
 				// A backslash quotes the following BRE character. Quote it
 				// again for RE2 rather than admitting RE2-only escapes such

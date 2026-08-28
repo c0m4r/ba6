@@ -137,6 +137,103 @@ func TestDigAgainstLocalServer(t *testing.T) {
 	}
 }
 
+func TestDigDefaultReportShowsAllSections(t *testing.T) {
+	address, port := startTestResolver(t, func(query []byte) []byte {
+		return dnsReply(query, 0, dnsAnswer(1, []byte{192, 0, 2, 1}))
+	})
+	status, stdout, _ := captureApplet(t, cmdDig, []string{"-p", port, "@" + address, "example.test", "A"}, "")
+	if status != 0 {
+		t.Fatalf("dig status = %d", status)
+	}
+	for _, want := range []string{
+		";; ->>HEADER<<- opcode: QUERY, status: NOERROR",
+		";; QUESTION SECTION:\n;example.test.",
+		";; ANSWER SECTION:\nexample.test.",
+		"192.0.2.1",
+		";; SERVER: " + address + "#" + port,
+		";; MSG SIZE  rcvd:",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("dig output missing %q in %q", want, stdout)
+		}
+	}
+}
+
+func TestDigReverseLookup(t *testing.T) {
+	address, port := startTestResolver(t, func(query []byte) []byte {
+		if !strings.Contains(string(query), "in-addr") {
+			t.Errorf("expected a reverse (in-addr.arpa) query, got %q", query)
+		}
+		return dnsReply(query, 0, dnsAnswer(12, mustEncodeDNSName(t, "host.example.test.")))
+	})
+	status, stdout, _ := captureApplet(t, cmdDig, []string{"-p", port, "@" + address, "-x", "192.0.2.1", "+short"}, "")
+	if status != 0 || stdout != "host.example.test.\n" {
+		t.Fatalf("dig -x = (%d, %q)", status, stdout)
+	}
+}
+
+func TestDigNXDOMAINShowsAuthoritySection(t *testing.T) {
+	address, port := startTestResolver(t, func(query []byte) []byte {
+		response := append([]byte(nil), query...)
+		response[2], response[3] = 0x81, 0x80|3 // NXDOMAIN
+		binary.BigEndian.PutUint16(response[8:10], 1)
+		soa := []byte{0x00, 0x00, 0x06, 0x00, 0x01} // root name, SOA, IN
+		soa = binary.BigEndian.AppendUint32(soa, 86400)
+		rdata := mustEncodeDNSName(t, "ns.test.")
+		rdata = append(rdata, mustEncodeDNSName(t, "hostmaster.test.")...)
+		for _, v := range []uint32{2026082801, 1800, 900, 604800, 86400} {
+			rdata = binary.BigEndian.AppendUint32(rdata, v)
+		}
+		soa = binary.BigEndian.AppendUint16(soa, uint16(len(rdata))) //nolint:gosec // G115: fixture SOA rdata is a few dozen bytes
+		return append(response, append(soa, rdata...)...)
+	})
+	status, stdout, _ := captureApplet(t, cmdDig, []string{"-p", port, "@" + address, "nope.test", "A"}, "")
+	if status != 0 {
+		t.Fatalf("dig on NXDOMAIN should still exit 0 (a valid answer was received), got %d", status)
+	}
+	if !strings.Contains(stdout, "status: NXDOMAIN") {
+		t.Fatalf("dig should report NXDOMAIN status, got %q", stdout)
+	}
+	if !strings.Contains(stdout, ";; AUTHORITY SECTION:\n.\t") || !strings.Contains(stdout, "SOA\tns.test. hostmaster.test.") {
+		t.Fatalf("dig should render the AUTHORITY SECTION's SOA record, got %q", stdout)
+	}
+}
+
+func TestDigNoallAnswerHidesOtherSections(t *testing.T) {
+	address, port := startTestResolver(t, func(query []byte) []byte {
+		return dnsReply(query, 0, dnsAnswer(1, []byte{192, 0, 2, 1}))
+	})
+	status, stdout, _ := captureApplet(t, cmdDig, []string{"-p", port, "@" + address, "+noall", "+answer", "example.test", "A"}, "")
+	want := "example.test.\t\t60\tIN\tA\t192.0.2.1\n"
+	if status != 0 || stdout != want {
+		t.Fatalf("dig +noall +answer = (%d, %q), want %q", status, stdout, want)
+	}
+}
+
+func TestDigUnreachableServerExitsNine(t *testing.T) {
+	server, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("local UDP unavailable: %v", err)
+	}
+	address, port, _ := net.SplitHostPort(server.LocalAddr().String())
+	server.Close() // closed immediately: nothing is listening on this port
+	status, stdout, _ := captureApplet(t, cmdDig, []string{"-p", port, "@" + address, "+time=1", "example.test", "A"}, "")
+	if status != 9 || !strings.Contains(stdout, "no servers could be reached") {
+		t.Fatalf("dig against an unreachable server = (%d, %q)", status, stdout)
+	}
+}
+
+// mustEncodeDNSName is encodeDNSName without the trailing "return an error"
+// case, for building synthetic resource record data in tests.
+func mustEncodeDNSName(t *testing.T, name string) []byte {
+	t.Helper()
+	encoded, err := encodeDNSName(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
 func TestLsofFindsOpenFileForPID(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "open-file")
 	file, err := os.Create(path)

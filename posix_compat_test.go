@@ -51,6 +51,22 @@ func TestGrepUsesPOSIXBREByDefault(t *testing.T) {
 	}
 }
 
+// TestBREControlCharacterEscapes pins a fix to the shared BRE translator:
+// \n and \t used to be quoted down to the literal letters 'n'/'t' (the
+// generic "escape whatever follows a backslash" fallback), instead of
+// matching an actual newline or tab the way GNU grep/sed treat them. That
+// silently broke every multi-line sed idiom built on N;s/\n/.../ .
+func TestBREControlCharacterEscapes(t *testing.T) {
+	status, stdout, _ := captureApplet(t, cmdGrep, []string{`a\tb`}, "a\tb\naxb\n")
+	if status != 0 || stdout != "a\tb\n" {
+		t.Fatalf(`grep 'a\tb' = (%d, %q), want to match a real tab, not the letter t`, status, stdout)
+	}
+	status, stdout, _ = captureApplet(t, cmdSed, []string{`N;s/\n/-/`}, "a\nb\n")
+	if status != 0 || stdout != "a-b\n" {
+		t.Fatalf(`sed N;s/\n/-/ = (%d, %q), want "a-b\n"`, status, stdout)
+	}
+}
+
 func TestSedUsesPOSIXBREByDefault(t *testing.T) {
 	status, stdout, stderr := captureApplet(t, cmdSed, []string{`s/^[^|]*|[^|]*|//`}, "a|1|x\n")
 	if status != 0 || stdout != "x\n" || stderr != "" {

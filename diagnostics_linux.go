@@ -278,11 +278,29 @@ type dnsRecord struct {
 	ttl                      uint32
 }
 
+// digSections tracks which parts of dig's default report to print, driven
+// by +noall and the individual +question/+answer/+stats/+comments toggles.
+type digSections struct {
+	comments, question, answer, stats bool
+}
+
 func cmdDig(args []string) int {
-	server, name, queryType := "", "", "A"
+	args = expandShortOptions(args, "tcpx")
+	server, name, queryType, className := "", "", "A", "IN"
 	short, tcpOnly, typeSet := false, false, false
+	port := "53"
 	timeout := 5 * time.Second
-	for _, arg := range args {
+	sections := digSections{comments: true, question: true, answer: true, stats: true}
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		next := func(opt string) (string, bool) {
+			i++
+			if i >= len(args) {
+				fatalf("dig", "option '%s' requires an argument", opt)
+				return "", false
+			}
+			return args[i], true
+		}
 		switch {
 		case strings.HasPrefix(arg, "@"):
 			server = strings.TrimPrefix(arg, "@")
@@ -290,6 +308,28 @@ func cmdDig(args []string) int {
 			short = true
 		case arg == "+tcp":
 			tcpOnly = true
+		case arg == "+noall":
+			sections = digSections{}
+		case arg == "+comments":
+			sections.comments = true
+		case arg == "+nocomments":
+			sections.comments = false
+		case arg == "+question":
+			sections.question = true
+		case arg == "+noquestion":
+			sections.question = false
+		case arg == "+answer":
+			sections.answer = true
+		case arg == "+noanswer":
+			sections.answer = false
+		case arg == "+stats":
+			sections.stats = true
+		case arg == "+nostats":
+			sections.stats = false
+		case arg == "+noedns" || arg == "+edns" || strings.HasPrefix(arg, "+edns=") || arg == "+cmd" || arg == "+nocmd":
+			// no-op: ba6 never attaches an EDNS OPT record to its query
+			// (equivalent to always running with +noedns), and it never
+			// prints the "; <<>> DiG ..." command banner +cmd/+nocmd toggle.
 		case strings.HasPrefix(arg, "+time="):
 			seconds, err := strconv.Atoi(strings.TrimPrefix(arg, "+time="))
 			if err != nil || seconds < 1 || seconds > 60 {
@@ -300,6 +340,35 @@ func cmdDig(args []string) int {
 		case strings.HasPrefix(arg, "+"):
 			fatalf("dig", "unsupported option %q", arg)
 			return 1
+		case arg == "-x":
+			v, ok := next("-x")
+			if !ok {
+				return 1
+			}
+			ip := net.ParseIP(v)
+			if ip == nil {
+				fatalf("dig", "invalid address '%s'", v)
+				return 1
+			}
+			name, queryType, typeSet = reverseDNSName(ip), "PTR", true
+		case arg == "-t":
+			v, ok := next("-t")
+			if !ok {
+				return 1
+			}
+			queryType, typeSet = strings.ToUpper(v), true
+		case arg == "-c":
+			v, ok := next("-c")
+			if !ok {
+				return 1
+			}
+			className = strings.ToUpper(v)
+		case arg == "-p":
+			v, ok := next("-p")
+			if !ok {
+				return 1
+			}
+			port = v
 		// Operands are recognised by what they are, not by their position:
 		// dig accepts the name and the record type in either order, so
 		// "dig +short A example.com" and "dig example.com A" are the same query.
@@ -321,6 +390,10 @@ func cmdDig(args []string) int {
 		fatalf("dig", "missing name")
 		return 1
 	}
+	if className != "IN" {
+		fatalf("dig", "unsupported class %q", className)
+		return 1
+	}
 	typeCode, ok := dnsTypeCode(queryType)
 	if !ok {
 		fatalf("dig", "unsupported query type %q", queryType)
@@ -334,48 +407,148 @@ func cmdDig(args []string) int {
 		return 1
 	}
 	if _, _, err := net.SplitHostPort(server); err != nil {
-		server = net.JoinHostPort(server, "53")
+		server = net.JoinHostPort(server, port)
 	}
 	query, id, err := buildDNSQuery(name, typeCode, dnsClassIN, true)
 	if err != nil {
 		fatalf("dig", "%v", err)
 		return 1
 	}
-	response, err := exchangeDNS(server, query, timeout, dnsNetwork(tcpOnly))
+	start := time.Now()
+	network := dnsNetwork(tcpOnly)
+	response, err := exchangeDNS(server, query, timeout, network)
 	if err != nil {
-		fatalf("dig", "%v", err)
-		return 1
+		fmt.Fprintf(os.Stdout, ";; communications error to %s: %s\n", hostServerDisplay(server), hostErrorText(err))
+		fmt.Fprintln(os.Stdout, ";; no servers could be reached")
+		return 9
 	}
-	records, truncated, rcode, err := parseDNSResponse(response, id)
+	records, authority, truncated, rcode, err := parseDNSResponseSections(response, id)
 	if err != nil {
 		fatalf("dig", "%v", err)
 		return 1
 	}
 	if truncated && !tcpOnly {
-		response, err = exchangeDNS(server, query, timeout, dnsNetwork(true))
-		if err == nil {
-			records, _, rcode, err = parseDNSResponse(response, id)
+		network = dnsNetwork(true)
+		response, err = exchangeDNS(server, query, timeout, network)
+		if err != nil {
+			fmt.Fprintf(os.Stdout, ";; communications error to %s: %s\n", hostServerDisplay(server), hostErrorText(err))
+			fmt.Fprintln(os.Stdout, ";; no servers could be reached")
+			return 9
 		}
+		records, authority, _, rcode, err = parseDNSResponseSections(response, id)
 		if err != nil {
 			fatalf("dig", "%v", err)
 			return 1
 		}
 	}
-	if rcode != 0 {
-		fatalf("dig", "DNS server returned %s", dnsRCodeName(rcode))
-		return 1
-	}
-	if !short {
-		fmt.Fprintf(os.Stdout, ";; ANSWER SECTION (%d records):\n", len(records))
-	}
-	for _, record := range records {
-		if short {
+	elapsed := time.Since(start)
+
+	if short {
+		for _, record := range records {
 			fmt.Fprintln(os.Stdout, record.value)
-		} else {
-			fmt.Fprintf(os.Stdout, "%s\t%d\tIN\t%s\t%s\n", record.name, record.ttl, record.kind, record.value)
+		}
+		return 0
+	}
+
+	questionName := name
+	if !strings.HasSuffix(questionName, ".") {
+		questionName += "."
+	}
+
+	if sections.comments {
+		flagsLine, qd, an, ns, ar := digHeaderFields(response)
+		fmt.Fprintln(os.Stdout, ";; Got answer:")
+		fmt.Fprintf(os.Stdout, ";; ->>HEADER<<- opcode: QUERY, status: %s, id: %d\n", dnsRCodeName(rcode), id)
+		fmt.Fprintf(os.Stdout, ";; flags: %s; QUERY: %d, ANSWER: %d, AUTHORITY: %d, ADDITIONAL: %d\n\n",
+			flagsLine, qd, an, ns, ar)
+	}
+	if sections.question {
+		fmt.Fprintln(os.Stdout, ";; QUESTION SECTION:")
+		fmt.Fprintln(os.Stdout, digQuestionLine(questionName, queryType))
+		fmt.Fprintln(os.Stdout)
+	}
+	if sections.answer && len(records) > 0 {
+		if sections.comments {
+			fmt.Fprintln(os.Stdout, ";; ANSWER SECTION:")
+		}
+		for _, record := range records {
+			fmt.Fprintln(os.Stdout, dnsMasterLine(record))
+		}
+		if sections.comments {
+			fmt.Fprintln(os.Stdout)
 		}
 	}
+	if sections.answer && len(authority) > 0 {
+		if sections.comments {
+			fmt.Fprintln(os.Stdout, ";; AUTHORITY SECTION:")
+		}
+		for _, record := range authority {
+			fmt.Fprintln(os.Stdout, dnsMasterLine(record))
+		}
+		if sections.comments {
+			fmt.Fprintln(os.Stdout)
+		}
+	}
+	if sections.stats {
+		serverHost, serverPort, _ := net.SplitHostPort(server)
+		transport := "UDP"
+		if strings.HasPrefix(network, "tcp") {
+			transport = "TCP"
+		}
+		fmt.Fprintf(os.Stdout, ";; Query time: %d msec\n", elapsed.Milliseconds())
+		fmt.Fprintf(os.Stdout, ";; SERVER: %s#%s(%s) (%s)\n", serverHost, serverPort, serverHost, transport)
+		fmt.Fprintf(os.Stdout, ";; WHEN: %s\n", time.Now().Format("Mon Jan _2 15:04:05 MST 2006"))
+		fmt.Fprintf(os.Stdout, ";; MSG SIZE  rcvd: %d\n", len(response))
+	}
 	return 0
+}
+
+// digHeaderFields reads the flags and section counts straight from the raw
+// DNS header, which parseDNSResponse doesn't otherwise surface: the flags
+// line lists only the bits that are actually set, in dig's own qr/aa/tc/rd/
+// ra/ad/cd order.
+func digHeaderFields(response []byte) (flags string, qd, an, ns, ar int) {
+	if len(response) < 12 {
+		return "", 0, 0, 0, 0
+	}
+	b2, b3 := response[2], response[3]
+	var set []string
+	if b2&0x80 != 0 {
+		set = append(set, "qr")
+	}
+	if b2&0x04 != 0 {
+		set = append(set, "aa")
+	}
+	if b2&0x02 != 0 {
+		set = append(set, "tc")
+	}
+	if b2&0x01 != 0 {
+		set = append(set, "rd")
+	}
+	if b3&0x80 != 0 {
+		set = append(set, "ra")
+	}
+	if b3&0x20 != 0 {
+		set = append(set, "ad")
+	}
+	if b3&0x10 != 0 {
+		set = append(set, "cd")
+	}
+	return strings.Join(set, " "),
+		int(binary.BigEndian.Uint16(response[4:6])),
+		int(binary.BigEndian.Uint16(response[6:8])),
+		int(binary.BigEndian.Uint16(response[8:10])),
+		int(binary.BigEndian.Uint16(response[10:12]))
+}
+
+// digQuestionLine lays out the ";NAME  IN  TYPE" question line in the same
+// tab-stop columns as an answer line, minus the TTL column an answer has and
+// the question doesn't.
+func digQuestionLine(name, queryType string) string {
+	line := ";" + name
+	line += dnsColumnPad(dnsPadWidth(line), 32) + "IN"
+	line += dnsColumnPad(dnsPadWidth(line), 40) + queryType
+	return line
 }
 
 // dnsTypes maps every record type the bundled DNS tools can name. OPT is
@@ -534,28 +707,47 @@ func exchangeDNS(server string, query []byte, timeout time.Duration, network str
 	return response[:n], nil
 }
 
-func parseDNSResponse(message []byte, id uint16) ([]dnsRecord, bool, int, error) {
+// parseDNSResponseSections is parseDNSResponse extended with the authority
+// section, which dig's default report shows for a negative answer (the SOA
+// that comes back with an NXDOMAIN, for instance).
+func parseDNSResponseSections(message []byte, id uint16) (answers, authority []dnsRecord, truncated bool, rcode int, err error) {
 	if len(message) < 12 || binary.BigEndian.Uint16(message[0:2]) != id || message[2]&0x80 == 0 {
-		return nil, false, 0, fmt.Errorf("invalid DNS response header")
+		return nil, nil, false, 0, fmt.Errorf("invalid DNS response header")
 	}
-	questions := int(binary.BigEndian.Uint16(message[4:6]))
-	answers := int(binary.BigEndian.Uint16(message[6:8]))
-	if questions > 64 || answers > 4096 {
-		return nil, false, 0, fmt.Errorf("unreasonable DNS section count")
+	questionCount := int(binary.BigEndian.Uint16(message[4:6]))
+	answerCount := int(binary.BigEndian.Uint16(message[6:8]))
+	authorityCount := int(binary.BigEndian.Uint16(message[8:10]))
+	if questionCount > 64 || answerCount > 4096 || authorityCount > 4096 {
+		return nil, nil, false, 0, fmt.Errorf("unreasonable DNS section count")
 	}
 	offset := 12
-	for index := 0; index < questions; index++ {
-		_, next, err := decodeDNSName(message, offset, 0)
-		if err != nil || next+4 > len(message) {
-			return nil, false, 0, fmt.Errorf("invalid DNS question")
+	for index := 0; index < questionCount; index++ {
+		_, next, decodeErr := decodeDNSName(message, offset, 0)
+		if decodeErr != nil || next+4 > len(message) {
+			return nil, nil, false, 0, fmt.Errorf("invalid DNS question")
 		}
 		offset = next + 4
 	}
-	records := make([]dnsRecord, 0, answers)
-	for index := 0; index < answers; index++ {
+	answers, offset, err = parseDNSRecordSection(message, offset, answerCount)
+	if err != nil {
+		return nil, nil, false, 0, err
+	}
+	authority, _, err = parseDNSRecordSection(message, offset, authorityCount)
+	if err != nil {
+		return nil, nil, false, 0, err
+	}
+	return answers, authority, message[2]&0x02 != 0, int(message[3] & 0x0f), nil
+}
+
+// parseDNSRecordSection decodes count consecutive resource records starting
+// at offset, returning the IN-class ones and the offset just past the
+// section.
+func parseDNSRecordSection(message []byte, offset, count int) ([]dnsRecord, int, error) {
+	records := make([]dnsRecord, 0, count)
+	for index := 0; index < count; index++ {
 		name, next, err := decodeDNSName(message, offset, 0)
 		if err != nil || next+10 > len(message) {
-			return nil, false, 0, fmt.Errorf("invalid DNS answer name")
+			return nil, 0, fmt.Errorf("invalid DNS record name")
 		}
 		kind := binary.BigEndian.Uint16(message[next : next+2])
 		class := binary.BigEndian.Uint16(message[next+2 : next+4])
@@ -563,11 +755,11 @@ func parseDNSResponse(message []byte, id uint16) ([]dnsRecord, bool, int, error)
 		length := int(binary.BigEndian.Uint16(message[next+8 : next+10]))
 		rdata := next + 10
 		if rdata+length > len(message) {
-			return nil, false, 0, fmt.Errorf("truncated DNS answer")
+			return nil, 0, fmt.Errorf("truncated DNS record")
 		}
 		value, valueErr := formatDNSRData(message, rdata, length, kind)
 		if valueErr != nil {
-			return nil, false, 0, valueErr
+			return nil, 0, valueErr
 		}
 		if class == dnsClassIN {
 			records = append(records, dnsRecord{
@@ -576,7 +768,7 @@ func parseDNSResponse(message []byte, id uint16) ([]dnsRecord, bool, int, error)
 		}
 		offset = rdata + length
 	}
-	return records, message[2]&0x02 != 0, int(message[3] & 0x0f), nil
+	return records, offset, nil
 }
 
 func decodeDNSName(message []byte, offset, depth int) (string, int, error) {

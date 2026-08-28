@@ -61,6 +61,61 @@ func TestFileMagicAndMktemp(t *testing.T) {
 	}
 }
 
+func TestFileELFDescriptionAndMime(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	desc, ok := describeELF(self)
+	if !ok || !strings.HasPrefix(desc, "ELF 64-bit LSB") || !strings.Contains(desc, "x86-64") {
+		t.Fatalf("describeELF(self) = (%q, %v)", desc, ok)
+	}
+	if !strings.Contains(desc, "dynamically linked") && !strings.Contains(desc, "statically linked") {
+		t.Fatalf("describeELF(self) should report a link mode, got %q", desc)
+	}
+	if !strings.HasSuffix(desc, "stripped") {
+		t.Fatalf("describeELF(self) should end in a stripped state, got %q", desc)
+	}
+
+	mime := mimeFor(desc)
+	if !strings.HasPrefix(mime, "application/x-") || !strings.HasSuffix(mime, "; charset=binary") {
+		t.Fatalf("mimeFor(ELF) = %q", mime)
+	}
+
+	if _, ok := describeELF(filepath.Join(t.TempDir(), "does-not-exist")); ok {
+		t.Fatal("describeELF should report ok=false for a missing file")
+	}
+	nonELF := filepath.Join(t.TempDir(), "plain.txt")
+	if err := os.WriteFile(nonELF, []byte("hello\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := describeELF(nonELF); ok {
+		t.Fatal("describeELF should report ok=false for a non-ELF file")
+	}
+
+	cases := map[string]string{
+		"ASCII text":               "text/plain; charset=us-ascii",
+		"Unicode text, UTF-8 text": "text/plain; charset=utf-8",
+		"directory":                "inode/directory; charset=binary",
+		"sticky, directory":        "inode/directory; charset=binary",
+		"empty":                    "inode/x-empty; charset=us-ascii",
+		"symbolic link to /x":      "inode/symlink; charset=binary",
+	}
+	for description, want := range cases {
+		if got := mimeFor(description); got != want {
+			t.Fatalf("mimeFor(%q) = %q, want %q", description, got, want)
+		}
+	}
+
+	if major, minor := linuxDeviceMajorMinor(linuxMakeDevice(1, 3)); major != 1 || minor != 3 {
+		t.Fatalf("linuxDeviceMajorMinor round-trip = (%d, %d), want (1, 3)", major, minor)
+	}
+	desc2, err := describeFile("/dev/null", false)
+	if err != nil || desc2 != "character special (1/3)" {
+		t.Fatalf("describeFile(/dev/null) = (%q, %v)", desc2, err)
+	}
+}
+
 func TestTimeoutAndTop(t *testing.T) {
 	status, _, _ := captureApplet(t, cmdTimeout, []string{"0", "/bin/true"}, "")
 	if status != 0 {

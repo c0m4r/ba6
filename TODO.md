@@ -99,14 +99,18 @@ blocks (plus Zstandard RLE blocks), not the full compressed-block decoders.
 
 ## Existing applet improvements
 
-- [ ] Extend `sh` with `if`, loops, `case`, functions, pathname expansion, and
-      command substitution.
+- [x] Extend `sh` with `if`/`for`/`while`, `break`/`continue`, `$(...)` command
+      substitution, and `$((...))` arithmetic expansion.
+- [ ] Extend `sh` further with `case`, functions, and pathname expansion.
 - [ ] Consider a guarded `find -exec` implementation.
-- [ ] Consider atomic in-place editing for `sed -i`.
+- [x] Atomic in-place editing for `sed -i` (same-directory temp file, renamed
+      over the original only once the script finishes without error).
 - [ ] Expand `ip` support where recovery use cases require it.
 - [ ] Add broader IPv4 firewall matches, tables, and targets to `iptables`.
 - [ ] Add IPv6 firewall support.
 
-Execution features such as `sh` command substitution, `find -exec`, and
-`sed -i` expand the security and destructive-write surface. Their designs
-should preserve the project's explicit-write and startup-hardening goals.
+Execution features such as `find -exec` expand the security and
+destructive-write surface. Their designs should preserve the project's
+explicit-write and startup-hardening goals; `sh` command substitution and
+`sed -i` already do
+(it writes only to a temp file it creates itself, then renames).

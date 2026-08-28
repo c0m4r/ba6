@@ -82,8 +82,13 @@ func TestCfdiskFreeSpaceAndValidation(t *testing.T) {
 	}
 	extended := partitions
 	extended[0].kind = 0x0f
-	if err := validateCfdiskPartitions(extended, 16384); err == nil || !strings.Contains(err.Error(), "extended") {
-		t.Fatalf("extended error = %v", err)
+	if err := validateCfdiskPartitions(extended, 16384); err != nil {
+		t.Fatalf("a single extended partition should validate: %v", err)
+	}
+	twoExtended := extended
+	twoExtended[1] = mbrPartition{start: 8192, size: 1024, kind: 0x05}
+	if err := validateCfdiskPartitions(twoExtended, 16384); err == nil || !strings.Contains(err.Error(), "extended") {
+		t.Fatalf("second extended partition error = %v", err)
 	}
 }
 
@@ -203,7 +208,7 @@ func TestCfdiskSizeSortingAndDump(t *testing.T) {
 	if sorted[0].start != 2048 || sorted[1].start != 4096 || sorted[0].kind != 0x83 || sorted[2].size != 0 {
 		t.Fatalf("sorted partitions = %#v", sorted)
 	}
-	dump := cfdiskDump("/tmp/disk.img", sorted)
+	dump := cfdiskDump("/tmp/disk.img", sorted, nil)
 	for _, want := range []string{
 		"label: dos", "unit: sectors", "/tmp/disk.img1 : start=2048, size=1024, type=83, bootable",
 		"/tmp/disk.img2 : start=4096, size=1024, type=82",
@@ -290,7 +295,7 @@ func TestCfdiskEmptyDumpCreatesEmptyDOSLabel(t *testing.T) {
 	if err := os.WriteFile(image, original, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	status, _, stderr := captureApplet(t, cmdSfdisk, []string{image}, cfdiskDump(image, [4]mbrPartition{}))
+	status, _, stderr := captureApplet(t, cmdSfdisk, []string{image}, cfdiskDump(image, [4]mbrPartition{}, nil))
 	if status != 0 || stderr != "" {
 		t.Fatalf("empty cfdisk dump = (%d, %q)", status, stderr)
 	}

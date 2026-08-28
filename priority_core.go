@@ -7,6 +7,8 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
+	"debug/elf"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -258,19 +260,31 @@ func skipInput(reader io.Reader, bytesToSkip int64) error {
 }
 
 func cmdFile(args []string) int {
-	brief := false
-	if len(args) > 0 && (args[0] == "-b" || args[0] == "--brief") {
-		brief, args = true, args[1:]
+	brief, dereference, mimeType := false, false, false
+	var files []string
+	for _, arg := range args {
+		switch arg {
+		case "-b", "--brief":
+			brief = true
+		case "-L", "--dereference":
+			dereference = true
+		case "-i", "--mime", "--mime-type":
+			mimeType = true
+		default:
+			files = append(files, arg)
+		}
 	}
-	if len(args) == 0 {
+	if len(files) == 0 {
 		fatalf("file", "missing file operand")
 		return 1
 	}
 	status := 0
-	for _, name := range args {
-		description, err := describeFile(name)
+	for _, name := range files {
+		description, err := describeFile(name, dereference)
 		if err != nil {
 			description, status = "cannot open: "+err.Error(), 1
+		} else if mimeType {
+			description = mimeFor(description)
 		}
 		if brief {
 			fmt.Println(description)
@@ -281,8 +295,12 @@ func cmdFile(args []string) int {
 	return status
 }
 
-func describeFile(name string) (string, error) {
-	info, err := os.Lstat(name)
+func describeFile(name string, dereference bool) (string, error) {
+	stat := os.Lstat
+	if dereference {
+		stat = os.Stat
+	}
+	info, err := stat(name)
 	if err != nil {
 		return "", err
 	}
@@ -295,15 +313,32 @@ func describeFile(name string) (string, error) {
 		}
 		return "symbolic link to " + target, nil
 	case mode.IsDir():
-		return "directory", nil
+		var bits []string
+		if mode&os.ModeSetuid != 0 {
+			bits = append(bits, "setuid")
+		}
+		if mode&os.ModeSetgid != 0 {
+			bits = append(bits, "setgid")
+		}
+		if mode&os.ModeSticky != 0 {
+			bits = append(bits, "sticky")
+		}
+		bits = append(bits, "directory")
+		return strings.Join(bits, ", "), nil
 	case mode&os.ModeNamedPipe != 0:
 		return "fifo (named pipe)", nil
 	case mode&os.ModeSocket != 0:
 		return "socket", nil
-	case mode&os.ModeDevice != 0 && mode&os.ModeCharDevice != 0:
-		return "character special", nil
 	case mode&os.ModeDevice != 0:
-		return "block special", nil
+		kind := "block special"
+		if mode&os.ModeCharDevice != 0 {
+			kind = "character special"
+		}
+		if st, ok := info.Sys().(*syscall.Stat_t); ok {
+			major, minor := linuxDeviceMajorMinor(st.Rdev)
+			kind += fmt.Sprintf(" (%d/%d)", major, minor)
+		}
+		return kind, nil
 	case !mode.IsRegular():
 		return "special file", nil
 	}
@@ -313,6 +348,9 @@ func describeFile(name string) (string, error) {
 			description += ", label " + strconv.Quote(label)
 		}
 		return description, nil
+	}
+	if elfDescription, ok := describeELF(name); ok {
+		return elfDescription, nil
 	}
 	file, err := os.Open(name)
 	if err != nil {
@@ -327,11 +365,268 @@ func describeFile(name string) (string, error) {
 	return describeData(data[:n], mode), nil
 }
 
+// mimeFor renders the media type -i/--mime prints, given the description
+// describeFile already produced. It covers the descriptions this file
+// applet can actually emit, plus GNU file's charset suffix.
+func mimeFor(description string) string {
+	charset := "us-ascii"
+	mimeType := "application/octet-stream"
+	switch {
+	case description == "empty":
+		mimeType = "inode/x-empty"
+	case strings.HasPrefix(description, "ELF"):
+		mimeType, charset = "application/x-executable", "binary"
+		switch {
+		case strings.Contains(description, "pie executable"):
+			mimeType = "application/x-pie-executable"
+		case strings.Contains(description, "shared object"):
+			mimeType = "application/x-sharedlib"
+		case strings.Contains(description, "relocatable"):
+			mimeType = "application/x-object"
+		}
+	case strings.HasPrefix(description, "script, interpreter"):
+		mimeType = "text/x-shellscript"
+	case description == "gzip compressed data":
+		mimeType, charset = "application/gzip", "binary"
+	case description == "Zip archive data":
+		mimeType, charset = "application/zip", "binary"
+	case description == "PNG image data":
+		mimeType, charset = "image/png", "binary"
+	case description == "JPEG image data":
+		mimeType, charset = "image/jpeg", "binary"
+	case description == "PDF document":
+		mimeType, charset = "application/pdf", "binary"
+	case description == "POSIX tar archive":
+		mimeType, charset = "application/x-tar", "binary"
+	case strings.HasSuffix(description, "directory"):
+		return "inode/directory; charset=binary"
+	case description == "symbolic link" || strings.HasPrefix(description, "symbolic link to "):
+		return "inode/symlink; charset=binary"
+	case description == "fifo (named pipe)":
+		return "inode/fifo; charset=binary"
+	case description == "socket":
+		return "inode/socket; charset=binary"
+	case strings.HasPrefix(description, "character special"):
+		return "inode/chardevice; charset=binary"
+	case strings.HasPrefix(description, "block special"):
+		return "inode/blockdevice; charset=binary"
+	case description == "ASCII text":
+		mimeType = "text/plain"
+	case strings.HasPrefix(description, "Unicode text"):
+		mimeType, charset = "text/plain", "utf-8"
+	case description == "data":
+		charset = "binary"
+	default:
+		charset = "binary"
+	}
+	return fmt.Sprintf("%s; charset=%s", mimeType, charset)
+}
+
+// describeELF renders an ELF file the way real file(1) does: class, data
+// encoding, type (with the pie-executable/shared-object distinction based on
+// PT_INTERP), architecture, ABI, link mode, GNU/Go build IDs, the GNU
+// ABI-tag note, and stripped state. ok is false for a non-ELF or unreadable
+// file, so the caller falls back to the ordinary magic-byte probe.
+func describeELF(name string) (string, bool) {
+	f, err := elf.Open(name)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+
+	class := "32-bit"
+	if f.Class == elf.ELFCLASS64 {
+		class = "64-bit"
+	}
+	dataEnc := "MSB"
+	if f.Data == elf.ELFDATA2LSB {
+		dataEnc = "LSB"
+	}
+
+	hasInterp, hasDynamic, interpPath := false, false, ""
+	for _, p := range f.Progs {
+		switch p.Type {
+		case elf.PT_INTERP:
+			hasInterp = true
+			if raw, readErr := io.ReadAll(p.Open()); readErr == nil {
+				interpPath = string(bytes.TrimRight(raw, "\x00"))
+			}
+		case elf.PT_DYNAMIC:
+			hasDynamic = true
+		}
+	}
+
+	typeStr := "object"
+	switch f.Type {
+	case elf.ET_REL:
+		typeStr = "relocatable"
+	case elf.ET_EXEC:
+		typeStr = "executable"
+	case elf.ET_DYN:
+		if hasInterp {
+			typeStr = "pie executable"
+		} else {
+			typeStr = "shared object"
+		}
+	case elf.ET_CORE:
+		typeStr = "core file"
+	}
+
+	osabi := "SYSV"
+	if f.OSABI == elf.ELFOSABI_LINUX {
+		osabi = "GNU/Linux"
+	}
+
+	parts := []string{
+		fmt.Sprintf("ELF %s %s %s", class, dataEnc, typeStr),
+		elfMachineName(f.Machine),
+		fmt.Sprintf("version 1 (%s)", osabi),
+	}
+	if hasDynamic {
+		parts = append(parts, "dynamically linked")
+		if hasInterp {
+			parts = append(parts, "interpreter "+interpPath)
+		}
+	} else {
+		parts = append(parts, "statically linked")
+	}
+
+	notes := elfNotes(f)
+	if goBuildID, ok := notes["Go\x00\x00"][4]; ok {
+		parts = append(parts, "Go BuildID="+string(goBuildID))
+	}
+	if buildID, ok := notes["GNU\x00"][3]; ok {
+		label := "unknown"
+		switch len(buildID) {
+		case 20:
+			label = "sha1"
+		case 16:
+			label = "md5"
+		case 8:
+			label = "uuid"
+		}
+		parts = append(parts, fmt.Sprintf("BuildID[%s]=%s", label, hex.EncodeToString(buildID)))
+	}
+	if abiTag, ok := notes["GNU\x00"][1]; ok && len(abiTag) >= 16 {
+		osID := f.ByteOrder.Uint32(abiTag[0:4])
+		major := f.ByteOrder.Uint32(abiTag[4:8])
+		minor := f.ByteOrder.Uint32(abiTag[8:12])
+		sub := f.ByteOrder.Uint32(abiTag[12:16])
+		osName := "Linux"
+		switch osID {
+		case 1:
+			osName = "Hurd"
+		case 2:
+			osName = "Solaris"
+		case 3:
+			osName = "FreeBSD"
+		}
+		parts = append(parts, fmt.Sprintf("for GNU/%s %d.%d.%d", osName, major, minor, sub))
+	}
+
+	hasSymtab, hasDebugInfo := false, false
+	for _, s := range f.Sections {
+		switch s.Name {
+		case ".symtab":
+			hasSymtab = true
+		case ".debug_info":
+			hasDebugInfo = true
+		}
+	}
+	if hasDebugInfo {
+		parts = append(parts, "with debug_info")
+	}
+	if hasSymtab {
+		parts = append(parts, "not stripped")
+	} else {
+		parts = append(parts, "stripped")
+	}
+	return strings.Join(parts, ", "), true
+}
+
+// elfMachineName maps the architectures this project is realistically built
+// for or likely to encounter; anything else falls back to its numeric value
+// rather than guessing a name.
+func elfMachineName(m elf.Machine) string {
+	switch m {
+	case elf.EM_X86_64:
+		return "x86-64"
+	case elf.EM_386:
+		return "Intel 80386"
+	case elf.EM_ARM:
+		return "ARM"
+	case elf.EM_AARCH64:
+		return "ARM aarch64"
+	case elf.EM_RISCV:
+		return "RISC-V"
+	case elf.EM_MIPS:
+		return "MIPS"
+	case elf.EM_PPC64:
+		return "PowerPC64"
+	default:
+		return fmt.Sprintf("unknown architecture 0x%x", uint16(m))
+	}
+}
+
+// elfNotes collects every ELF note this file has, from both SHT_NOTE
+// sections and PT_NOTE segments (a fully stripped binary can lack section
+// headers but keeps the segments), keyed by [name][type] -> descriptor
+// bytes. The note format itself -- namesz/descsz/type then 4-byte-aligned
+// name and descriptor -- is the same for 32- and 64-bit ELF alike.
+func elfNotes(f *elf.File) map[string]map[uint32][]byte {
+	notes := map[string]map[uint32][]byte{}
+	add := func(data []byte) {
+		for len(data) >= 12 {
+			nameSz := f.ByteOrder.Uint32(data[0:4])
+			descSz := f.ByteOrder.Uint32(data[4:8])
+			noteType := f.ByteOrder.Uint32(data[8:12])
+			off := 12
+			nameEnd := off + int(nameSz)
+			if nameEnd > len(data) {
+				return
+			}
+			name := string(data[off:nameEnd])
+			off = align4(nameEnd)
+			descEnd := off + int(descSz)
+			if descEnd > len(data) {
+				return
+			}
+			desc := data[off:descEnd]
+			if notes[name] == nil {
+				notes[name] = map[uint32][]byte{}
+			}
+			notes[name][noteType] = desc
+			data = data[align4(descEnd):]
+		}
+	}
+	for _, s := range f.Sections {
+		if s.Type == elf.SHT_NOTE {
+			if data, err := s.Data(); err == nil {
+				add(data)
+			}
+		}
+	}
+	for _, p := range f.Progs {
+		if p.Type == elf.PT_NOTE {
+			if data, err := io.ReadAll(p.Open()); err == nil {
+				add(data)
+			}
+		}
+	}
+	return notes
+}
+
+func align4(n int) int {
+	return (n + 3) &^ 3
+}
+
 func describeData(data []byte, mode os.FileMode) string {
 	switch {
 	case len(data) == 0:
 		return "empty"
 	case bytes.HasPrefix(data, []byte{0x7f, 'E', 'L', 'F'}):
+		// Only reached when describeELF's full parse (via debug/elf, which
+		// needs random file access) failed on an otherwise ELF-looking file.
 		bits := "32-bit"
 		if len(data) > 4 && data[4] == 2 {
 			bits = "64-bit"
@@ -354,12 +649,25 @@ func describeData(data []byte, mode os.FileMode) string {
 		return "POSIX tar archive"
 	}
 	if utf8.Valid(data) && !bytes.ContainsRune(data, 0) {
-		if mode&0o111 != 0 {
-			return "Unicode text, executable"
+		text := "ASCII text"
+		if !isASCII(data) {
+			text = "Unicode text, UTF-8 text"
 		}
-		return "Unicode text"
+		if mode&0o111 != 0 {
+			return text + ", executable"
+		}
+		return text
 	}
 	return "data"
+}
+
+func isASCII(data []byte) bool {
+	for _, b := range data {
+		if b >= 0x80 {
+			return false
+		}
+	}
+	return true
 }
 
 func cmdMktemp(args []string) int {

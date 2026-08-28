@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -37,10 +38,29 @@ type sedCommand struct {
 	inRange       bool
 	negated       bool
 	kind          byte
+
+	// s///
 	regex         *regexp.Regexp
 	replacement   string
 	global        bool
 	printOnChange bool
+	writeFile     string
+
+	// y///
+	yFrom, yTo []rune
+
+	// a/i/c text
+	text string
+
+	// b/t/T (jumpTarget) and :label (own index is found via the label map)
+	label      string
+	jumpTarget int
+
+	// q/Q
+	exitCode int
+
+	// r/R/w/W
+	file string
 }
 
 // selected reports whether the command applies to this line, honouring an
@@ -80,6 +100,14 @@ func (c *sedCommand) inAddress(text string, line int, last bool) bool {
 	return true
 }
 
+// rangeEnding reports whether this line is the last one a range command
+// matches -- true for every match of a single-address command, and only for
+// the closing line of a two-address range. 'c' uses this to print its
+// replacement text once per range instead of once per line.
+func (c *sedCommand) rangeEnding() bool {
+	return c.second == nil || !c.inRange
+}
+
 type sedLine struct {
 	text       string
 	terminated bool
@@ -88,6 +116,8 @@ type sedLine struct {
 func cmdSed(args []string) int {
 	noDefault := false
 	extended := false
+	inPlace := false
+	backupSuffix := ""
 	var scripts, files []string
 	parsingOptions := true
 	for i := 0; i < len(args); i++ {
@@ -102,6 +132,18 @@ func cmdSed(args []string) int {
 		}
 		if parsingOptions && (arg == "-E" || arg == "-r" || arg == "--regexp-extended") {
 			extended = true
+			continue
+		}
+		if parsingOptions && (arg == "-i" || arg == "--in-place") {
+			inPlace = true
+			continue
+		}
+		if parsingOptions && strings.HasPrefix(arg, "-i") && len(arg) > 2 {
+			inPlace, backupSuffix = true, arg[2:]
+			continue
+		}
+		if parsingOptions && strings.HasPrefix(arg, "--in-place=") {
+			inPlace, backupSuffix = true, strings.TrimPrefix(arg, "--in-place=")
 			continue
 		}
 		if parsingOptions && (arg == "-e" || arg == "--expression") {
@@ -155,109 +197,507 @@ func cmdSed(args []string) int {
 		fatalf("sed", "missing script")
 		return 1
 	}
-	var commands []sedCommand
-	for _, script := range scripts {
-		parsed, err := parseSedScript(script, extended)
-		if err != nil {
-			fatalf("sed", "%v", err)
-			return 1
-		}
-		commands = append(commands, parsed...)
-	}
-	if len(files) == 0 {
-		files = []string{"-"}
-	}
-	stream := &sedStream{files: files}
-	defer stream.Close()
-	inputLine, ok, err := stream.next()
+	// Every -e/-f fragment is one continuous script: a trailing backslash in
+	// one fragment (as in the classic "-e 'a\' -e text" idiom) must be able
+	// to continue into the next.
+	commands, err := parseSedScript(strings.Join(scripts, "\n"), extended)
 	if err != nil {
 		fatalf("sed", "%v", err)
 		return 1
 	}
-	out := bufio.NewWriter(os.Stdout)
-	quit := false
-	lineNumber := 0
-	needsLast := sedNeedsLastAddress(commands)
-	for ok {
-		var nextLine sedLine
-		hasNext := false
-		if needsLast {
-			nextLine, hasNext, err = stream.next()
-			if err != nil {
-				fatalf("sed", "%v", err)
-				return 1
-			}
-		}
-		lineNumber++
-		line := inputLine.text
-		deleted := false
-		for i := range commands {
-			command := &commands[i]
-			if !command.selected(line, lineNumber, needsLast && !hasNext) {
-				continue
-			}
-			switch command.kind {
-			case 's':
-				changed := command.regex.MatchString(line)
-				if changed {
-					if command.global {
-						line = command.regex.ReplaceAllString(line, command.replacement)
-					} else {
-						indices := command.regex.FindStringSubmatchIndex(line)
-						replaced := command.regex.ExpandString(nil, command.replacement, line, indices)
-						line = line[:indices[0]] + string(replaced) + line[indices[1]:]
-					}
-					if command.printOnChange {
-						if err := writeSedLine(out, line, inputLine.terminated); err != nil {
-							fatalf("sed", "write error: %v", err)
-							return 1
-						}
-					}
-				}
-			case 'd':
-				deleted = true
-			case 'p':
-				if err := writeSedLine(out, line, inputLine.terminated); err != nil {
-					fatalf("sed", "write error: %v", err)
-					return 1
-				}
-			case '=':
-				fmt.Fprintln(out, lineNumber)
-			case 'q':
-				quit = true
-			}
-			if deleted || quit {
-				break
-			}
-		}
-		if !deleted && !noDefault {
-			if err := writeSedLine(out, line, inputLine.terminated); err != nil {
-				fatalf("sed", "write error: %v", err)
-				return 1
-			}
-		}
-		if quit {
-			break
-		}
-		if needsLast {
-			inputLine, ok = nextLine, hasNext
-		} else {
-			inputLine, ok, err = stream.next()
-			if err != nil {
-				fatalf("sed", "%v", err)
-				return 1
-			}
-		}
-	}
-	if err := stream.Close(); err != nil {
+	if err := resolveSedLabels(commands); err != nil {
 		fatalf("sed", "%v", err)
 		return 1
 	}
+
+	if inPlace {
+		if len(files) == 0 {
+			fatalf("sed", "no input files")
+			return 1
+		}
+		status := 0
+		for _, name := range files {
+			if s := runSedInPlace(commands, name, noDefault, backupSuffix); s != 0 {
+				status = s
+			}
+		}
+		return status
+	}
+
+	if len(files) == 0 {
+		files = []string{"-"}
+	}
+	out := bufio.NewWriter(os.Stdout)
+	status, exitCode := runSedStream(commands, files, noDefault, out)
 	if err := out.Flush(); err != nil {
 		fatalf("sed", "write error: %v", err)
 		return 1
 	}
-	return 0
+	if status != 0 {
+		return status
+	}
+	return exitCode
+}
+
+// runSedInPlace runs the script against one file, the way -i requires: its
+// own fresh command state, its own line numbering and $ (so hold space and
+// range addresses do not leak between files), writing to a temp file that
+// replaces the original only on success.
+func runSedInPlace(commands []sedCommand, name string, noDefault bool, backupSuffix string) int {
+	info, err := os.Stat(name)
+	if err != nil {
+		fatalf("sed", "can't read %s: %v", name, errText(err))
+		return 1
+	}
+	if !info.Mode().IsRegular() {
+		fatalf("sed", "couldn't edit %s: not a regular file", name)
+		return 1
+	}
+	dir := filepath.Dir(name)
+	temp, err := os.CreateTemp(dir, ".sed-"+filepath.Base(name)+"-*")
+	if err != nil {
+		fatalf("sed", "%v", err)
+		return 1
+	}
+	tempName := temp.Name()
+	out := bufio.NewWriter(temp)
+	status, exitCode := runSedStream(commands, []string{name}, noDefault, out)
+	flushErr := out.Flush()
+	closeErr := temp.Close()
+	if status != 0 || flushErr != nil || closeErr != nil {
+		os.Remove(tempName)
+		if status != 0 {
+			return status
+		}
+		fatalf("sed", "%v", firstNonNil(flushErr, closeErr))
+		return 1
+	}
+	if err := os.Chmod(tempName, info.Mode()); err != nil {
+		os.Remove(tempName)
+		fatalf("sed", "%v", err)
+		return 1
+	}
+	if backupSuffix != "" {
+		backupName := name + backupSuffix
+		if strings.Contains(backupSuffix, "*") {
+			backupName = strings.ReplaceAll(backupSuffix, "*", filepath.Base(name))
+			if !filepath.IsAbs(backupName) && strings.Contains(backupSuffix, string(filepath.Separator)) {
+				backupName = filepath.Join(dir, backupName)
+			}
+		}
+		if err := copyFilePreserving(name, backupName, info.Mode()); err != nil {
+			os.Remove(tempName)
+			fatalf("sed", "%v", err)
+			return 1
+		}
+	}
+	if err := os.Rename(tempName, name); err != nil {
+		os.Remove(tempName)
+		fatalf("sed", "%v", err)
+		return 1
+	}
+	return exitCode
+}
+
+func firstNonNil(errs ...error) error {
+	for _, e := range errs {
+		if e != nil {
+			return e
+		}
+	}
+	return nil
+}
+
+func copyFilePreserving(src, dst string, mode os.FileMode) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, mode)
+}
+
+// sedRuntime holds the state that persists across a whole run of the
+// script -- as opposed to sedCommand's inRange, which is per-command -- plus
+// the file handles r/R/w/W commands touch.
+type sedRuntime struct {
+	hold         string
+	appendQueue  []string
+	writeWriters map[string]*bufio.Writer
+	writeHandles map[string]*os.File
+	readCursors  map[string]*bufio.Scanner
+	readFiles    map[string]*os.File
+	substMade    bool
+}
+
+func newSedRuntime() *sedRuntime {
+	return &sedRuntime{
+		writeWriters: map[string]*bufio.Writer{},
+		writeHandles: map[string]*os.File{},
+		readCursors:  map[string]*bufio.Scanner{},
+		readFiles:    map[string]*os.File{},
+	}
+}
+
+func (rt *sedRuntime) close() {
+	for _, w := range rt.writeWriters {
+		_ = w.Flush()
+	}
+	for _, f := range rt.writeHandles {
+		_ = f.Close()
+	}
+	for _, f := range rt.readFiles {
+		_ = f.Close()
+	}
+}
+
+func (rt *sedRuntime) writerFor(name string) (*bufio.Writer, error) {
+	if w, ok := rt.writeWriters[name]; ok {
+		return w, nil
+	}
+	if name == "/dev/stdout" {
+		w := bufio.NewWriter(os.Stdout)
+		rt.writeWriters[name] = w
+		return w, nil
+	}
+	f, err := os.Create(name) //nolint:gosec // G304: sed's w command intentionally writes to a script-named file
+	if err != nil {
+		return nil, err
+	}
+	rt.writeHandles[name] = f
+	w := bufio.NewWriter(f)
+	rt.writeWriters[name] = w
+	return w, nil
+}
+
+// nextReadLine returns the next line of name for the R command, advancing a
+// per-file cursor that is shared across every R invocation targeting it. It
+// returns ok=false once the file is exhausted (R then queues nothing).
+func (rt *sedRuntime) nextReadLine(name string) (string, bool) {
+	scanner, ok := rt.readCursors[name]
+	if !ok {
+		f, err := os.Open(name) //nolint:gosec // G304: sed's R command intentionally reads a script-named file
+		if err != nil {
+			rt.readCursors[name] = nil
+			return "", false
+		}
+		rt.readFiles[name] = f
+		scanner = bufio.NewScanner(f)
+		scanner.Buffer(make([]byte, 4096), maxScanLine)
+		rt.readCursors[name] = scanner
+	}
+	if scanner == nil || !scanner.Scan() {
+		return "", false
+	}
+	return scanner.Text(), true
+}
+
+// runSedStream is the core sed engine: one cycle per input line (or, after
+// 'D' leaves text in the pattern space, one cycle with no new line read),
+// walking commands with a program counter so b/t/T can jump. It returns a
+// non-zero first result on an execution error, or the second result as the
+// process exit code the script itself chose via q/Q.
+func runSedStream(commands []sedCommand, files []string, noDefault bool, out *bufio.Writer) (int, int) {
+	for i := range commands {
+		commands[i].inRange = false
+	}
+	needsLast := sedNeedsLastAddress(commands)
+	rt := newSedRuntime()
+	defer rt.close()
+
+	stream := &sedStream{files: files, peekAhead: needsLast}
+	defer stream.Close()
+
+	pattern, terminated, ok, err := stream.next2()
+	if err != nil {
+		fatalf("sed", "%v", err)
+		return 1, 0
+	}
+	lineNumber := 0
+	restart := false
+	for ok {
+		if !restart {
+			lineNumber++
+			rt.substMade = false
+		}
+		restart = false
+		lastLine, err := stream.atEnd()
+		if err != nil {
+			fatalf("sed", "%v", err)
+			return 1, 0
+		}
+
+		autoprintSuppressed := false
+		quit, quitCode := false, 0
+		pc := 0
+	cycle:
+		for pc < len(commands) {
+			command := &commands[pc]
+			if command.kind == ':' || command.kind == '}' {
+				pc++
+				continue
+			}
+			if !command.selected(pattern, lineNumber, lastLine) {
+				if command.kind == '{' {
+					pc = command.jumpTarget
+				} else {
+					pc++
+				}
+				continue
+			}
+			switch command.kind {
+			case '{':
+				// Selected: fall through into the block: pc++ below.
+			case 's':
+				if command.regex.MatchString(pattern) {
+					var replaced string
+					if command.global {
+						replaced = command.regex.ReplaceAllString(pattern, command.replacement)
+					} else {
+						indices := command.regex.FindStringSubmatchIndex(pattern)
+						expanded := command.regex.ExpandString(nil, command.replacement, pattern, indices)
+						replaced = pattern[:indices[0]] + string(expanded) + pattern[indices[1]:]
+					}
+					pattern = replaced
+					rt.substMade = true
+					if command.printOnChange {
+						if err := writeSedLine(out, pattern, terminated); err != nil {
+							fatalf("sed", "write error: %v", err)
+							return 1, 0
+						}
+					}
+					if command.writeFile != "" {
+						w, werr := rt.writerFor(command.writeFile)
+						if werr != nil {
+							fatalf("sed", "%v", werr)
+							return 1, 0
+						}
+						fmt.Fprintln(w, pattern)
+					}
+				}
+			case 'y':
+				pattern = sedTransliterate(pattern, command.yFrom, command.yTo)
+			case 'd':
+				autoprintSuppressed = true
+				break cycle
+			case 'D':
+				autoprintSuppressed = true
+				if idx := strings.IndexByte(pattern, '\n'); idx >= 0 {
+					pattern = pattern[idx+1:]
+					restart = true
+				}
+				break cycle
+			case 'p':
+				if err := writeSedLine(out, pattern, terminated); err != nil {
+					fatalf("sed", "write error: %v", err)
+					return 1, 0
+				}
+			case 'P':
+				first := pattern
+				if idx := strings.IndexByte(pattern, '\n'); idx >= 0 {
+					first = pattern[:idx]
+				}
+				fmt.Fprintln(out, first)
+			case 'h':
+				rt.hold = pattern
+			case 'H':
+				rt.hold += "\n" + pattern
+			case 'g':
+				pattern = rt.hold
+			case 'G':
+				pattern += "\n" + rt.hold
+			case 'x':
+				pattern, rt.hold = rt.hold, pattern
+			case 'n':
+				if !noDefault {
+					if err := writeSedLine(out, pattern, terminated); err != nil {
+						fatalf("sed", "write error: %v", err)
+						return 1, 0
+					}
+				}
+				next, nextTerminated, hasNext, nextErr := stream.next2()
+				if nextErr != nil {
+					fatalf("sed", "%v", nextErr)
+					return 1, 0
+				}
+				if !hasNext {
+					quit, autoprintSuppressed = true, true
+					break cycle
+				}
+				pattern, terminated = next, nextTerminated
+				lineNumber++
+				lastLine, err = stream.atEnd()
+				if err != nil {
+					fatalf("sed", "%v", err)
+					return 1, 0
+				}
+			case 'N':
+				next, nextTerminated, hasNext, nextErr := stream.next2()
+				if nextErr != nil {
+					fatalf("sed", "%v", nextErr)
+					return 1, 0
+				}
+				if !hasNext {
+					// GNU sed (without --posix) keeps the current pattern
+					// space and falls to the end of the script instead of
+					// quitting without autoprint, as POSIX sed does.
+					break cycle
+				}
+				pattern, terminated = pattern+"\n"+next, nextTerminated
+				lineNumber++
+				lastLine, err = stream.atEnd()
+				if err != nil {
+					fatalf("sed", "%v", err)
+					return 1, 0
+				}
+			case 'a':
+				rt.appendQueue = append(rt.appendQueue, command.text)
+			case 'i':
+				fmt.Fprintln(out, command.text)
+			case 'c':
+				if command.rangeEnding() {
+					fmt.Fprintln(out, command.text)
+				}
+				autoprintSuppressed = true
+				break cycle
+			case 'r':
+				if data, readErr := os.ReadFile(command.file); readErr == nil { //nolint:gosec // G304: sed's r command intentionally reads a script-named file
+					rt.appendQueue = append(rt.appendQueue, strings.TrimSuffix(string(data), "\n"))
+				}
+			case 'R':
+				if line, hasLine := rt.nextReadLine(command.file); hasLine {
+					rt.appendQueue = append(rt.appendQueue, line)
+				}
+			case 'w':
+				w, werr := rt.writerFor(command.file)
+				if werr != nil {
+					fatalf("sed", "%v", werr)
+					return 1, 0
+				}
+				fmt.Fprintln(w, pattern)
+			case 'W':
+				w, werr := rt.writerFor(command.file)
+				if werr != nil {
+					fatalf("sed", "%v", werr)
+					return 1, 0
+				}
+				first := pattern
+				if idx := strings.IndexByte(pattern, '\n'); idx >= 0 {
+					first = pattern[:idx]
+				}
+				fmt.Fprintln(w, first)
+			case 'l':
+				fmt.Fprintln(out, sedListEscape(pattern))
+			case '=':
+				fmt.Fprintln(out, lineNumber)
+			case 'q':
+				quit, quitCode = true, command.exitCode
+				break cycle
+			case 'Q':
+				quit, quitCode, autoprintSuppressed = true, command.exitCode, true
+				break cycle
+			case 'b':
+				if command.jumpTarget < 0 {
+					break cycle
+				}
+				pc = command.jumpTarget
+				continue
+			case 't':
+				if rt.substMade {
+					rt.substMade = false
+					if command.jumpTarget < 0 {
+						break cycle
+					}
+					pc = command.jumpTarget
+					continue
+				}
+			case 'T':
+				if !rt.substMade {
+					if command.jumpTarget < 0 {
+						break cycle
+					}
+					pc = command.jumpTarget
+					continue
+				}
+			}
+			pc++
+		}
+
+		if !autoprintSuppressed && !noDefault {
+			if err := writeSedLine(out, pattern, terminated); err != nil {
+				fatalf("sed", "write error: %v", err)
+				return 1, 0
+			}
+		}
+		for _, text := range rt.appendQueue {
+			fmt.Fprintln(out, text)
+		}
+		rt.appendQueue = rt.appendQueue[:0]
+		if quit {
+			return 0, quitCode
+		}
+		if restart {
+			continue
+		}
+		pattern, terminated, ok, err = stream.next2()
+		if err != nil {
+			fatalf("sed", "%v", err)
+			return 1, 0
+		}
+	}
+	return 0, 0
+}
+
+// sedTransliterate applies a y/// command's 1:1 character mapping.
+func sedTransliterate(s string, from, to []rune) string {
+	var out strings.Builder
+	for _, r := range s {
+		mapped := r
+		for i, f := range from {
+			if f == r {
+				mapped = to[i]
+				break
+			}
+		}
+		out.WriteRune(mapped)
+	}
+	return out.String()
+}
+
+// sedListEscape renders the 'l' command's escaped view of the pattern
+// space: control and non-ASCII bytes as their C-style or octal escape, and
+// a trailing '$' marking the end of the line (sed's own line-wrap width is
+// not reproduced here).
+func sedListEscape(s string) string {
+	var out strings.Builder
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		switch b {
+		case '\\':
+			out.WriteString(`\\`)
+		case '\a':
+			out.WriteString(`\a`)
+		case '\b':
+			out.WriteString(`\b`)
+		case '\f':
+			out.WriteString(`\f`)
+		case '\n':
+			out.WriteString(`\n`)
+		case '\r':
+			out.WriteString(`\r`)
+		case '\t':
+			out.WriteString(`\t`)
+		case '\v':
+			out.WriteString(`\v`)
+		default:
+			if b < 32 || b >= 127 {
+				fmt.Fprintf(&out, `\%03o`, b)
+			} else {
+				out.WriteByte(b)
+			}
+		}
+	}
+	out.WriteByte('$')
+	return out.String()
 }
 
 func sedNeedsLastAddress(commands []sedCommand) bool {
@@ -267,6 +707,33 @@ func sedNeedsLastAddress(commands []sedCommand) bool {
 		}
 	}
 	return false
+}
+
+// resolveSedLabels turns every b/t/T's label into an index into commands
+// (or -1 for "end of script", when the label was omitted), after checking
+// every referenced label actually has a matching ':'.
+func resolveSedLabels(commands []sedCommand) error {
+	targets := map[string]int{}
+	for i := range commands {
+		if commands[i].kind == ':' {
+			targets[commands[i].label] = i
+		}
+	}
+	for i := range commands {
+		switch commands[i].kind {
+		case 'b', 't', 'T':
+			if commands[i].label == "" {
+				commands[i].jumpTarget = -1
+				continue
+			}
+			target, ok := targets[commands[i].label]
+			if !ok {
+				return fmt.Errorf("can't find label for jump to `%s'", commands[i].label)
+			}
+			commands[i].jumpTarget = target
+		}
+	}
+	return nil
 }
 
 func writeSedLine(out *bufio.Writer, line string, terminated bool) error {
@@ -279,15 +746,61 @@ func writeSedLine(out *bufio.Writer, line string, terminated bool) error {
 	return nil
 }
 
+// sedStream reads lines across possibly several files as one stream. When
+// peekAhead is set (only the scripts that reference '$' need it), it keeps
+// a one-line lookahead buffer so atEnd can report whether the current line
+// is the last one without consuming it; files are still opened lazily, one
+// at a time, so a 'q' on an early line never touches a later, possibly
+// unreadable, file.
 type sedStream struct {
 	files     []string
 	fileIndex int
 	name      string
 	input     io.ReadCloser
 	reader    *bufio.Reader
+
+	peekAhead  bool
+	primed     bool
+	peekedLine sedLine
+	peekedOK   bool
+	peekedErr  error
+}
+
+// next2 returns the next line as (text, terminated, ok, err), the shape
+// runSedStream's cycle loop wants; next() itself returns the sedLine struct,
+// which is what atEnd's peek buffer stores.
+func (s *sedStream) next2() (string, bool, bool, error) {
+	line, ok, err := s.next()
+	return line.text, line.terminated, ok, err
 }
 
 func (s *sedStream) next() (sedLine, bool, error) {
+	if s.primed {
+		s.primed = false
+		return s.peekedLine, s.peekedOK, s.peekedErr
+	}
+	return s.rawNext()
+}
+
+// atEnd reports whether there is no more input after the line already
+// returned by next(), priming the lookahead buffer if this script needs it.
+// When peekAhead is false, it always reports false (last-line tracking is
+// unused, so no read-ahead -- and its file-opening side effect -- happens).
+func (s *sedStream) atEnd() (bool, error) {
+	if !s.peekAhead {
+		return false, nil
+	}
+	if !s.primed {
+		s.peekedLine, s.peekedOK, s.peekedErr = s.rawNext()
+		s.primed = true
+	}
+	if s.peekedErr != nil {
+		return false, s.peekedErr
+	}
+	return !s.peekedOK, nil
+}
+
+func (s *sedStream) rawNext() (sedLine, bool, error) {
 	for {
 		if s.input == nil {
 			if s.fileIndex >= len(s.files) {
@@ -297,7 +810,7 @@ func (s *sedStream) next() (sedLine, bool, error) {
 			s.fileIndex++
 			input, err := openInput(s.name)
 			if err != nil {
-				return sedLine{}, false, fmt.Errorf("%s: %w", s.name, err)
+				return sedLine{}, false, fmt.Errorf("can't read %s: %s", s.name, errText(err))
 			}
 			s.input = input
 			s.reader = bufio.NewReaderSize(input, 64*1024)
@@ -332,6 +845,7 @@ func (s *sedStream) Close() error {
 
 func parseSedScript(script string, extended bool) ([]sedCommand, error) {
 	var commands []sedCommand
+	var blockStack []int
 	position := 0
 	for {
 		for position < len(script) && (script[position] == ';' || script[position] == '\n' || script[position] == ' ' || script[position] == '\t') {
@@ -358,6 +872,9 @@ func parseSedScript(script string, extended bool) ([]sedCommand, error) {
 			}
 			if position < len(script) && script[position] == ',' {
 				position++
+				for position < len(script) && (script[position] == ' ' || script[position] == '\t') {
+					position++
+				}
 				second, after, secondPresent, addressErr := parseSedAddress(script, position, extended)
 				if addressErr != nil || !secondPresent {
 					return nil, fmt.Errorf("invalid second address")
@@ -383,7 +900,82 @@ func parseSedScript(script string, extended bool) ([]sedCommand, error) {
 		command.kind = script[position]
 		position++
 		switch command.kind {
-		case 'd', 'p', 'q', '=':
+		case '{':
+			blockStack = append(blockStack, len(commands))
+		case '}':
+			if command.first != nil || command.negated {
+				return nil, fmt.Errorf("`}' doesn't want any addresses")
+			}
+			if len(blockStack) == 0 {
+				return nil, fmt.Errorf("unexpected `}'")
+			}
+		case 'd', 'D', 'p', 'P', 'g', 'G', 'h', 'H', 'x', 'n', 'N', '=':
+		case 'l':
+			// An optional line-wrap width may follow; ba6's 'l' doesn't wrap,
+			// so the value is accepted for script compatibility and dropped.
+			for position < len(script) && (script[position] == ' ' || script[position] == '\t') {
+				position++
+			}
+			for position < len(script) && script[position] >= '0' && script[position] <= '9' {
+				position++
+			}
+		case 'q', 'Q':
+			start := position
+			for position < len(script) && script[position] >= '0' && script[position] <= '9' {
+				position++
+			}
+			if position > start {
+				code, convErr := strconv.Atoi(script[start:position])
+				if convErr != nil {
+					return nil, fmt.Errorf("invalid exit code for %q", command.kind)
+				}
+				command.exitCode = code
+			}
+		case ':':
+			label, after := parseSedToken(script, position, true)
+			if label == "" {
+				return nil, fmt.Errorf("\":\" lacks a label")
+			}
+			command.label, position = label, after
+		case 'b', 't', 'T':
+			label, after := parseSedToken(script, position, true)
+			command.label, position = label, after
+		case 'r', 'R', 'w', 'W':
+			for position < len(script) && (script[position] == ' ' || script[position] == '\t') {
+				position++
+			}
+			file, after := parseSedToken(script, position, false)
+			if file == "" {
+				return nil, fmt.Errorf("missing filename for %q", command.kind)
+			}
+			command.file, position = file, after
+		case 'a', 'i', 'c':
+			text, after, err := parseSedText(script, position)
+			if err != nil {
+				return nil, err
+			}
+			command.text, position = text, after
+		case 'y':
+			if position >= len(script) || script[position] == '\n' {
+				return nil, fmt.Errorf("missing y delimiter")
+			}
+			delimiter := script[position]
+			position++
+			from, after, err := readSedDelimited(script, position, delimiter)
+			if err != nil {
+				return nil, err
+			}
+			position = after
+			to, after, err := readSedDelimited(script, position, delimiter)
+			if err != nil {
+				return nil, err
+			}
+			position = after
+			fromRunes, toRunes := []rune(from), []rune(to)
+			if len(fromRunes) != len(toRunes) {
+				return nil, fmt.Errorf("strings for `y' command are different lengths")
+			}
+			command.yFrom, command.yTo = fromRunes, toRunes
 		case 's':
 			if position >= len(script) || script[position] == '\n' {
 				return nil, fmt.Errorf("missing substitution delimiter")
@@ -401,7 +993,7 @@ func parseSedScript(script string, extended bool) ([]sedCommand, error) {
 			}
 			position = after
 			ignoreCase := false
-			for position < len(script) && script[position] != ';' && script[position] != '\n' {
+			for position < len(script) && script[position] != ';' && script[position] != '\n' && script[position] != '}' {
 				switch script[position] {
 				case 'g':
 					command.global = true
@@ -410,6 +1002,17 @@ func parseSedScript(script string, extended bool) ([]sedCommand, error) {
 				case 'I', 'i':
 					ignoreCase = true
 				case ' ', '\t':
+				case 'w':
+					position++
+					for position < len(script) && (script[position] == ' ' || script[position] == '\t') {
+						position++
+					}
+					file, after := parseSedToken(script, position, false)
+					if file == "" {
+						return nil, fmt.Errorf("missing filename for `s///w'")
+					}
+					command.writeFile, position = file, after
+					continue
 				default:
 					return nil, fmt.Errorf("unsupported substitution flag %q", script[position])
 				}
@@ -429,11 +1032,122 @@ func parseSedScript(script string, extended bool) ([]sedCommand, error) {
 			return nil, fmt.Errorf("unsupported command %q", command.kind)
 		}
 		commands = append(commands, command)
-		if position < len(script) && script[position] != ';' && script[position] != '\n' {
+		if command.kind == '}' {
+			open := blockStack[len(blockStack)-1]
+			blockStack = blockStack[:len(blockStack)-1]
+			commands[open].jumpTarget = len(commands)
+		}
+		noSeparatorNeeded := command.kind == '{' || command.kind == 'a' || command.kind == 'i' || command.kind == 'c'
+		if !noSeparatorNeeded && position < len(script) && script[position] != ';' && script[position] != '\n' && script[position] != '}' {
 			return nil, fmt.Errorf("extra characters after command %q", command.kind)
 		}
 	}
+	if len(blockStack) != 0 {
+		return nil, fmt.Errorf("unmatched `{'")
+	}
 	return commands, nil
+}
+
+// parseSedToken reads a bare word (a label for :/b/t/T, or a filename for
+// r/R/w/W) up to the next ';' or newline, trimming surrounding whitespace.
+// Labels stop additionally at whitespace; filenames run to the end of the
+// line since a path may itself contain spaces.
+func parseSedToken(script string, position int, stopAtSpace bool) (string, int) {
+	start := position
+	for position < len(script) && script[position] != ';' && script[position] != '\n' && script[position] != '}' {
+		if stopAtSpace && (script[position] == ' ' || script[position] == '\t') {
+			break
+		}
+		position++
+	}
+	token := strings.TrimSpace(script[start:position])
+	if stopAtSpace {
+		for position < len(script) && script[position] != ';' && script[position] != '\n' && script[position] != '}' {
+			position++
+		}
+	}
+	return token, position
+}
+
+// parseSedText reads an a/i/c command's text: the classic "\" followed by
+// (optionally backslash-continued) lines, or the GNU one-liner form where
+// the text is simply the rest of the current line. Either way, backslash
+// escapes in the text are processed (\t, \n, ... and a bare "\x" drops the
+// backslash), and a trailing unescaped backslash joins the next raw line
+// with a literal newline.
+func parseSedText(script string, position int) (string, int, error) {
+	for position < len(script) && (script[position] == ' ' || script[position] == '\t') {
+		position++
+	}
+	if position < len(script) && script[position] == '\\' {
+		position++
+		// If a newline follows, this is the classic "a\" form and the
+		// newline itself isn't part of the text. Otherwise it's "a\text on
+		// the same line", where leading whitespace from here on is part of
+		// the text -- unlike the bare one-liner form's leading whitespace,
+		// already skipped above.
+		if position < len(script) && script[position] == '\n' {
+			position++
+		}
+	}
+	var text strings.Builder
+	for {
+		lineEnd := strings.IndexByte(script[position:], '\n')
+		var raw string
+		next := len(script)
+		if lineEnd < 0 {
+			raw = script[position:]
+		} else {
+			raw = script[position : position+lineEnd]
+			next = position + lineEnd + 1
+		}
+		if strings.HasSuffix(raw, "\\") && !strings.HasSuffix(raw, "\\\\") {
+			text.WriteString(sedUnescapeText(raw[:len(raw)-1]))
+			text.WriteByte('\n')
+			position = next
+			if lineEnd < 0 {
+				return "", position, fmt.Errorf("expected more text for `a'/`i'/`c'")
+			}
+			continue
+		}
+		text.WriteString(sedUnescapeText(raw))
+		position = next
+		break
+	}
+	return text.String(), position, nil
+}
+
+// sedUnescapeText applies a/i/c text's backslash escapes: the common
+// C-style ones get their special meaning, and a backslash before any other
+// character is simply dropped.
+func sedUnescapeText(s string) string {
+	var out strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' || i+1 >= len(s) {
+			out.WriteByte(s[i])
+			continue
+		}
+		i++
+		switch s[i] {
+		case 't':
+			out.WriteByte('\t')
+		case 'n':
+			out.WriteByte('\n')
+		case 'a':
+			out.WriteByte('\a')
+		case 'f':
+			out.WriteByte('\f')
+		case 'r':
+			out.WriteByte('\r')
+		case 'v':
+			out.WriteByte('\v')
+		case '\\':
+			out.WriteByte('\\')
+		default:
+			out.WriteByte(s[i])
+		}
+	}
+	return out.String()
 }
 
 func parseSedAddress(script string, position int, extended bool) (*sedAddress, int, bool, error) {

@@ -142,6 +142,22 @@ func fileModeFromOctal(bits uint64) os.FileMode {
 	return mode
 }
 
+// octalFromFileMode is the inverse of fileModeFromOctal: it packs the
+// permission and set-id/sticky bits back into a traditional 12-bit value.
+func octalFromFileMode(mode os.FileMode) uint64 {
+	bits := uint64(mode.Perm())
+	if mode&os.ModeSetuid != 0 {
+		bits |= 0o4000
+	}
+	if mode&os.ModeSetgid != 0 {
+		bits |= 0o2000
+	}
+	if mode&os.ModeSticky != 0 {
+		bits |= 0o1000
+	}
+	return bits
+}
+
 // isCrossDevice reports whether err is the EXDEV ("invalid cross-device link")
 // error returned by rename(2) when source and destination are on different
 // filesystems.
