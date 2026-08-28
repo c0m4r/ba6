@@ -283,27 +283,42 @@ func decodeEscapes(value string, stop bool) string {
 }
 
 func cmdPrintenv(args []string) int {
+	nullTerminate := false
 	status := 0
-	for index, arg := range args {
+	var names []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
 		if arg == "--" {
-			args = args[index+1:]
+			names = append(names, args[i+1:]...)
 			break
+		}
+		if arg == "-0" || arg == "--null" {
+			nullTerminate = true
+			continue
 		}
 		if len(arg) > 1 && arg[0] == '-' {
 			fatalf("printenv", "unrecognized option '%s'", arg)
 			fmt.Fprintln(os.Stderr, "Try 'printenv --help' for more information.")
 			return 2
 		}
+		// Like GNU's getopt, the first operand ends option parsing: the
+		// remaining arguments are names even when one starts with '-'.
+		names = append(names, args[i:]...)
+		break
 	}
-	if len(args) == 0 {
+	terminator := "\n"
+	if nullTerminate {
+		terminator = "\x00"
+	}
+	if len(names) == 0 {
 		for _, value := range os.Environ() {
-			fmt.Fprintln(os.Stdout, value)
+			fmt.Fprint(os.Stdout, value+terminator)
 		}
 		return 0
 	}
-	for _, name := range args {
+	for _, name := range names {
 		if value, ok := os.LookupEnv(name); ok {
-			fmt.Fprintln(os.Stdout, value)
+			fmt.Fprint(os.Stdout, value+terminator)
 		} else {
 			status = 1
 		}

@@ -402,8 +402,12 @@ Signal processes whose names match a regular expression.`,
 	"poweroff": `Usage: poweroff [-nf]
 Ask PID 1 to power off. -f uses the reboot syscall directly and requires
 CAP_SYS_BOOT; -n skips the pre-syscall sync in forced mode.`,
-	"printenv": `Usage: printenv [NAME]...
-Print environment variables.`,
+	"printenv": `Usage: printenv [OPTION]... [NAME]...
+Print environment variables.
+
+Options:
+  -0        separate results with NUL bytes, not newlines
+  --help    show this help`,
 	"printf": `Usage: printf FORMAT [ARG]...
 Format and print arguments with standard escape sequences.`,
 	"reboot": `Usage: reboot [-nf]
@@ -677,6 +681,7 @@ Print the final component of each NAME.
 Options:
   -a        accept more than one NAME
   -s SUFFIX strip SUFFIX from the end of each NAME (turns on -a)
+  -z        separate results with NUL bytes, not newlines
   --help    show this help`,
 	"chgrp": `Usage: chgrp [OPTION]... GROUP FILE...
 Set the owning group of each FILE. GROUP may be a name or numeric ID.
@@ -712,6 +717,7 @@ FORMAT accepts common strftime directives including %F, %T, %Y, %m, %d,
 Print the leading path of each NAME, dropping the final component.
 
 Options:
+  -z        separate results with NUL bytes, not newlines
   --help    show this help`,
 	"false": `Usage: false
 Return an unsuccessful status.
@@ -764,6 +770,9 @@ Copy standard input to standard output and each FILE.
 Options:
   -a        append instead of overwriting
   -i        ignore interrupt signals
+  -p        warn on write errors (default)
+  --output-error[=MODE]
+            MODE is warn, warn-nopipe, exit, or exit-nopipe
   --help    show this help`,
 	"test": `Usage: test EXPRESSION
 Evaluate EXPRESSION and return success when it is true.
@@ -890,12 +899,14 @@ Create directories.
 Options:
   -p        create missing parents; ignore existing directories
   -m MODE   set the new final directory's octal mode
+  -v        report each directory actually created
   --help    show this help`,
 	"rmdir": `Usage: rmdir [OPTION]... DIRECTORY...
 Remove empty directories.
 
 Options:
   -p        remove empty parent directories too
+  -v        report each directory actually removed
   --ignore-fail-on-non-empty
             ignore failures caused by nonempty directories
   --help    show this help`,
@@ -942,6 +953,61 @@ Options:
   -d        print only repeated lines
   -u        print only unique lines
   -i        ignore case
+  --help    show this help`,
+	"cksum": `Usage: cksum [FILE]...
+Print the CRC-32/CKSUM checksum and byte count of each FILE, or of standard
+input with no operands.
+
+Options:
+  --help    show this help`,
+	"expand": `Usage: expand [OPTION]... [FILE]...
+Replace tab characters in each FILE with runs of spaces.
+
+Options:
+  -i        convert only initial tabs
+  -t LIST   tab positions; a single number means tabs N apart (default 8), a
+            comma-separated list gives explicit stops (last one may be /N for
+            a repeating size or +N for an increment)
+  --help    show this help`,
+	"fold": `Usage: fold [OPTION]... [FILE]...
+Wrap input lines to fit a maximum width.
+
+Options:
+  -b        count bytes instead of terminal columns
+  -c        count terminal columns (default)
+  -s        break at spaces instead of inside words
+  -w N      width, in columns (default 80)
+  --help    show this help`,
+	"nl": `Usage: nl [OPTION]... [FILE]...
+Number the lines of the input.
+
+Options:
+  -b STYLE  a (all), t (non-blank, default), n (none)
+  -n FORMAT rn (right, default), rz (zero padded), ln (left)
+  -s STR    separator after the number (default TAB)
+  -w N      number field width (default 6)
+  -v N      first line number (default 1)
+  -i N      line number increment (default 1)
+  -l N      count every Nth blank line as a line (default 1)
+  --help    show this help`,
+	"tac": `Usage: tac [OPTION]... [FILE]...
+Emit each FILE with its records reversed (last one first).
+
+Options:
+  -b        attach the separator before each record
+  -r        take the separator as a regex
+  -s STR    use STR as the record separator (default newline)
+  --help    show this help`,
+	"unexpand": `Usage: unexpand [OPTION]... [FILE]...
+Turn runs of blanks in each FILE into tabs.
+
+Options:
+  -a        convert all blanks, not just leading ones
+  --first-only
+            touch only leading runs of blanks
+  -t LIST   tab positions; a single number means tabs N apart (default 8), a
+            comma-separated list gives explicit stops (last one may be /N for
+            a repeating size or +N for an increment)
   --help    show this help`,
 	"cut": `Usage: cut OPTION... [FILE]...
 Select fields or character positions from each line.

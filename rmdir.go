@@ -5,15 +5,18 @@ package main
 
 import (
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"syscall"
 )
 
 // cmdRmdir implements rmdir(1): remove empty directories, with -p to remove
-// empty parent directories too and --ignore-fail-on-non-empty to suppress
-// non-empty errors.
+// empty parent directories too, --ignore-fail-on-non-empty to suppress
+// non-empty errors, and -v to report each removal.
 func cmdRmdir(args []string) int {
 	parents := false
+	verbose := false
 	ignoreNonEmpty := false
 	var dirs []string
 
@@ -26,6 +29,8 @@ func cmdRmdir(args []string) int {
 			goto rest
 		case a == "-p" || a == "--parents":
 			parents = true
+		case a == "-v" || a == "--verbose":
+			verbose = true
 		case a == "--ignore-fail-on-non-empty":
 			ignoreNonEmpty = true
 		case len(a) > 1 && a[0] == '-':
@@ -44,13 +49,14 @@ rest:
 
 	status := 0
 	for _, d := range dirs {
-		if !removeOneDir(d, ignoreNonEmpty) {
+		if !removeOneDir(d, ignoreNonEmpty, verbose) {
 			status = 1
 			continue
 		}
 		if parents {
 			for p := filepath.Dir(d); p != "." && p != "/" && p != ""; p = filepath.Dir(p) {
-				if !removeOneDir(p, ignoreNonEmpty) {
+				if !removeOneDir(p, ignoreNonEmpty, verbose) {
+					status = 1
 					break
 				}
 			}
@@ -62,9 +68,12 @@ rest:
 // removeOneDir removes d with rmdir(2) rather than os.Remove, which falls back
 // to unlink(2) and would silently delete a regular file named on the command
 // line. rmdir(1) must fail with ENOTDIR instead.
-func removeOneDir(d string, ignoreNonEmpty bool) bool {
+func removeOneDir(d string, ignoreNonEmpty, verbose bool) bool {
 	err := syscall.Rmdir(d)
 	if err == nil {
+		if verbose {
+			fmt.Fprintf(os.Stdout, "rmdir: removing directory, '%s'\n", d)
+		}
 		return true
 	}
 	if ignoreNonEmpty && isNotEmpty(err) {

@@ -75,12 +75,12 @@ validation, fixture-based tests, and clearly documented filesystem support.
 - [ ] `join`
 - [ ] `comm`
 - [ ] `split`
-- [ ] `nl`
-- [ ] `tac`
-- [ ] `fold`
-- [ ] `expand`
-- [ ] `unexpand`
-- [ ] `cksum`
+- [x] `nl`
+- [x] `tac`
+- [x] `fold`
+- [x] `expand`
+- [x] `unexpand`
+- [x] `cksum`
 
 ## Archives, compression, and checksums
 

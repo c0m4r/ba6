@@ -85,7 +85,7 @@ breaking every `sed 'N;s/\n/x/'`-style multiline idiom and any `grep` pattern
 relying on those escapes; fixing it improved `grep`, `sed` and `diff`'s
 line-matching at once.
 
-**Short answer to "which are 1:1?"** — 14 applets are genuine drop-ins, 26 more are
+**Short answer to "which are 1:1?"** — 20 applets are genuine drop-ins, 26 more are
 near-complete, 81 are partial or a narrow subset in ways that stay invisible until a
 script reaches for a flag, and 9 have no upstream counterpart to compare against.
 `netstat` and `ps aux` are the closest of the recent additions: every invocation
@@ -103,7 +103,7 @@ the missing options listed per applet below.
 
 | Tier | Meaning | Applets |
 |---|---|---|
-| **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `pwd` `echo` `basename` `tr` `base64` `uname` `whoami` `true` `false` `printenv` `sleep` `mknod` `seq` `dirname` |
+| **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `pwd` `echo` `basename` `tr` `base64` `uname` `whoami` `true` `false` `printenv` `sleep` `mknod` `seq` `dirname` `tac` `fold` `expand` `unexpand` `cksum` `nl` |
 | **B — near-complete** | Common paths match; a handful of real gaps | `cat` `wc` `head` `tail` `rm` `mkdir` `tee` `test` `[` `expr` `printf` `id` `mktemp` `kill` `timeout` `chroot` `blockdev` `stat` `env` `cmp` `sync` `dd` `sha256sum` `which` `rmdir` `top` `host` |
 | **C — partial** | Everyday cases work, well-known flags or output details missing | `ls` `cp` `mv` `ln` `touch` `sort` `uniq` `cut` `grep` `find` `du` `df` `date` `readlink` `realpath` `strings` `od` `hexdump` `diff` `sh` `awk` `sed` `file` `tar` `gzip` `gunzip` `chown` `chgrp` `chmod` `free` `uptime` `hostname` `wget` `lsof` `lsblk` `blkid` `mount` `umount` `losetup` `swapon` `swapoff` `mkswap` `ss` `ip` `iptables` `ping` `traceroute` `mtr` `nc` `nslookup` `curl` `iftop` `pgrep` `pkill` `pidof` `modprobe` `insmod` `rmmod` `lsmod` `fdisk` `sfdisk` `mkfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkfs.btrfs` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `login` `passwd` `ps` `netstat` `tree` `less` `dmesg` `xargs` `dig` `nano` `ncdu` `cfdisk` |
 | **D — narrow subset** | A slice of the original; do not treat as a replacement | _(none)_ |
@@ -182,16 +182,21 @@ Absent behaviour rather than wrong behaviour, each of which touches many applets
 |---|---|---|---|
 | `pwd` | 2/2 options | — | `-L`/`-P` both present, output identical _(run)_ |
 | `echo` | 3/3 | — | `-n` `-e` `-E` and all escapes matched _(run)_ |
-| `basename` | 2/3 | `-z` | `-s`, `-a`, suffix form, `/`, `//`, trailing slash all match _(run)_ |
+| `basename` | 3/3 | — | `-s`, `-a`, suffix form, `/`, `//`, trailing slash and `-z` all match _(run)_ |
 | `tr` | 3/4 | `-t` | `-d` `-s` `-c`, ranges, `[:classes:]`, `-cd` combinations match _(run)_ |
 | `base64` | 2/3 | `-i` | `-d`, `-w 0`, `-w N` match; round-trips with coreutils _(run)_ |
 | `uname` | 7/9 | `-p` `-i` (GNU prints `unknown` for both) | `-a` `-n` `-v` `-mrs` byte-identical _(run)_ |
 | `whoami` `true` `false` | — | — | identical _(run)_ |
-| `printenv` | 0/1 | `-0` | identical _(run)_ |
+| `printenv` | 1/1 | — | identical, including `-0` _(run)_ |
 | `sleep` | n/a | — | suffixes, fractions and multiple operands behave like GNU; only the error wording differs _(run)_ |
 | `mknod` | 1/3 | `-Z` `--context` | `-m` present; FIFO creation identical, device nodes need root _(run)_ |
 | `seq` | 3/3 | — | `-f` `-s` `-w`, integer, float, reverse and large ranges all match, including GNU's operand-driven decimal precision _(run)_ |
-| `dirname` | 0/1 | `-z` | byte-identical on every path tested, including trailing, doubled and leading double slashes _(run)_ |
+| `dirname` | 1/1 | — | byte-identical on every path tested, including trailing, doubled and leading double slashes and `-z` _(run)_ |
+| `tac` | 3/3 | — | `-b` `-r` `-s`, separator placement and multi-file ordering match _(run)_ |
+| `fold` | 4/4 | — | `-b` `-c` `-s` `-w`, tab stops, backspace and CR column rules match _(run)_ |
+| `expand` | 2/2 | — | `-i` `-t` (size, stop list, `/N` and `+N` forms) byte-identical on randomized inputs _(run)_ |
+| `unexpand` | 3/3 | — | `-a` `--first-only` `-t`, including the `-t`-implies-`-a` rule, byte-identical on randomized inputs _(run)_ |
+| `cksum` | n/a | — | POSIX CRC-32/CKSUM, byte count and stdin form match _(run)_ |
 
 ### Tier B — near-complete
 
@@ -204,9 +209,9 @@ Absent behaviour rather than wrong behaviour, each of which touches many applets
 | `sha256sum` | 6/10 | `--tag` `-z` `--ignore-missing` `--strict` `-w` | `-c` verification, `-` stdin, the `-b` binary marker and the rejection of `--quiet`/`--status` outside `-c` all match _(run)_ |
 | `which` | 1/10 | the `--skip-*`/`--show-*` family | found-path output identical; on a miss GNU prints `no X in (PATH)` to stderr, ba6 prints nothing (exit 1 either way) _(run)_ |
 | `rm` | 8/10 | `-I` `--one-file-system` | `-rv` prints only the top directory, GNU prints every entry; `-i` prompt reads `remove 'I'?` vs GNU `remove regular empty file 'I'?` _(run)_ |
-| `mkdir` | 2/5 | `-v` `-Z` | `-p` `-m` match, errors match apart from the Go string _(run)_ |
-| `rmdir` | 2/3 | `-v` | `-p`, the non-empty error and the refusal to remove a non-directory all match _(run)_ |
-| `tee` | 2/4 | `-p` `--output-error` | `-a` `-i` present, output identical _(run)_ |
+| `mkdir` | 3/5 | `-Z` | `-p` `-m` `-v` match, errors match apart from the Go string _(run)_ |
+| `rmdir` | 3/3 | — | `-p` `-v`, the non-empty error and the refusal to remove a non-directory all match _(run)_ |
+| `tee` | 4/4 | — | `-a` `-i` `-p` and the four `--output-error` modes present, output identical _(run)_ |
 | `test` / `[` | 15/21 operators | `-u` `-g` `-k` `-O` `-G` `-N`, `( )` grouping | everything else including `-nt -ot -ef -a -o !` matches GNU exit codes exactly _(run)_ |
 | `expr` | arithmetic complete | `:` (regex match), `length` `substr` `index` `match` | `+ - * / % < <= = != >= > & \|` all match _(run)_ |
 | `printf` | all conversions but one | `%q`, the "ignoring excess arguments" warning | `%s %d %i %f %e %g %x %X %o %c %b %%`, widths, precision, `\x \0 \e` escapes, character constants and the numeric-operand diagnostics all match _(run)_ |
@@ -839,17 +844,13 @@ Ordered by how many applets each item moves, not by effort.
 
 1. **`sort -k`/`-t`** — field sorting is what sort is for; without it the applet
    handles only whole-line ordering.
-2. **`--version` for the remaining applets** — the last thing most originals have;
-   only `top` and `cfdisk` provide it here. `expandShortOptions` and the per-applet
-   parsers now agree enough on shape that one shared entry point could carry it,
-   along with `Try 'x --help'`.
-3. **`touch -d`/`-t`/`-r`** — the only reason to reach for touch besides creating a file.
-4. **`grep -o`/`-A`/`-B`/`-C`** — the highest-frequency missing options in the
+2. **`touch -d`/`-t`/`-r`** — the only reason to reach for touch besides creating a file.
+3. **`grep -o`/`-A`/`-B`/`-C`** — the highest-frequency missing options in the
    most-used text tool now that `sed -i` (and sed's whole command language —
    `a i c y n N D P h H g G x b t T { }` — see COVERAGE.md's `sed` entry) is done.
-5. **`ps` process selection** — `-u`, `-C`, `-t` and `--sort`. `ps aux` now matches
+4. **`ps` process selection** — `-u`, `-C`, `-t` and `--sort`. `ps aux` now matches
    procps byte for byte, so picking *which* processes to list is the remaining gap.
-6. **`ss` `Recv-Q`/`Send-Q`** — the netlink query added for `IPV6_V6ONLY` already
+5. **`ss` `Recv-Q`/`Send-Q`** — the netlink query added for `IPV6_V6ONLY` already
    returns `idiag_rqueue` and `idiag_wqueue`; only the columns are missing.
 
 ## How this was measured

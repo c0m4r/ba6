@@ -42,6 +42,9 @@ func cksumCompute(r io.Reader) (uint32, uint64, error) {
 	buf := make([]byte, 64*1024)
 	for {
 		n, err := r.Read(buf)
+		if n < 0 { //nolint:gosec // G115: io.Reader never returns a negative count, but gosec cannot prove it.
+			break
+		}
 		for _, b := range buf[:n] {
 			crc = (crc << 8) ^ cksumTable[byte(crc>>24)^b]
 		}

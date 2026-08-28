@@ -12,6 +12,7 @@ import (
 
 func cmdBasename(args []string) int {
 	multiple := false
+	zero := false
 	suffix := ""
 	suffixSet := false
 	var operands []string
@@ -23,6 +24,8 @@ func cmdBasename(args []string) int {
 			i = len(args)
 		case arg == "-a" || arg == "--multiple":
 			multiple = true
+		case arg == "-z" || arg == "--zero":
+			zero = true
 		case arg == "-s" || arg == "--suffix":
 			i++
 			if i >= len(args) {
@@ -52,6 +55,10 @@ func cmdBasename(args []string) int {
 		suffixSet = true
 		operands = operands[:1]
 	}
+	terminator := "\n"
+	if zero {
+		terminator = "\x00"
+	}
 	for _, name := range operands {
 		base := filepath.Base(name)
 		if name == "" {
@@ -60,7 +67,7 @@ func cmdBasename(args []string) int {
 		if suffixSet && suffix != base && strings.HasSuffix(base, suffix) {
 			base = strings.TrimSuffix(base, suffix)
 		}
-		if _, err := fmt.Fprintln(os.Stdout, base); err != nil {
+		if _, err := fmt.Fprint(os.Stdout, base+terminator); err != nil {
 			fatalf("basename", "write error: %v", err)
 			return 1
 		}
@@ -70,10 +77,15 @@ func cmdBasename(args []string) int {
 
 func cmdDirname(args []string) int {
 	var names []string
+	zero := false
 	parsing := true
 	for _, arg := range args {
 		if parsing && arg == "--" {
 			parsing = false
+			continue
+		}
+		if parsing && (arg == "-z" || arg == "--zero") {
+			zero = true
 			continue
 		}
 		if parsing && len(arg) > 1 && arg[0] == '-' {
@@ -86,8 +98,12 @@ func cmdDirname(args []string) int {
 		fatalf("dirname", "missing operand")
 		return 1
 	}
+	terminator := "\n"
+	if zero {
+		terminator = "\x00"
+	}
 	for _, name := range names {
-		if _, err := fmt.Fprintln(os.Stdout, parentPath(name)); err != nil {
+		if _, err := fmt.Fprint(os.Stdout, parentPath(name)+terminator); err != nil {
 			fatalf("dirname", "write error: %v", err)
 			return 1
 		}

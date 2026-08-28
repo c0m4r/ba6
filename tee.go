@@ -8,15 +8,29 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
+)
+
+// teeOutputError selects how cmdTee reacts to a write error: diagnose and
+// continue, or stop at once; either way optionally only for non-pipe outputs.
+type teeOutputError int
+
+const (
+	teeWarn teeOutputError = iota
+	teeWarnNoPipe
+	teeExit
+	teeExitNoPipe
 )
 
 func cmdTee(args []string) int {
 	args = expandShortOptions(args, "")
 	appendMode := false
 	ignoreInterrupts := false
+	outputError := teeWarn
 	var files []string
 	parsing := true
-	for _, arg := range args {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
 		switch {
 		case parsing && arg == "--":
 			parsing = false
@@ -24,6 +38,25 @@ func cmdTee(args []string) int {
 			appendMode = true
 		case parsing && (arg == "-i" || arg == "--ignore-interrupts"):
 			ignoreInterrupts = true
+		case parsing && arg == "-p":
+			outputError = teeWarn
+		case parsing && arg == "--output-error":
+			outputError = teeWarn
+		case parsing && strings.HasPrefix(arg, "--output-error="):
+			mode := strings.TrimPrefix(arg, "--output-error=")
+			switch mode {
+			case "warn":
+				outputError = teeWarn
+			case "warn-nopipe":
+				outputError = teeWarnNoPipe
+			case "exit":
+				outputError = teeExit
+			case "exit-nopipe":
+				outputError = teeExitNoPipe
+			default:
+				fatalf("tee", "invalid mode %q", mode)
+				return 1
+			}
 		case parsing && len(arg) > 1 && arg[0] == '-':
 			fatalf("tee", "invalid option %q", arg)
 			return 1
@@ -40,8 +73,12 @@ func cmdTee(args []string) int {
 		name string
 		file *os.File
 		open bool
+		pipe bool
 	}
 	outputs := []output{{name: "standard output", file: os.Stdout, open: true}}
+	if info, err := os.Stdout.Stat(); err == nil {
+		outputs[0].pipe = info.Mode()&os.ModeNamedPipe != 0
+	}
 	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
 	if appendMode {
 		flags = os.O_CREATE | os.O_WRONLY | os.O_APPEND
@@ -54,7 +91,11 @@ func cmdTee(args []string) int {
 			status = 1
 			continue
 		}
-		outputs = append(outputs, output{name: name, file: file, open: true})
+		out := output{name: name, file: file, open: true}
+		if info, statErr := file.Stat(); statErr == nil {
+			out.pipe = info.Mode()&os.ModeNamedPipe != 0
+		}
+		outputs = append(outputs, out)
 	}
 
 	buf := make([]byte, 32*1024)
@@ -66,9 +107,15 @@ func cmdTee(args []string) int {
 					continue
 				}
 				if err := writeTeeChunk(outputs[i].file, buf[:n]); err != nil {
+					if !teeWriteErrorFatal(outputError, outputs[i].pipe) {
+						continue
+					}
 					fatalf("tee", "%s: %v", outputs[i].name, err)
-					outputs[i].open = false
 					status = 1
+					if outputError == teeExit || outputError == teeExitNoPipe {
+						return 1
+					}
+					outputs[i].open = false
 				}
 			}
 		}
@@ -87,6 +134,24 @@ func cmdTee(args []string) int {
 		}
 	}
 	return status
+}
+
+// teeWriteErrorFatal reports whether a write error to a pipe/non-pipe output
+// must be diagnosed and stop the loop for the given --output-error mode.
+// Errors that are not fatal are skipped silently, as GNU's warn-nopipe and
+// exit-nopipe modes skip pipe errors.
+func teeWriteErrorFatal(mode teeOutputError, pipe bool) bool {
+	switch mode {
+	case teeWarn:
+		return true
+	case teeWarnNoPipe:
+		return !pipe
+	case teeExit:
+		return true
+	case teeExitNoPipe:
+		return !pipe
+	}
+	return true
 }
 
 func writeTeeChunk(output *os.File, data []byte) error {

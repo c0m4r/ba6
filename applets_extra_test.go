@@ -289,3 +289,114 @@ func TestDateSleepTrueAndFalse(t *testing.T) {
 		t.Fatal("true/false returned incorrect statuses")
 	}
 }
+
+func TestTeeOutputErrorModes(t *testing.T) {
+	if _, err := os.Stat("/dev/full"); err != nil {
+		t.Skip("/dev/full is unavailable")
+	}
+	status, _, stderr := captureApplet(t, cmdTee, []string{"/dev/full"}, "x\n")
+	if status != 1 || !strings.Contains(stderr, "/dev/full") {
+		t.Fatalf("tee default = (%d, %q)", status, stderr)
+	}
+	status, _, stderr = captureApplet(t, cmdTee, []string{"-p", "/dev/full"}, "x\n")
+	if status != 1 || !strings.Contains(stderr, "/dev/full") {
+		t.Fatalf("tee -p = (%d, %q)", status, stderr)
+	}
+	status, _, stderr = captureApplet(t, cmdTee, []string{"--output-error=warn", "/dev/full"}, "x\n")
+	if status != 1 || !strings.Contains(stderr, "/dev/full") {
+		t.Fatalf("tee warn = (%d, %q)", status, stderr)
+	}
+	status, _, stderr = captureApplet(t, cmdTee, []string{"--output-error=warn-nopipe", "/dev/full"}, "x\n")
+	if status != 1 || !strings.Contains(stderr, "/dev/full") {
+		t.Fatalf("tee warn-nopipe = (%d, %q)", status, stderr)
+	}
+	status, _, stderr = captureApplet(t, cmdTee, []string{"--output-error=exit", "/dev/full"}, "x\n")
+	if status != 1 || !strings.Contains(stderr, "/dev/full") {
+		t.Fatalf("tee exit = (%d, %q)", status, stderr)
+	}
+	status, _, stderr = captureApplet(t, cmdTee, []string{"--output-error=exit-nopipe", "/dev/full"}, "x\n")
+	if status != 1 || !strings.Contains(stderr, "/dev/full") {
+		t.Fatalf("tee exit-nopipe = (%d, %q)", status, stderr)
+	}
+	status, _, stderr = captureApplet(t, cmdTee, []string{"--output-error=bogus", "/dev/full"}, "x\n")
+	if status != 1 || !strings.Contains(stderr, "invalid mode") {
+		t.Fatalf("tee bogus mode = (%d, %q)", status, stderr)
+	}
+	file := filepath.Join(t.TempDir(), "output")
+	status, stdout, stderr := captureApplet(t, cmdTee, []string{"--output-error=exit-nopipe", file}, "ok\n")
+	if status != 0 || stdout != "ok\n" || stderr != "" {
+		t.Fatalf("tee healthy exit-nopipe = (%d, %q, %q)", status, stdout, stderr)
+	}
+}
+
+func TestMkdirRmdirVerbose(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "keep"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := filepath.Join(dir, "a")
+	nested := filepath.Join(dir, "a", "b", "c")
+	status, stdout, stderr := captureApplet(t, cmdMkdir, []string{"-v", "-p", nested}, "")
+	if status != 0 {
+		t.Fatalf("mkdir -v -p = (%d, %q)", status, stderr)
+	}
+	want := "mkdir: created directory '" + a + "'\nmkdir: created directory '" + filepath.Join(dir, "a", "b") + "'\nmkdir: created directory '" + nested + "'\n"
+	if stdout != want {
+		t.Fatalf("mkdir -v -p output = %q, want %q", stdout, want)
+	}
+	status, stdout, stderr = captureApplet(t, cmdMkdir, []string{"-v", nested}, "")
+	if status != 1 || stdout != "" || !strings.Contains(stderr, "File exists") {
+		t.Fatalf("mkdir -v existing = (%d, %q, %q)", status, stdout, stderr)
+	}
+	status, stdout, stderr = captureApplet(t, cmdRmdir, []string{"-v", "-p", nested}, "")
+	if status != 1 {
+		t.Fatalf("rmdir -v -p = (%d, %q)", status, stderr)
+	}
+	want = "rmdir: removing directory, '" + nested + "'\nrmdir: removing directory, '" + filepath.Join(dir, "a", "b") + "'\nrmdir: removing directory, '" + a + "'\n"
+	if stdout != want {
+		t.Fatalf("rmdir -v -p output = %q, want %q", stdout, want)
+	}
+	if !strings.Contains(stderr, "rmdir: failed to remove '"+dir+"'") {
+		t.Fatalf("rmdir -v -p stderr = %q", stderr)
+	}
+}
+
+func TestPrintenvNullSeparator(t *testing.T) {
+	t.Setenv("BA6_TEST_PRINTENV_A", "v1")
+	t.Setenv("BA6_TEST_PRINTENV_B", "v2")
+	status, stdout, stderr := captureApplet(t, cmdPrintenv, []string{"BA6_TEST_PRINTENV_A", "BA6_TEST_PRINTENV_B"}, "")
+	if status != 0 || stdout != "v1\nv2\n" {
+		t.Fatalf("printenv = (%d, %q, %q)", status, stdout, stderr)
+	}
+	status, stdout, stderr = captureApplet(t, cmdPrintenv, []string{"-0", "BA6_TEST_PRINTENV_A", "BA6_TEST_PRINTENV_B"}, "")
+	if status != 0 || stdout != "v1\x00v2\x00" {
+		t.Fatalf("printenv -0 = (%d, %q, %q)", status, stdout, stderr)
+	}
+	status, stdout, stderr = captureApplet(t, cmdPrintenv, []string{"--null", "BA6_TEST_PRINTENV_A"}, "")
+	if status != 0 || stdout != "v1\x00" {
+		t.Fatalf("printenv --null = (%d, %q, %q)", status, stdout, stderr)
+	}
+	status, stdout, stderr = captureApplet(t, cmdPrintenv, []string{"BA6_TEST_PRINTENV_A", "-0"}, "")
+	if status != 1 || stdout != "v1\n" {
+		t.Fatalf("printenv stops options at first operand = (%d, %q, %q)", status, stdout, stderr)
+	}
+}
+
+func TestBasenameDirnameZero(t *testing.T) {
+	status, stdout, stderr := captureApplet(t, cmdBasename, []string{"-z", "/tmp/one"}, "")
+	if status != 0 || stdout != "one\x00" {
+		t.Fatalf("basename -z = (%d, %q, %q)", status, stdout, stderr)
+	}
+	status, stdout, stderr = captureApplet(t, cmdBasename, []string{"-z", "-a", "/tmp/one", "plain"}, "")
+	if status != 0 || stdout != "one\x00plain\x00" {
+		t.Fatalf("basename -z -a = (%d, %q, %q)", status, stdout, stderr)
+	}
+	status, stdout, stderr = captureApplet(t, cmdDirname, []string{"-z", "/tmp/one", "plain"}, "")
+	if status != 0 || stdout != "/tmp\x00.\x00" {
+		t.Fatalf("dirname -z = (%d, %q, %q)", status, stdout, stderr)
+	}
+	status, stdout, stderr = captureApplet(t, cmdDirname, []string{"--zero", "/tmp/one"}, "")
+	if status != 0 || stdout != "/tmp\x00" {
+		t.Fatalf("dirname --zero = (%d, %q, %q)", status, stdout, stderr)
+	}
+}
