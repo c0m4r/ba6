@@ -598,14 +598,20 @@ Exit status is 8 when the server answers with an error response.`,
 Run a command repeatedly. -n sets the interval (at least 0.1 seconds) and -t
 suppresses the title line.`,
 	"xz": `Usage: xz [-cdkfq] [FILE]...
-Encode the stream-compatible raw-LZMA2 XZ subset. -d decodes, -c uses standard
-output, -k keeps inputs, and -f replaces an existing output.`,
+Write an XZ stream of stored LZMA2 chunks, or decode one with -d. Decoding
+handles LZMA2-compressed streams from any encoder, every integrity check the
+format defines, multiple blocks, and concatenated streams; encoding stores
+rather than compresses. -c uses standard output, -k keeps inputs, and -f
+replaces an existing output.`,
 	"zip": `Usage: zip [-r] [-0] ARCHIVE FILE...
 Create ZIP archives. -r descends into directories and -0 stores rather than
 deflates regular file data.`,
 	"zstd": `Usage: zstd [-cdkfq] [FILE]...
-Encode Zstandard raw blocks (and RLE blocks for uniform data). -d decodes, -c
-uses standard output, -k keeps inputs, and -f replaces an existing output.`,
+Write a Zstandard frame of raw blocks (and RLE blocks for uniform data), or
+decode one with -d. Decoding handles entropy-coded blocks from any encoder,
+verifies the frame checksum, and follows concatenated and skippable frames;
+encoding stores rather than compresses. -c uses standard output, -k keeps
+inputs, and -f replaces an existing output.`,
 	"which": `Usage: which [-a] COMMAND...
 Print executable paths found through PATH.`,
 	"xargs": `Usage: xargs [-0r] [-n NUMBER] [-L NUMBER] [-I REPLACE] [COMMAND [ARG]...]
@@ -678,11 +684,11 @@ Options:
 Display or set the system hostname.
 
 Options:
-  -a        alias names from the hosts database
-  -d        DNS domain name
-  -f        DNS host name or FQDN
-  -i        IP addresses for the host name
-  -s        short host name
+  -a        aliases recorded for this machine
+  -d        the domain part alone
+  -f        the fully qualified name
+  -i        every address this machine resolves to
+  -s        the name up to its first dot
   -y        NIS/YP domain name
   -F FILE   set the host name from FILE (needs root)`,
 
@@ -864,23 +870,23 @@ Options:
 Print the value of a symbolic link, or canonicalize the path.
 
 Options:
-  -f        canonicalize; all but the last component must exist
-  -e        canonicalize; all components must exist
-  -m        canonicalize; nothing need exist
-  -n        do not print the trailing newline
-  -z        end each output line with NUL instead of newline
+  -f        resolve fully; only the final name may be absent
+  -e        resolve fully; every name has to be there
+  -m        resolve fully; absent names are fine
+  -n        leave off the trailing newline
+  -z        terminate each line with NUL rather than a newline
   -s, -q    suppress error messages
   -v        report error messages`,
 	"realpath": `Usage: realpath [OPTION]... FILE...
 Print resolved absolute paths.
 
 Options:
-  -e        all components must exist
-  -m        no component need exist
-  -s        do not expand symlinks, only . and ..
-  -L        resolve .. components before symlinks
-  -P        resolve symlinks as encountered (default)
-  -z        end each output line with NUL
+  -e        every name has to be there
+  -m        absent names are fine
+  -s        leave symlinks alone; fold only . and ..
+  -L        fold .. before following any symlink
+  -P        follow each symlink where it is met (the default)
+  -z        terminate each line with NUL
   --relative-to=FILE    print paths relative to FILE
   --relative-base=DIR   print relative paths only when inside DIR`,
 	"sleep": `Usage: sleep NUMBER[SUFFIX]...
@@ -1091,7 +1097,7 @@ Options:
   -i        ignore case when comparing
   -f N      skip N fields before comparing
   -s N      skip N characters before comparing
-  -w N      compare no more than N characters
+  -w N      limit the comparison to the first N characters
   -D        print every line of duplicated groups
   --group   separate groups with blank lines
   -z        lines are NUL-terminated`,
@@ -1212,14 +1218,17 @@ Options:
 Report stdin's terminal path, or print "not a tty". -s reports through the exit
 status alone and prints nothing.`,
 	"unxz": `Usage: unxz [-ckf] [FILE]...
-Decode BA6's stream-compatible XZ raw-LZMA2 subset. -c uses standard output,
--k keeps inputs, and -f replaces an existing output.`,
+Decode an XZ stream, including LZMA2-compressed data from any encoder, every
+integrity check the format defines, multiple blocks, and concatenated streams.
+-c uses standard output, -k keeps inputs, and -f replaces an existing output.`,
 	"unzip": `Usage: unzip [-l] [-d DIRECTORY] ARCHIVE [MEMBER]...
 List or safely extract ZIP archives. -l prints member names; extraction
 rejects paths and symbolic links that escape DIRECTORY.`,
 	"unzstd": `Usage: unzstd [-ckf] [FILE]...
-Decode Zstandard raw and RLE blocks. -c uses standard output, -k keeps inputs,
-and -f replaces an existing output.`,
+Decode a Zstandard stream, including entropy-coded blocks from any encoder.
+The frame checksum is verified, and concatenated and skippable frames are
+followed. -c uses standard output, -k keeps inputs, and -f replaces an
+existing output.`,
 	"useradd": `Usage: useradd [-mM] [-u UID] [-g GROUP] [-G GROUP,...] [-d HOME] [-s SHELL] [-c COMMENT] USER
 Create a locked local account. Without -g it also creates a private group; -m
 creates HOME, while -M suppresses home creation. Requires root.`,

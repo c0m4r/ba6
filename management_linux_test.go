@@ -286,6 +286,7 @@ func TestPidofScriptsAndOptions(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "pidof-script-check.sh")
 	scriptSource := "#!/bin/sh\nsleep 60\n"
+	//nolint:gosec // G306: the fixture is executed, so it has to be executable.
 	if err := os.WriteFile(script, []byte(scriptSource), 0o700); err != nil {
 		t.Fatal(err)
 	}

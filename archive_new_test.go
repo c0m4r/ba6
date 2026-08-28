@@ -174,17 +174,18 @@ func TestExtraCodecAppletsRoundTrip(t *testing.T) {
 	}
 }
 
-func TestUnzstdRejectsCompressedBlocks(t *testing.T) {
+// A compressed block whose body is nonsense must be rejected rather than
+// silently producing garbage: the entropy stages are now implemented, so this
+// pins the failure path rather than the old "unsupported" refusal.
+func TestUnzstdRejectsMalformedCompressedBlock(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "compressed.zst")
-	// A valid frame header followed by a final compressed-block header. The
-	// focused decoder intentionally accepts only raw and RLE block types.
 	stream := append(append([]byte{}, zstdFrameMagic...), 0, 0x38, 0x05, 0, 0)
 	if err := os.WriteFile(path, stream, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	status, _, stderr := captureApplet(t, cmdUnzstd, []string{"-c", path}, "")
-	if status == 0 || !strings.Contains(stderr, "compressed Zstandard blocks are unsupported") {
-		t.Fatalf("unzstd result = (%d, %q)", status, stderr)
+	status, stdout, _ := captureApplet(t, cmdUnzstd, []string{"-c", path}, "")
+	if status == 0 || stdout != "" {
+		t.Fatalf("unzstd accepted a malformed compressed block: (%d, %q)", status, stdout)
 	}
 }
 

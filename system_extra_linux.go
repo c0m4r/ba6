@@ -106,7 +106,7 @@ func uptimeSeconds(container bool) (float64, error) {
 	}
 	pid1, err := readProcess(1)
 	if err != nil {
-		return 0, fmt.Errorf("cannot get container uptime: %v", err)
+		return 0, fmt.Errorf("cannot get container uptime: %w", err)
 	}
 	start := float64(pid1.startTicks) / clockTicks
 	boot := float64(info.Uptime)

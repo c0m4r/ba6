@@ -68,9 +68,10 @@ applets were written.
   with a bounded batch/report mode for scripts where the original has one.
   `ncdu` is strictly read-only (no delete, no shell escape); `less` holds
   each file in memory and has no command that spawns another program.
-- **Self-contained formats**: `xz`/`zstd` write interoperable raw-block
-  streams (and Zstandard RLE blocks) rather than implementing general
-  compressed-block decoding.
+- **Self-contained formats**: `unxz`/`unzstd` decode the real formats in full
+  (LZMA2 for XZ; Huffman and FSE for Zstandard), so archives from the vendor
+  tools read back byte for byte. `xz`/`zstd` still *write* stored blocks
+  (and Zstandard RLE blocks) rather than compressing.
 
 ## Build and verify
 

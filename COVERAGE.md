@@ -33,8 +33,8 @@ options listed per applet below.
 |---|---|---|
 | **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `pwd` `echo` `basename` `tr` `base64` `uname` `whoami` `true` `false` `printenv` `sleep` `mknod` `seq` `dirname` `tac` `fold` `expand` `unexpand` `cksum` `nl` `paste` `comm` `split` `join` `nice` `pivot_root` `tty` |
 | **B — near-complete** | Common paths match; a handful of real gaps | `cat` `wc` `head` `tail` `rm` `mkdir` `tee` `test` `[` `expr` `printf` `id` `mktemp` `kill` `timeout` `chroot` `blockdev` `stat` `env` `cmp` `sync` `dd` `sha256sum` `which` `rmdir` `top` `host` `setsid` `nohup` `renice` `lsusb` `lspci` `hwclock` `md5sum` `sha1sum` `sha512sum` `sysctl` `bzip2` `bunzip2` `groupadd` `xargs` `uniq` `uptime` `readlink` `realpath` `hostname` `pidof` |
-| **C — partial** | Everyday cases work, well-known flags or output details missing | `ls` `cp` `mv` `ln` `touch` `sort` `uniq` `cut` `grep` `find` `du` `df` `date` `strings` `od` `hexdump` `diff` `sh` `awk` `sed` `file` `tar` `gzip` `gunzip` `chown` `chgrp` `chmod` `free` `wget` `lsof` `lsblk` `blkid` `mount` `umount` `losetup` `swapon` `swapoff` `mkswap` `ss` `ip` `iptables` `ping` `traceroute` `mtr` `nc` `nslookup` `curl` `iftop` `pgrep` `pkill` `modprobe` `insmod` `rmmod` `lsmod` `fdisk` `sfdisk` `mkfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkfs.btrfs` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `login` `passwd` `getty` `ps` `netstat` `tree` `less` `dmesg` `dig` `nano` `ncdu` `cfdisk` `cpio` `unzip` `zip` `useradd` `adduser` `watch` |
-| **D — narrow subset** | A slice of the original; do not treat as a replacement | `xz` `unxz` `zstd` `unzstd` |
+| **C — partial** | Everyday cases work, well-known flags or output details missing | `ls` `cp` `mv` `ln` `touch` `sort` `uniq` `cut` `grep` `find` `du` `df` `date` `strings` `od` `hexdump` `diff` `sh` `awk` `sed` `file` `tar` `gzip` `gunzip` `chown` `chgrp` `chmod` `free` `wget` `lsof` `lsblk` `blkid` `mount` `umount` `losetup` `swapon` `swapoff` `mkswap` `ss` `ip` `iptables` `ping` `traceroute` `mtr` `nc` `nslookup` `curl` `iftop` `pgrep` `pkill` `modprobe` `insmod` `rmmod` `lsmod` `fdisk` `sfdisk` `mkfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkfs.btrfs` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `login` `passwd` `getty` `ps` `netstat` `tree` `less` `dmesg` `dig` `nano` `ncdu` `cfdisk` `cpio` `unzip` `zip` `useradd` `adduser` `watch` `xz` `unxz` `zstd` `unzstd` |
+| **D — narrow subset** | A slice of the original; do not treat as a replacement | _(none)_ |
 | **N/A** | ba6-specific, no upstream counterpart | `help` `man` `completion` `init` `halt` `reboot` `poweroff` `switch_root` `udhcpc` |
 
 ## Not yet assessed
@@ -578,6 +578,26 @@ option surface rather than the format: no `-t`/`-v`/`-l` listing modes, no
 update or delete modes, or split archives. Extraction rejects paths that escape the
 destination.
 
+**`xz` / `unxz` / `zstd` / `unzstd`** — 5/62 and 1/21 options _(run)_. The
+decoders are complete: `unxz` implements the LZMA range coder, the full LZMA2
+chunk layer, every integrity check XZ defines (none/CRC32/CRC64/SHA-256),
+multi-block streams and concatenated streams; `unzstd` implements the reversed
+bitstream, FSE and Huffman entropy stages, the sequence and repeat-offset
+rules, the sliding window, skippable and concatenated frames, and verifies the
+frame's XXH64. Both were checked against the vendor tools over ~630 randomised
+archives spanning every preset, all four XZ check types, `--block-size`,
+threading, and hand-picked `lc`/`lp`/`pb` and dictionary settings, plus every
+`.xz` and `.zst` file installed on two machines (kernel modules and firmware
+among them) and Go's adversarial zstd fuzz corpus — all byte-identical, with
+corrupted and truncated inputs rejected as the originals reject them. What
+remains missing is the *encoder* side and the option surface: ba6 writes stored
+blocks rather than compressing, and has no `-t`/`--test`, `-l`/`--list`,
+compression levels, threading, or filter-chain options. The XZ BCJ and delta
+filters are also unimplemented, so a stream using them is refused rather than
+mis-decoded. Zstandard dictionaries are not supported; a frame carrying a
+nonzero dictionary id is refused, though a present-but-zero id decodes
+normally.
+
 **`watch`** — 2/16 options _(run, under a pseudo-terminal on a disposable VM)_.
 `-n`/`--interval` and `-t`/`--no-title`, the alternate-screen clear-and-redraw
 cycle, and the header layout — interval and command on the left, `host: ctime`
@@ -780,19 +800,7 @@ alignment `/dev/kmsg`-backed dmesg produces. Missing: `-H`/`--human`,
 
 ### Tier D — narrow subset
 
-**`xz` / `unxz` / `zstd` / `unzstd`** — 5/62 and 1/21 options _(run)_. These read
-and write their real container formats, and a file ba6 writes is decompressed
-correctly by the vendor tools, verified both ways. The limitation is the payload
-rather than the wrapper: ba6 emits stored/raw blocks (plus Zstandard RLE blocks)
-and implements no entropy-coded block decoder, so **a `.xz` or `.zst` produced by
-the real `xz` or `zstd` cannot be read back** — LZMA2 and FSE/Huffman blocks are
-rejected with `unsupported XZ stream` / `compressed Zstandard blocks are
-unsupported`. Since practically every `.xz` and `.zst` in the wild is entropy
-coded, treat these as archive *writers* and format probes, not as general
-decompressors. `bzip2`/`bunzip2` are the exception in this family and round-trip
-against the real tool in both directions, which is why they sit in Tier B.
-Missing beyond that: compression levels `-0`..`-9`, `-t`/`--test`, `-l`/`--list`,
-`--keep`'s siblings, threading, and the filter chain options.
+_(none)_
 
 ## What to fix first
 
@@ -809,13 +817,10 @@ Ordered by how many applets each item moves, not by effort.
    remaining gap.
 5. **`ss` `Recv-Q`/`Send-Q`** — the netlink query added for `IPV6_V6ONLY` already
    returns `idiag_rqueue` and `idiag_wqueue`; only the columns are missing.
-6. **A real LZMA2 decoder for `unxz`, and FSE/Huffman for `unzstd`** — the
-   largest remaining functional gap in the binary. Both applets write their
-   container formats correctly and are read back fine by the vendor tools, but
-   neither can decompress what the real `xz` or `zstd` produces, which is
-   essentially every `.xz` and `.zst` that exists. A rescue toolbox that cannot
-   open a vendor-compressed archive is limited in exactly the situation it is
-   meant for. `bzip2` already has a full decoder and shows the shape of the work.
+6. **Compression for `xz` and `zstd`.** Both now *decode* the real formats in
+   full, but still write stored blocks, so `ba6 xz file` produces a valid but
+   much larger archive than the original would. This is the remaining half of
+   the job and matters far less than decoding did.
 7. **`watch -d` and `-g`** — change highlighting and exit-on-change are most of
    why `watch` gets reached for interactively.
 

@@ -111,6 +111,7 @@ type zstdReader struct {
 	consumed int
 	winSize  int
 	checksum bool
+	digest   *xxh64
 	finished bool
 }
 
@@ -174,9 +175,21 @@ func (reader *zstdReader) readFrameHeader() error {
 		windowSize = base + (base/8)*mantissa
 	}
 
+	// A Dictionary_ID field may be present and still hold zero, which means no
+	// dictionary; only a nonzero id needs one we do not have.
 	dictionaryIDSize := []int{0, 1, 2, 4}[descriptor&0x03]
 	if dictionaryIDSize > 0 {
-		return fmt.Errorf("dictionary-compressed Zstandard frames are unsupported")
+		field := make([]byte, dictionaryIDSize)
+		if _, err := io.ReadFull(reader.input, field); err != nil {
+			return unexpectedEOF(err)
+		}
+		var id uint32
+		for i, b := range field {
+			id |= uint32(b) << (8 * uint(i))
+		}
+		if id != 0 {
+			return fmt.Errorf("dictionary-compressed Zstandard frames are unsupported")
+		}
 	}
 	contentSizeSize := 0
 	switch descriptor >> 6 {
@@ -218,6 +231,10 @@ func (reader *zstdReader) readFrameHeader() error {
 	reader.winSize = windowSize
 	reader.dec = newZstdBlockDecoder()
 	reader.frameAt = len(reader.window)
+	if reader.digest == nil {
+		reader.digest = newXXH64()
+	}
+	reader.digest.reset()
 	return nil
 }
 
@@ -272,6 +289,7 @@ func (reader *zstdReader) readBlock() error {
 	if size > zstdMaxBlockSize {
 		return errZstdData
 	}
+	produced := len(reader.window)
 
 	switch blockType {
 	case 0: // stored
@@ -303,6 +321,7 @@ func (reader *zstdReader) readBlock() error {
 		return fmt.Errorf("invalid Zstandard block type")
 	}
 
+	reader.digest.Write(reader.window[produced:])
 	if !last {
 		return nil
 	}
@@ -313,8 +332,14 @@ func (reader *zstdReader) readBlock() error {
 // it, which zstd allows and produces when concatenating.
 func (reader *zstdReader) finishFrame() error {
 	if reader.checksum {
-		if _, err := io.CopyN(io.Discard, reader.input, 4); err != nil {
+		var stored [4]byte
+		if _, err := io.ReadFull(reader.input, stored[:]); err != nil {
 			return unexpectedEOF(err)
+		}
+		// The frame keeps only the low half of the hash.
+		want := uint32(reader.digest.Sum64() & 0xffffffff) //nolint:gosec // G115: masked to 32 bits.
+		if binary.LittleEndian.Uint32(stored[:]) != want {
+			return fmt.Errorf("checksum mismatch in Zstandard frame")
 		}
 	}
 	if _, err := reader.input.Peek(1); err != nil {

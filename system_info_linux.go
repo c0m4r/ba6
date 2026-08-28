@@ -259,7 +259,9 @@ func hostLookup(name string) (canonical string, addrs, aliases []string, ok bool
 			return canonical, addrs, aliases, true
 		}
 	}
-	ips, err := net.LookupHost(name)
+	// G704: resolving the name the user asked about is the whole point of
+	// hostname -i/-f; there is no privilege boundary being crossed here.
+	ips, err := net.LookupHost(name) //nolint:gosec
 	if err != nil {
 		return "", nil, nil, false
 	}

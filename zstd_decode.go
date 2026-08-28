@@ -85,6 +85,11 @@ func (b *zstdBitReader) read(count int) uint32 {
 // still emit symbols whose updates consume no bits.
 func (b *zstdBitReader) exhausted() bool { return b.bitPos < 0 }
 
+// alignForward advances the forward cursor to the next byte boundary.
+func (b *zstdBitReader) alignForward() {
+	b.forwardPos = (b.forwardPos + 7) &^ 7
+}
+
 // zstdFSETable is a decoded finite-state-entropy table: for each state, the
 // symbol it emits and how to reach the next state.
 type zstdFSETable struct {
@@ -282,6 +287,7 @@ func buildHuffman(weights []byte, maxBits int) (*zstdHuffman, error) {
 			}
 			for i := 0; i < width; i++ {
 				table.symbol[position+i] = byte(sym) //nolint:gosec // G115: at most 255 symbols.
+				//nolint:gosec // G115: maxBits is at most 11, so the code length fits a byte.
 				table.bits[position+i] = byte(maxBits - weight + 1)
 			}
 			position += width
@@ -365,13 +371,9 @@ func readHuffmanTable(data []byte) (*zstdHuffman, int, error) {
 	count++
 
 	// A weight of w means a code of maxBits+1-w bits; zero means unused.
+	// buildHuffman wants the weights themselves; unused symbols keep weight 0.
 	lengths := make([]byte, count)
-	for i := 0; i < count; i++ {
-		if weights[i] == 0 {
-			continue
-		}
-		lengths[i] = weights[i]
-	}
+	copy(lengths, weights[:count])
 	table, err := buildHuffman(lengths, maxBits)
 	if err != nil {
 		return nil, 0, err
@@ -438,7 +440,7 @@ func decodeHuffmanStream(table *zstdHuffman, data []byte, out []byte) error {
 			return errZstdData
 		}
 		// Peek maxBits, padding with zeros past the end of the stream.
-		peek := reader.peek(table.maxBits) & uint32(mask)
+		peek := reader.peek(table.maxBits) & uint32(mask) //nolint:gosec // G115: mask is 2^maxBits-1 with maxBits <= 11.
 		symbol := table.symbol[peek]
 		bits := int(table.bits[peek])
 		if bits > reader.bitPos {
@@ -615,10 +617,12 @@ func (d *zstdBlockDecoder) decodeLiterals(src []byte) ([]byte, int, error) {
 			if len(src) < 5 {
 				return nil, 0, errZstdData
 			}
+			// 18-bit sizes: regenerated in bits 4..21, compressed in 22..39,
+			// so the top eight bits of the latter come from the fifth byte.
 			streams, headerSize = 4, 5
 			value |= uint32(src[3]) << 24
 			regenerated = int(value>>4) & 0x3ffff
-			compressed = int(value>>22)&0x3f | int(src[4])<<2
+			compressed = int(value>>22) | int(src[4])<<10
 		}
 		if regenerated > zstdMaxBlockSize || headerSize+compressed > len(src) {
 			return nil, 0, errZstdData
@@ -724,9 +728,11 @@ func (d *zstdBlockDecoder) decodeSequences(src []byte) ([]zstdSequence, error) {
 	}
 
 	forward := &zstdBitReader{data: src[pos:]}
+	// Symbol_Compression_Modes: literals in bits 7-6, offsets in 5-4, match
+	// lengths in 3-2. The tables are then read in that same order.
 	litMode := (modes >> 6) & 3
-	matchMode := (modes >> 4) & 3
-	offsetMode := (modes >> 2) & 3
+	offsetMode := (modes >> 4) & 3
+	matchMode := (modes >> 2) & 3
 
 	var err error
 	if d.litLenFSE, err = d.sequenceTable(litMode, forward, 35, zstdMaxLitLenLog, zstdPredefLitLen, d.litLenFSE); err != nil {
@@ -800,7 +806,7 @@ func (d *zstdBlockDecoder) sequenceTable(mode byte, forward *zstdBitReader, maxS
 	case 0: // predefined
 		return predefined, nil
 	case 1: // RLE: a single byte gives the only symbol
-		symbol := byte(forward.readForward(8))
+		symbol := byte(forward.readForward(8) & 0xff)
 		if forward.corrupt || int(symbol) > maxSymbol {
 			return nil, errZstdData
 		}
@@ -808,7 +814,14 @@ func (d *zstdBlockDecoder) sequenceTable(mode byte, forward *zstdBitReader, maxS
 			log: 0, symbol: []byte{symbol}, numBits: []byte{0}, newarr: []uint16{0},
 		}, nil
 	case 2: // a new table description
-		return readFSETable(forward, maxSymbol, maxLog)
+		table, err := readFSETable(forward, maxSymbol, maxLog)
+		if err != nil {
+			return nil, err
+		}
+		// Each description occupies a whole number of bytes, so the next one
+		// starts at the following byte boundary rather than mid-byte.
+		forward.alignForward()
+		return table, nil
 	default: // repeat whatever was used last
 		if previous == nil {
 			return nil, errZstdData
