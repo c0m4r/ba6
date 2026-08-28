@@ -1077,6 +1077,29 @@ func helpRequested(args []string) bool {
 	return false
 }
 
+// versionRequested mirrors helpRequested for -V/--version, the other flag
+// nearly every original tool answers. top and cfdisk already implement it
+// themselves (their own -V/--version combines with other option validation),
+// so runApplet skips this generic check for those two.
+func versionRequested(args []string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			return false
+		}
+		if arg == "--version" || arg == "-V" {
+			return true
+		}
+	}
+	return false
+}
+
+// appletsWithOwnVersion lists applets that already implement -V/--version
+// themselves, so runApplet's generic handling must not intercept it first.
+var appletsWithOwnVersion = map[string]bool{
+	"top":    true,
+	"cfdisk": true,
+}
+
 func writeAppletHelp(w io.Writer, name string) error {
 	help, ok := appletHelp[name]
 	if !ok {

@@ -37,6 +37,7 @@ var applets = map[string]applet{
 	"chmod":       cmdChmod,
 	"chown":       cmdChown,
 	"chroot":      cmdChroot,
+	"cksum":       cmdCksum,
 	"cp":          cmdCp,
 	"cpio":        cmdCpio,
 	"cmp":         cmdCmp,
@@ -58,6 +59,7 @@ var applets = map[string]applet{
 	"file":        cmdFile,
 	"find":        cmdFind,
 	"fdisk":       cmdFdisk,
+	"fold":        cmdFold,
 	"fsck":        cmdFsck,
 	"fsck.ext2":   cmdFsckExt2,
 	"fsck.ext3":   cmdFsckExt3,
@@ -108,6 +110,7 @@ var applets = map[string]applet{
 	"nc":          cmdNc,
 	"ncdu":        cmdNcdu,
 	"netstat":     cmdNetstat,
+	"nl":          cmdNl,
 	"nslookup":    cmdNslookup,
 	"od":          cmdOd,
 	"passwd":      cmdPasswd,
@@ -143,6 +146,7 @@ var applets = map[string]applet{
 	"switch_root": cmdSwitchRoot,
 	"swapoff":     cmdSwapoff,
 	"swapon":      cmdSwapon,
+	"tac":         cmdTac,
 	"tail":        cmdTail,
 	"tar":         cmdTar,
 	"tee":         cmdTee,
@@ -267,6 +271,10 @@ func runApplet(name string, fn applet, args []string) int {
 			fatalf(name, "write error: %v", err)
 			return 1
 		}
+		return 0
+	}
+	if !appletsWithOwnVersion[name] && versionRequested(args) {
+		fmt.Fprintln(os.Stdout, name+" from ba6")
 		return 0
 	}
 	return fn(args)
