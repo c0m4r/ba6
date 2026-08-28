@@ -400,3 +400,133 @@ func TestBasenameDirnameZero(t *testing.T) {
 		t.Fatalf("dirname --zero = (%d, %q, %q)", status, stdout, stderr)
 	}
 }
+
+func TestReadlinkCanonicalizeModes(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "file")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink("file", link); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		args []string
+		want string
+		rc   int
+	}{
+		{[]string{"-f", link}, file + "\n", 0},
+		{[]string{"-e", link}, file + "\n", 0},
+		{[]string{"-m", filepath.Join(dir, "missing", "child")}, filepath.Join(dir, "missing", "child") + "\n", 0},
+		{[]string{"-f", filepath.Join(dir, "missing")}, filepath.Join(dir, "missing") + "\n", 0},
+		{[]string{"-e", filepath.Join(dir, "missing")}, "", 1},
+		{[]string{"-f", filepath.Join(dir, "missing", "child")}, "", 1},
+		{[]string{"-n", "-f", link}, file, 0},
+		{[]string{"-z", "-f", link}, file + "\x00", 0},
+	}
+	for _, c := range cases {
+		status, out, stderr := captureApplet(t, cmdReadlink, c.args, "")
+		if status != c.rc || out != c.want || stderr != "" {
+			t.Fatalf("readlink %v = (%d, %q, %q), want (%d, %q)", c.args, status, out, stderr, c.rc, c.want)
+		}
+	}
+	if status, _, stderr := captureApplet(t, cmdReadlink, []string{"-v", filepath.Join(dir, "missing")}, ""); status != 1 || !strings.Contains(stderr, "No such file or directory") {
+		t.Fatalf("readlink -v should report the error = (%d, %q)", status, stderr)
+	}
+}
+
+func TestRealpathModesAndRelatives(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "sub")
+	if err := os.Mkdir(sub, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "file")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("sub", filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		args []string
+		want string
+		rc   int
+	}{
+		{[]string{"-s", filepath.Join(dir, "link")}, filepath.Join(dir, "link"), 0},
+		{[]string{filepath.Join(dir, "link")}, sub, 0},
+		{[]string{"-L", filepath.Join(dir, "link", "..")}, dir, 0},
+		{[]string{"-e", filepath.Join(dir, "missing")}, "", 1},
+		{[]string{"-m", filepath.Join(dir, "missing", "child")}, filepath.Join(dir, "missing", "child"), 0},
+		{[]string{"-s", filepath.Join(dir, "link", "..", "fl")}, filepath.Join(dir, "fl"), 0},
+		{[]string{"--relative-to=" + dir, sub}, "sub", 0},
+		{[]string{"--relative-to=" + file, sub}, filepath.Join("..", "sub"), 0},
+		{[]string{"--relative-base=" + dir, sub}, "sub", 0},
+		{[]string{"--relative-base=" + dir, "/etc/hosts"}, "/etc/hosts", 0},
+		{[]string{"/"}, "/", 0},
+	}
+	for _, c := range cases {
+		status, out, stderr := captureApplet(t, cmdRealpath, c.args, "")
+		if status != c.rc || strings.TrimSuffix(out, "\n") != c.want {
+			t.Fatalf("realpath %v = (%d, %q, %q), want (%d, %q)", c.args, status, out, stderr, c.rc, c.want)
+		}
+	}
+	if status, _, _ := captureApplet(t, cmdRealpath, []string{"-q", "-e", filepath.Join(dir, "missing")}, ""); status != 1 {
+		t.Fatalf("realpath -q -e = %d", status)
+	}
+}
+
+func TestHostnameModes(t *testing.T) {
+	dir := t.TempDir()
+	hosts := filepath.Join(dir, "hosts")
+	contents := "127.0.1.1 box.example.org box alias1 alias2\n"
+	if err := os.WriteFile(hosts, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := hostsFilePath
+	hostsFilePath = hosts
+	t.Cleanup(func() { hostsFilePath = old })
+
+	canonical, addrs, aliases, ok := hostLookup("box")
+	if !ok || canonical != "box.example.org" || len(addrs) != 1 || addrs[0] != "127.0.1.1" || strings.Join(aliases, " ") != "box alias1 alias2" {
+		t.Fatalf("hostLookup = (%q, %v, %v, %v)", canonical, addrs, aliases, ok)
+	}
+	if got := hostnameAliases("box"); got != "box alias1 alias2 " {
+		t.Fatalf("hostnameAliases = %q", got)
+	}
+	if got := hostnameFqdn("box"); got != "box.example.org" {
+		t.Fatalf("hostnameFqdn = %q", got)
+	}
+	if got := hostnameDomain("box.example.org"); got != "example.org" {
+		t.Fatalf("hostnameDomain = %q", got)
+	}
+	if got := hostnameDomain("box"); got != "(none)" {
+		t.Fatalf("hostnameDomain short = %q", got)
+	}
+	if got := hostnameShort("box.example.org"); got != "box" {
+		t.Fatalf("hostnameShort = %q", got)
+	}
+	nameFile := filepath.Join(dir, "name")
+	if err := os.WriteFile(nameFile, []byte("# comment\n\ntesthost extra\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := hostnameFileToken(nameFile); err != nil || got != "testhost" {
+		t.Fatalf("hostnameFileToken = (%q, %v)", got, err)
+	}
+	if _, err := hostnameFileToken(filepath.Join(dir, "missing")); err == nil {
+		t.Fatal("hostnameFileToken missing file succeeded")
+	}
+	if _, err := hostnameFileToken(filepath.Join(dir, "empty")); err == nil || !strings.Contains(err.Error(), "No text") {
+		// Write the empty file first: the previous check cannot exist twice.
+		if os.WriteFile(filepath.Join(dir, "empty"), nil, 0o600) == nil {
+			if _, e := hostnameFileToken(filepath.Join(dir, "empty")); e == nil || !strings.Contains(e.Error(), "No text") {
+				t.Fatalf("hostnameFileToken empty = %v", e)
+			}
+		}
+	}
+	// Setting a name requires root; the failure path still has to be clean.
+	if status, _, stderr := captureApplet(t, cmdHostname, []string{"-F", filepath.Join(dir, "missing")}, ""); status == 0 || !strings.Contains(stderr, "fopen") {
+		t.Fatalf("hostname -F missing = (%d, %q)", status, stderr)
+	}
+}

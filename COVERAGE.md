@@ -12,7 +12,7 @@ measured against its original; nothing is left under
 [Not yet assessed](#not-yet-assessed).
 
 **Short answer to "which are 1:1?"** — of the 170, 27 are genuine drop-ins,
-39 more are near-complete, 94 are partial or a narrow subset in ways that stay
+46 more are near-complete, 87 are partial or a narrow subset in ways that stay
 invisible until a script reaches for a flag, 4 are a narrow subset that should not
 be treated as a replacement, and 9 have no upstream counterpart to compare
 against; see the [verdict table](#verdict-in-one-table). `netstat`, `ps aux`/
@@ -32,8 +32,8 @@ options listed per applet below.
 | Tier | Meaning | Applets |
 |---|---|---|
 | **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `pwd` `echo` `basename` `tr` `base64` `uname` `whoami` `true` `false` `printenv` `sleep` `mknod` `seq` `dirname` `tac` `fold` `expand` `unexpand` `cksum` `nl` `paste` `comm` `split` `join` `nice` `pivot_root` `tty` |
-| **B — near-complete** | Common paths match; a handful of real gaps | `cat` `wc` `head` `tail` `rm` `mkdir` `tee` `test` `[` `expr` `printf` `id` `mktemp` `kill` `timeout` `chroot` `blockdev` `stat` `env` `cmp` `sync` `dd` `sha256sum` `which` `rmdir` `top` `host` `setsid` `nohup` `renice` `lsusb` `lspci` `hwclock` `md5sum` `sha1sum` `sha512sum` `sysctl` `bzip2` `bunzip2` `groupadd` |
-| **C — partial** | Everyday cases work, well-known flags or output details missing | `ls` `cp` `mv` `ln` `touch` `sort` `uniq` `cut` `grep` `find` `du` `df` `date` `readlink` `realpath` `strings` `od` `hexdump` `diff` `sh` `awk` `sed` `file` `tar` `gzip` `gunzip` `chown` `chgrp` `chmod` `free` `uptime` `hostname` `wget` `lsof` `lsblk` `blkid` `mount` `umount` `losetup` `swapon` `swapoff` `mkswap` `ss` `ip` `iptables` `ping` `traceroute` `mtr` `nc` `nslookup` `curl` `iftop` `pgrep` `pkill` `pidof` `modprobe` `insmod` `rmmod` `lsmod` `fdisk` `sfdisk` `mkfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkfs.btrfs` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `login` `passwd` `getty` `ps` `netstat` `tree` `less` `dmesg` `xargs` `dig` `nano` `ncdu` `cfdisk` `cpio` `unzip` `zip` `useradd` `adduser` `watch` |
+| **B — near-complete** | Common paths match; a handful of real gaps | `cat` `wc` `head` `tail` `rm` `mkdir` `tee` `test` `[` `expr` `printf` `id` `mktemp` `kill` `timeout` `chroot` `blockdev` `stat` `env` `cmp` `sync` `dd` `sha256sum` `which` `rmdir` `top` `host` `setsid` `nohup` `renice` `lsusb` `lspci` `hwclock` `md5sum` `sha1sum` `sha512sum` `sysctl` `bzip2` `bunzip2` `groupadd` `xargs` `uniq` `uptime` `readlink` `realpath` `hostname` `pidof` |
+| **C — partial** | Everyday cases work, well-known flags or output details missing | `ls` `cp` `mv` `ln` `touch` `sort` `uniq` `cut` `grep` `find` `du` `df` `date` `strings` `od` `hexdump` `diff` `sh` `awk` `sed` `file` `tar` `gzip` `gunzip` `chown` `chgrp` `chmod` `free` `wget` `lsof` `lsblk` `blkid` `mount` `umount` `losetup` `swapon` `swapoff` `mkswap` `ss` `ip` `iptables` `ping` `traceroute` `mtr` `nc` `nslookup` `curl` `iftop` `pgrep` `pkill` `modprobe` `insmod` `rmmod` `lsmod` `fdisk` `sfdisk` `mkfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkfs.btrfs` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `login` `passwd` `getty` `ps` `netstat` `tree` `less` `dmesg` `dig` `nano` `ncdu` `cfdisk` `cpio` `unzip` `zip` `useradd` `adduser` `watch` |
 | **D — narrow subset** | A slice of the original; do not treat as a replacement | `xz` `unxz` `zstd` `unzstd` |
 | **N/A** | ba6-specific, no upstream counterpart | `help` `man` `completion` `init` `halt` `reboot` `poweroff` `switch_root` `udhcpc` |
 
@@ -172,6 +172,13 @@ Absent behaviour rather than wrong behaviour, each of which touches many applets
 | `sysctl` | 6/17 | `-p`/`--load` `--system` `-r`/`--pattern` `-q` `-b` `--deprecated` | `-a`, `-n`, `-N`, `-e`, `-w` and bare reads. `sysctl -a` matches procps key for key and value for value (1590 keys on the measurement host) with identical stderr, including the write-only, permission-denied, empty-file, multi-line and deprecated-key rules _(run)_ |
 | `bzip2` / `bunzip2` | 6/12 | `-t` `-1`..`-9` `-v` `-z` `-L` | round-trips against the real tool in both directions, unlike the xz and zstd pair. `-c` `-d` `-k` `-f`, the in-place convention (replace the file, add or strip `.bz2`) and stdin/stdout streaming match _(run)_ |
 | `groupadd` | 2/10 | `-f` `-o` `-r`/`--system` `-p` `-K` `-R` `-P` `-U` | `-g` and the bare form; the created `/etc/group` line, shadow-utils exit statuses (9 name in use, 4 GID in use, 3 invalid name) and message wording match, tested against a real account database on a disposable VM _(run)_ |
+| `xargs` | 14/14 | — | every option group present: `-0 -a -d -E -e -I -L -n -p -P -r -s -t -x --process-slot-var`. Input splitting, quoting, `-I` substitution, `-s` line-length capping, `-x`'s exact `argument line too long` wording, `-P` concurrency and `-L` line batching (blank lines skipped, a trailing blank continues a line, quoting honoured within a line) all byte-identical to GNU findutils, including the `--max-lines`/`--max-args`/`--replace` mutual-exclusion warnings and their last-option-wins rule, and `--process-slot-var`'s 0-based slot numbering. Quotes and backslash escapes do not span physical lines under `-L` the way they do without it _(run)_ |
+| `uniq` | 10/11 | — | `-c -d -u -i -f -s -w -D --group -z` all present; the field/char skipping and `-w` truncation follow GNU's skipfield exactly (the blanks after a skipped field stay compared), and the `-D`/`--all-repeated` (`none`/`prepend`/`separate`) and `--group` (`separate`/`prepend`/`append`/`both`) blank-line placement was diffed byte for byte, including the quirks: `-D -u` prints one line per group, `-D -c` is rejected as `meaningless`, `--group` refuses to combine with `-c/-d/-D/-u` _(run)_ |
+| `uptime` | 4/4 | — | `-p` (decades/years/weeks/days/hours/minutes with singular/plural units), `-s` (boot time as `yyyy-mm-dd HH:MM:SS`), `-r` (boot epoch, uptime with six decimals, user count, three load averages) and `-c` (CLOCK_BOOTTIME minus pid 1's start) all present, and the default line now carries the user count with procps' exact `, %2d users?,  ` spacing and `%2d:%02d` uptime layout — byte-identical under C locale. The user count comes from `/run/systemd/sessions` `CLASS=user` entries when systemd runs, else from utmp records; both match procps' own `sd_get_sessions`-then-utmp order _(run)_ |
+| `readlink` | 8/8 | — | `-f -e -m` (the three canonicalize modes with their exact existence rules — `-f` allows a missing final component, `-e` none, `-m` anything), `-n`, `-z`, `-q/-s`, `-v` and multiple operands. GNU coreutils 9.11 prints **no** diagnostic on a canonicalization failure unless `-v` is given (only the exit status signals it); ba6 replicates that, and `-s`/`-v` keep the last-one-wins rule _(run)_ |
+| `realpath` | 8/8 | — | default mode (all but the last component must exist), `-e`, `-m` (missing components resolved lexically), `-s` (no symlink expansion), `-L` (`..` resolved before symlinks), `-P`, `-q`, `-z`, `--relative-to` (relative to the file or directory named, via the original's filepath.Rel semantics) and `--relative-base` (relative only when inside the base) all match coreutils on symlink, missing-component and multi-operand cases _(run)_ |
+| `hostname` | 7/7 | — | measured against inetutils 2.8 (this host's reference). `-a` (hosts-file aliases, each with the original's trailing blank), `-d` (`(none)` without a dot), `-f` (canonical name via /etc/hosts then DNS, falling back to the short name), `-i` (all addresses, space-separated), `-s`, `-y` (kernel domainname) plus `-F FILE` and the bare `NAME` set form — the `sethostname:`, `Empty hostname`, `fopen:` and `getline: No text` error paths all match; setting needs root, verified by comparing the unprivileged failure. Names are looked up in /etc/hosts first and DNS second; the DNS step needs a socket, so under the default seccomp filter only /etc/hosts names resolve (give `--seccomp=off` for full DNS) _(run)_ |
+| `pidof` | 8/8 | — | `-s` (one PID per name), `-c` (root only, like procps itself), `-q`, `-w`, `-x`, `-o` (including the historic `%PPID` token), `-t`, `-S`/`-d`. Matching follows procps' own rules — argv0 (login-shell `-` stripped), basename comparisons, the executable link, comm only under `-w` or a rewritten argv0, and `-x`'s interpreter check against argv1 — so a shebang script is found only with `-x`, exactly like the original. Newest-first ordering, the shared separator and the exit status match; the `illegal omit pid value` warning wording too _(run)_ |
 
 ### Tier C — partial
 
@@ -197,8 +204,6 @@ Hard and symbolic links match.
 **`sort`** — 7/27 _(run)_. Present: `-n -r -u -b -f -c -h`. **Missing `-k` and `-t`**
 (no field sorting at all), plus `-o -m -s -g -M -R -z -T --parallel`.
 
-**`uniq`** — 4/11 _(run)_. Present: `-c -d -u -i`. Missing `-f -s -w -D --group -z`.
-
 **`cut`** — 4/12 _(run)_. Present: `-c -f -d -s`. Missing `-b --complement
 --output-delimiter -n -z`.
 
@@ -220,7 +225,7 @@ from the original's directory order.
 **`du`** — 3/25 _(run)_. Present: `-s -h -k`. Missing `-d/--max-depth -c -a -b -B -x
 -L -S -t --exclude --time --inodes`. Totals match on the tested trees.
 
-**`df`** — 2/15 _(run)_. Present: `-h -k`. Missing `-i -T -a -l -t -x -B -H --total
+**`df`** — 3/15 _(run)_. Present: `-h -k -a`. Missing `-i -T -l -t -x -B -H --total
 --output`. `df`, `df -h`, `df -k`, `df -a` and explicit paths are byte-identical to
 GNU, including which filesystems are listed and how the columns are sized.
 
@@ -228,11 +233,6 @@ GNU, including which filesystems are listed and how the columns are sized.
 parsing or setting at all — plus `-R` `--rfc-3339` `-f` `--resolution`. Format
 directives: `%Y %m %d %H %M %S %F %T %s %a %b %e %j %z %Z %N` work; `%U` (and likely
 `%W %G %V %C %g`) are rejected. `-u` and `-r FILE` are present and match.
-
-**`readlink`** — 1/8 _(run)_. Only `-f`. Missing `-e -m -n -q -s -v -z`.
-
-**`realpath`** — 0/10 _(run)_. No options; resolves the path only. Missing `-e -m -s
--q -z --relative-to --relative-base -L -P`.
 
 **`strings`** — 1/13 _(run)_. Only `-n`, whose output matches binutils exactly.
 Missing `-a -t -f -o -e -d -w -T -s`.
@@ -361,8 +361,8 @@ Missing: **`-j` `-J` `--zstd` `--exclude` `-T` `--strip-components` `--numeric-o
 `--owner`/`--group` `-k` `--overwrite` `-O` `-A` `-r` `-u` `--delete` `-P` `-S`**.
 `tvf` prints bare names instead of the `drwxr-xr-x user/group size date name` listing.
 
-**`gzip` / `gunzip`** — 1/17 and 3/12 _(run)_. Streams interoperate with the real
-tools in both directions. Present: `-c -d -k`. Missing **`-1`…`-9` `-t` `-l` `-v` `-f`
+**`gzip` / `gunzip`** — 4/17 and 4/12 _(run)_. Streams interoperate with the real
+tools in both directions. Present: `-c -d -k -f`. Missing **`-1`…`-9` `-t` `-l` `-v`
 `-r` `-q` `-n` `-N` `-S`**.
 
 **`chown` / `chgrp`** — 1/12 _(run)_. Present: `-R -h`; recursive ownership and group
@@ -388,11 +388,6 @@ this project's directory-unlock recovery walker does not reproduce byte for byte
 
 **`free`** — 4/19 _(run)_. Present: `-b -k -m -h`(sizes). Missing `-t -s -c -w -l -v
 --si --kilo/--mega/…`. `free` and `free -h` are byte-identical to procps.
-
-**`uptime`** — 1/4 _(run)_. Missing `-p` `-s` `-r` `-c`, and the default line omits the
-user count: `02:47:09 up 01:23, load average: …` vs `02:47:09 up 1:23, 1 user, load average: …`.
-
-**`hostname`** — 1/7 _(run)_. Bare form matches. Missing `-f -d -i -a -s -y -F`.
 
 **`lsof`** — 3/15 _(run)_. `-n -P -p -i` present. Missing `-c -u -t -d -s -F -g -x -R -a`.
 
@@ -511,9 +506,6 @@ own, not wget's dotted meter.
 
 **`pgrep` / `pkill`** — 3/31 and 2/29 _(run)_. `-f -x -v` and `-SIGNAL` present.
 Missing **`-l` `-a` `-u`/`-U` `-P` `-n` `-o` `-c` `-d` `-i` `-t` `-g`/`-G` `--ns`**.
-
-**`pidof`** — no options _(run)_. Ordering matches (newest first). Missing `-s -o -x
--c -q -w -t -S`.
 
 **`modprobe` / `insmod` / `rmmod` / `lsmod`** — 3/27, 0/3, 1/3, 0/2 _(src, run)_.
 Load/unload work; `lsmod` output matches except one column of padding. Missing
@@ -666,20 +658,6 @@ bare `dig` invocation, not a bug. Missing: `-b -f -q -y`, `+dnssec` and every
 DNSSEC-related option, the `; <<>> DiG VERSION <<>>` command-line banner and
 `+cmd`'s `global options:` line (ba6 isn't claiming to be a specific dig build),
 zone transfers, and most other `+option`s.
-
-**`xargs`** _(run, vs GNU findutils xargs)_ — input splitting, quoting and `-I`
-semantics match GNU. Present: `-0` (NUL-delimited input, preserving empty items
-between consecutive NUL bytes), `-r -n -I` (attached, spaced and `=` forms), `-a`
-(read items from a file instead of stdin), `-d` (custom single-character delimiter,
-decoding `\n`/`\t`/escape forms), `-E`/`-e` (stop reading at a sentinel item),
-`-t`/`-p` (echo each command line to stderr before running it, `-p` additionally
-prompting on `/dev/tty` — never stdin, which may be the item source — and running
-only on a `y`/`Y` answer), `-s` (cap the assembled command line's length, splitting
-into more invocations as needed) and `-x` (fail outright if a single item can never
-fit under `-s`, matched to real xargs's exact `argument line too long` wording and
-exit status), and `-P` (genuine concurrent batches, not a sequential simulation —
-verified with a workload whose optimal makespan under 4-way concurrency was checked
-by hand). Missing `-L`, `--process-slot-var`.
 
 **`cfdisk`** _(run, vs util-linux 2.42.2)_ — a terminal partition editor.
 Recognizes util-linux's seven option groups: `-L`/`--color`, `--lock`,

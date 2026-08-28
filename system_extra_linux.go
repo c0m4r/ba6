@@ -20,39 +20,48 @@ import (
 )
 
 func cmdUptime(args []string) int {
-	pretty := false
+	pretty, raw, since, container := false, false, false, false
 	for _, arg := range args {
-		if arg == "-p" || arg == "--pretty" {
+		switch arg {
+		case "-p", "--pretty":
 			pretty = true
-		} else {
+		case "-r", "--raw":
+			raw = true
+		case "-s", "--since":
+			since = true
+		case "-c", "--container":
+			container = true
+		default:
 			fatalf("uptime", "unsupported option %q", arg)
 			return 1
 		}
 	}
-	data, err := os.ReadFile("/proc/uptime")
+	if os.Getenv("PROCPS_CONTAINER") != "" {
+		container = true
+	}
+	if raw {
+		seconds, err := uptimeSeconds(false)
+		if err != nil {
+			fatalf("uptime", "cannot get system uptime: %v", err)
+			return 1
+		}
+		load, _ := os.ReadFile("/proc/loadavg")
+		loadFields := strings.Fields(string(load))
+		av := [3]float64{}
+		for i := 0; i < 3 && i < len(loadFields); i++ {
+			av[i], _ = strconv.ParseFloat(loadFields[i], 64)
+		}
+		fmt.Printf("%d %f %d %.2f %.2f %.2f\n", time.Now().Unix(), seconds, topUserCount(), av[0], av[1], av[2])
+		return 0
+	}
+	seconds, err := uptimeSeconds(container)
 	if err != nil {
-		fatalf("uptime", "%v", err)
+		fatalf("uptime", "cannot get system uptime: %v", err)
 		return 1
 	}
-	fields := strings.Fields(string(data))
-	seconds, err := strconv.ParseFloat(fields[0], 64)
-	if err != nil {
-		return 1
-	}
-	d := time.Duration(seconds) * time.Second
-	if pretty {
-		days := int(d / (24 * time.Hour))
-		hours := int(d/time.Hour) % 24
-		mins := int(d/time.Minute) % 60
-		parts := []string{}
-		if days > 0 {
-			parts = append(parts, fmt.Sprintf("%d day(s)", days))
-		}
-		if hours > 0 {
-			parts = append(parts, fmt.Sprintf("%d hour(s)", hours))
-		}
-		parts = append(parts, fmt.Sprintf("%d minute(s)", mins))
-		fmt.Println("up " + strings.Join(parts, ", "))
+	if since {
+		boot := float64(time.Now().Unix()) - seconds
+		fmt.Println(time.Unix(int64(boot), 0).Format("2006-01-02 15:04:05"))
 		return 0
 	}
 	load, _ := os.ReadFile("/proc/loadavg")
@@ -61,17 +70,116 @@ func cmdUptime(args []string) int {
 	if len(loadFields) >= 3 {
 		loads = strings.Join(loadFields[:3], ", ")
 	}
-	fmt.Printf(" %s up %s, load average: %s\n", time.Now().Format("15:04:05"), formatUptime(d), loads)
+	if pretty {
+		fmt.Println("up " + formatUptimePretty(seconds))
+		return 0
+	}
+	now := time.Now()
+	users := topUserCount()
+	plural := "users"
+	if users == 1 {
+		plural = "user"
+	}
+	fmt.Printf(" %02d:%02d:%02d up %s, %2d %s,  load average: %s\n",
+		now.Hour(), now.Minute(), now.Second(), formatUptimeShort(seconds), users, plural, loads)
 	return 0
 }
-func formatUptime(d time.Duration) string {
-	days := int(d / (24 * time.Hour))
-	hours := int(d/time.Hour) % 24
-	mins := int(d/time.Minute) % 60
-	if days > 0 {
-		return fmt.Sprintf("%d days, %02d:%02d", days, hours, mins)
+
+// uptimeSeconds reads /proc/uptime, or derives a container's uptime from the
+// difference between CLOCK_BOOTTIME and pid 1's start time the way procps -c
+// does.
+func uptimeSeconds(container bool) (float64, error) {
+	if !container {
+		data, err := os.ReadFile("/proc/uptime")
+		if err != nil {
+			return 0, err
+		}
+		fields := strings.Fields(string(data))
+		if len(fields) < 1 {
+			return 0, fmt.Errorf("empty /proc/uptime")
+		}
+		return strconv.ParseFloat(fields[0], 64)
 	}
-	return fmt.Sprintf("%02d:%02d", hours, mins)
+	var info syscall.Sysinfo_t
+	if err := syscall.Sysinfo(&info); err != nil {
+		return 0, err
+	}
+	pid1, err := readProcess(1)
+	if err != nil {
+		return 0, fmt.Errorf("cannot get container uptime: %v", err)
+	}
+	start := float64(pid1.startTicks) / clockTicks
+	boot := float64(info.Uptime)
+	if boot > start {
+		return boot - start, nil
+	}
+	return 0, nil
+}
+
+// formatUptimeShort renders the uptime component of the default line:
+// "5 days,  2:10", " 1:23" or "42 min", matching procps' %2d padding.
+func formatUptimeShort(seconds float64) string {
+	days := int(seconds) / (24 * 60 * 60)
+	hours := int(seconds) / (60 * 60) % 24
+	mins := int(seconds) / 60 % 60
+	part := ""
+	if days > 0 {
+		suffix := "days"
+		if days == 1 {
+			suffix = "day"
+		}
+		part = fmt.Sprintf("%d %s", days, suffix)
+	}
+	if hours > 0 {
+		comma := ""
+		if days > 0 {
+			comma = ", "
+		}
+		part += fmt.Sprintf("%s%2d:%02d", comma, hours, mins)
+	} else {
+		comma := ""
+		if days > 0 {
+			comma = ", "
+		}
+		part += fmt.Sprintf("%s%d min", comma, mins)
+	}
+	return part
+}
+
+// formatUptimePretty renders the -p form: decades, years, weeks, days, hours
+// and minutes, joined by ", ", each with its singular or plural unit.
+func formatUptimePretty(seconds float64) string {
+	const (
+		year   = 365 * 24 * 60 * 60
+		decade = 10 * year
+		week   = 7 * 24 * 60 * 60
+	)
+	parts := []string{}
+	add := func(value int, unit string) {
+		if value <= 0 {
+			return
+		}
+		if value > 1 {
+			unit += "s"
+		}
+		parts = append(parts, fmt.Sprintf("%d %s", value, unit))
+	}
+	rem := int(seconds)
+	add(rem/decade, "decade")
+	rem %= decade
+	add(rem/year, "year")
+	rem %= year
+	add(rem/week, "week")
+	rem %= week
+	days := rem / (24 * 60 * 60)
+	rem %= 24 * 60 * 60
+	hours := rem / (60 * 60)
+	rem %= 60 * 60
+	mins := rem / 60
+	add(days, "day")
+	add(hours, "hour")
+	add(mins, "minute")
+	return strings.Join(parts, ", ")
 }
 
 func cmdSync(args []string) int {
@@ -593,38 +701,205 @@ func cmdDmesg(args []string) int {
 func cmdPgrep(args []string) int { return processMatchCommand("pgrep", args, false) }
 func cmdPkill(args []string) int { return processMatchCommand("pkill", args, true) }
 func cmdPidof(args []string) int {
-	for _, arg := range args {
-		if len(arg) > 1 && arg[0] == '-' {
+	singleShot, checkRoot, quiet, scriptsToo, workers, threads := false, false, false, false, false, false
+	separator := " "
+	var omit []int
+	var names []string
+	i := 0
+	for ; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "-s" || arg == "--single-shot":
+			singleShot = true
+		case arg == "-q" || arg == "--quiet":
+			// -q implies -s in procps: only the exit status is wanted.
+			quiet, singleShot = true, true
+		case arg == "-c" || arg == "--check-root":
+			checkRoot = true
+		case arg == "-x":
+			scriptsToo = true
+		case arg == "-w" || arg == "--with-workers":
+			workers = true
+		case arg == "-t" || arg == "--lightweight":
+			threads = true
+		case arg == "-o" || arg == "--omit-pid":
+			i++
+			if i >= len(args) {
+				fatalf("pidof", "option requires an argument -- 'o'")
+				return 1
+			}
+			omit = append(omit, pidofOmitList(args[i])...)
+		case strings.HasPrefix(arg, "--omit-pid="):
+			omit = append(omit, pidofOmitList(strings.TrimPrefix(arg, "--omit-pid="))...)
+		case arg == "-S" || arg == "-d":
+			i++
+			if i >= len(args) {
+				fatalf("pidof", "option requires an argument -- '%s'", arg)
+				return 1
+			}
+			separator = args[i]
+		case strings.HasPrefix(arg, "-S") || strings.HasPrefix(arg, "-d"):
+			if len(arg) > 2 {
+				separator = arg[2:]
+			}
+		case strings.HasPrefix(arg, "-") && len(arg) > 1:
 			fatalf("pidof", "unrecognized option '%s'", arg)
 			return 1
+		default:
+			names = append(names, arg)
 		}
 	}
-	if len(args) == 0 {
+	if len(names) == 0 {
 		fatalf("pidof", "missing program name")
 		return 1
 	}
+	omitted := map[int]bool{}
+	for _, pid := range omit {
+		omitted[pid] = true
+	}
+	myRoot := ""
+	if checkRoot && os.Geteuid() == 0 {
+		myRoot, _ = os.Readlink("/proc/self/root")
+	}
+
 	processes, err := readProcesses(nil)
 	if err != nil {
 		fatalf("pidof", "%v", err)
 		return 1
 	}
-	status := 1
-	for _, name := range args {
-		matches := []string{}
-		// readProcesses returns ascending PIDs; pidof prints the newest match
-		// first, so walk the list backwards.
-		for i := len(processes) - 1; i >= 0; i-- {
-			p := processes[i]
-			if p.comm == name || filepath.Base(strings.Fields(p.args)[0]) == name {
-				matches = append(matches, strconv.Itoa(p.pid))
+	ids := make([]int, 0, len(processes))
+	for _, p := range processes {
+		ids = append(ids, p.pid)
+	}
+	if threads {
+		for _, p := range processes {
+			entries, readErr := os.ReadDir(filepath.Join("/proc", strconv.Itoa(p.pid), "task"))
+			if readErr != nil {
+				continue
+			}
+			for _, entry := range entries {
+				if tid, convErr := strconv.Atoi(entry.Name()); convErr == nil && tid != p.pid {
+					ids = append(ids, tid)
+				}
+			}
+		}
+	}
+	found := false
+	var output []string
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		programBase := filepath.Base(name)
+		matches := []int{}
+		for _, id := range ids {
+			if omitted[id] {
+				continue
+			}
+			proc := pidofRead(id)
+			if checkRoot {
+				if root, linkErr := os.Readlink(filepath.Join("/proc", strconv.Itoa(id), "root")); linkErr != nil || root != myRoot {
+					continue
+				}
+			}
+			if len(proc.argv) == 0 && !workers {
+				continue
+			}
+			argv0 := ""
+			argv1 := ""
+			if len(proc.argv) > 0 {
+				argv0 = proc.argv[0]
+			}
+			if len(proc.argv) > 1 {
+				argv1 = proc.argv[1]
+			}
+			// Processes whose argv0 starts with '-' are login shells.
+			argv0 = strings.TrimPrefix(argv0, "-")
+			argv0base := filepath.Base(argv0)
+			exeBase := filepath.Base(proc.exe)
+			match := name == argv0base || programBase == argv0 || name == argv0 ||
+				(workers && name == proc.comm) || name == exeBase || name == proc.exe
+			// A space inside argv0 means the title was rewritten; the
+			// process comm is then the only reliable name.
+			if !match && strings.Contains(argv0, " ") {
+				match = name == proc.comm
+			}
+			// -x finds interpreters running a named script: the comm is the
+			// script name and the name matches argv1.
+			if !match && scriptsToo && argv1 != "" {
+				argv1base := filepath.Base(argv1)
+				if strings.HasPrefix(argv1base, proc.comm) &&
+					(name == argv1base || programBase == argv1 || name == argv1) {
+					match = true
+				}
+			}
+			if match {
+				matches = append(matches, id)
 			}
 		}
 		if len(matches) > 0 {
-			fmt.Println(strings.Join(matches, " "))
-			status = 0
+			found = true
+		}
+		sort.Sort(sort.Reverse(sort.IntSlice(matches)))
+		for idx, pid := range matches {
+			if singleShot && idx > 0 {
+				break
+			}
+			output = append(output, strconv.Itoa(pid))
 		}
 	}
-	return status
+	if !quiet && found {
+		fmt.Fprintln(os.Stdout, strings.Join(output, separator))
+	}
+	if found {
+		return 0
+	}
+	return 1
+}
+
+// pidofOmitList parses -o's comma/colon/semicolon-separated PID list,
+// honouring the historic %PPID token.
+func pidofOmitList(text string) []int {
+	var list []int
+	for _, token := range strings.FieldsFunc(text, func(r rune) bool { return r == ',' || r == ';' || r == ':' }) {
+		if token == "%PPID" {
+			list = append(list, os.Getppid())
+			continue
+		}
+		pid, err := strconv.Atoi(token)
+		if err != nil {
+			fatalf("pidof", "illegal omit pid value (%s)!", token)
+			continue
+		}
+		list = append(list, pid)
+	}
+	return list
+}
+
+// pidofRead captures one task's argv, comm and executable link.
+func pidofRead(id int) struct {
+	argv []string
+	comm string
+	exe  string
+} {
+	base := filepath.Join("/proc", strconv.Itoa(id))
+	var proc struct {
+		argv []string
+		comm string
+		exe  string
+	}
+	if cmdline, err := os.ReadFile(filepath.Join(base, "cmdline")); err == nil {
+		for _, part := range strings.Split(string(cmdline), "\x00") {
+			if part != "" {
+				proc.argv = append(proc.argv, part)
+			}
+		}
+	}
+	if comm, err := os.ReadFile(filepath.Join(base, "comm")); err == nil {
+		proc.comm = strings.TrimSuffix(string(comm), "\n")
+	}
+	proc.exe, _ = os.Readlink(filepath.Join(base, "exe"))
+	return proc
 }
 func processMatchCommand(prog string, args []string, send bool) int {
 	full, exact, invert := false, false, false

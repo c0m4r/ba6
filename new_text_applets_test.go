@@ -318,3 +318,59 @@ func TestJoinFieldsAndSeparators(t *testing.T) {
 		t.Fatalf("join unsorted = (%d, %q)", status, stderr)
 	}
 }
+
+func TestUniqSkipAndWidth(t *testing.T) {
+	status, out, _ := captureApplet(t, cmdUniq, []string{"-f1", "-c"}, "a  x\na x\n")
+	if status != 0 || out != "      1 a  x\n      1 a x\n" {
+		t.Fatalf("uniq -f1 = (%d, %q)", status, out)
+	}
+	status, out, _ = captureApplet(t, cmdUniq, []string{"-s1", "-w2", "-c"}, "x a b\nx a c\n")
+	if status != 0 || out != "      2 x a b\n" {
+		t.Fatalf("uniq -s1 -w2 = (%d, %q)", status, out)
+	}
+	status, out, _ = captureApplet(t, cmdUniq, []string{"-w1", "-c"}, "ab x\nac y\n")
+	if status != 0 || out != "      2 ab x\n" {
+		t.Fatalf("uniq -w1 = (%d, %q)", status, out)
+	}
+	status, out, _ = captureApplet(t, cmdUniq, []string{"-f1", "-s1", "-w1", "-c"}, "a\nb\n")
+	if status != 0 || out != "      2 a\n" {
+		t.Fatalf("uniq -f1 -s1 -w1 = (%d, %q)", status, out)
+	}
+}
+
+func TestUniqGroupsAndZeroTerminated(t *testing.T) {
+	in := "a\na\nb\nc\nc\n"
+	cases := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"-D"}, "a\na\nc\nc\n"},
+		{[]string{"--all-repeated=prepend"}, "\na\na\n\nc\nc\n"},
+		{[]string{"--all-repeated=separate"}, "a\na\n\nc\nc\n"},
+		{[]string{"-D", "-u"}, "a\nc\n"},
+		{[]string{"--group"}, "a\na\n\nb\n\nc\nc\n"},
+		{[]string{"--group=prepend"}, "\na\na\n\nb\n\nc\nc\n"},
+		{[]string{"--group=append"}, "a\na\n\nb\n\nc\nc\n\n"},
+		{[]string{"--group=both"}, "\na\na\n\nb\n\nc\nc\n\n"},
+	}
+	for _, c := range cases {
+		status, out, stderr := captureApplet(t, cmdUniq, c.args, in)
+		if status != 0 || out != c.want {
+			t.Fatalf("uniq %v = (%d, %q, %q)", c.args, status, out, stderr)
+		}
+	}
+	status, out, _ := captureApplet(t, cmdUniq, []string{"-z", "-c"}, "a\x00a\x00b\x00")
+	if status != 0 || out != "      2 a\x00      1 b\x00" {
+		t.Fatalf("uniq -z -c = (%d, %q)", status, out)
+	}
+	status, out, _ = captureApplet(t, cmdUniq, []string{"-z", "-D"}, "a\x00a\x00b\x00c\x00c\x00")
+	if status != 0 || out != "a\x00a\x00c\x00c\x00" {
+		t.Fatalf("uniq -z -D = (%d, %q)", status, out)
+	}
+	if status, _, stderr := captureApplet(t, cmdUniq, []string{"-D", "-c"}, "a\na\n"); status == 0 || !strings.Contains(stderr, "meaningless") {
+		t.Fatalf("uniq -D -c should be rejected = (%d, %q)", status, stderr)
+	}
+	if status, _, stderr := captureApplet(t, cmdUniq, []string{"--group", "-d"}, "a\na\n"); status == 0 || !strings.Contains(stderr, "mutually exclusive") {
+		t.Fatalf("uniq --group -d should be rejected = (%d, %q)", status, stderr)
+	}
+}

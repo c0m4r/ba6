@@ -736,10 +736,30 @@ func readTopSnapshot(options topOptions) (topSnapshot, error) {
 	return snapshot, nil
 }
 
-// topUserCount reads Linux's fixed-size utmp records directly. It avoids a
+// topUserCount counts logged-in users the way procps does: systemd sessions
+// first (only active ones whose class starts with "user"), falling back to
+// Linux's fixed-size utmp records when systemd is not running. It avoids a
 // child process and is deliberately best-effort: minimal recovery images often
 // do not create an utmp file at all.
 func topUserCount() int {
+	if sessions, err := os.ReadDir("/run/systemd/sessions"); err == nil && len(sessions) > 0 {
+		count := 0
+		for _, entry := range sessions {
+			if entry.IsDir() {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join("/run/systemd/sessions", entry.Name()))
+			if err != nil {
+				continue
+			}
+			for _, line := range strings.Split(string(data), "\n") {
+				if strings.HasPrefix(line, "CLASS=user") {
+					count++
+				}
+			}
+		}
+		return count
+	}
 	const (
 		topUtmpRecordSize  = 384
 		topUtmpUserProcess = 7

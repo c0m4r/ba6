@@ -441,8 +441,15 @@ Resolve a host name using DNS.`,
 Display input in hexadecimal and ASCII.`,
 	"pgrep": `Usage: pgrep [-fxv] PATTERN
 Print PIDs whose process names match a regular expression.`,
-	"pidof": `Usage: pidof NAME...
-Print process IDs for program names.`,
+	"pidof": `Usage: pidof [-s] [-x] [-q] [-o PID,...] [-S SEP] NAME...
+Print process IDs for program names, newest first.
+
+Options:
+  -s        single shot: return the newest PID only
+  -x        also find shells running the named scripts
+  -q        quiet mode: only set the exit code
+  -o PIDs   omit the given PIDs from the result
+  -S SEP    use SEP as separator between PIDs`,
 	"ping": `Usage: ping [-46] [-c COUNT] [-W SECONDS] [-i SECONDS] HOST
 Send IPv4 or IPv6 ICMP echo requests. The address family is selected from the
 resolved address unless -4 or -6 is specified.`,
@@ -556,8 +563,14 @@ Flush filesystem buffers.`,
 	"umount": `Usage: umount [-aflr] [TARGET]...
 Unmount filesystems. -a processes all mounted filesystems and -r remounts
 busy filesystems read-only.`,
-	"uptime": `Usage: uptime [-p]
-Display system uptime and load averages.`,
+	"uptime": `Usage: uptime [-p] [-s] [-r] [-c]
+Display system uptime and load averages.
+
+Options:
+  -p        pretty format (weeks, days, hours, minutes)
+  -s        system up since, as yyyy-mm-dd HH:MM:SS
+  -r        raw format: boot time, uptime, users, load averages
+  -c        show container uptime (boot time minus pid 1's start)`,
 	"wget": `Usage: wget [OPTION]... URL...
 Download HTTP or HTTPS resources. Redirects are followed and each URL is saved
 under a name taken from its path; an existing name gains a .1, .2 suffix.
@@ -595,11 +608,12 @@ Encode Zstandard raw blocks (and RLE blocks for uniform data). -d decodes, -c
 uses standard output, -k keeps inputs, and -f replaces an existing output.`,
 	"which": `Usage: which [-a] COMMAND...
 Print executable paths found through PATH.`,
-	"xargs": `Usage: xargs [-0r] [-n NUMBER] [-I REPLACE] [COMMAND [ARG]...]
+	"xargs": `Usage: xargs [-0r] [-n NUMBER] [-L NUMBER] [-I REPLACE] [COMMAND [ARG]...]
 Build and execute commands from standard input. Items are separated by blanks
 and newlines; quotes and backslashes group them, and nothing is expanded. With
--I, each input line is substituted whole into one command. A value may be
-attached to its option (-n1) or given separately (-n 1).`,
+-I, each input line is substituted whole into one command. With -L, at most
+NUMBER input lines feed one command (a trailing blank continues a line). A
+value may be attached to its option (-n1) or given separately (-n 1).`,
 	"df": `Usage: df [OPTION]... [FILE]...
 Show filesystem space usage for FILEs, or all mounted filesystems.
 
@@ -660,12 +674,17 @@ Options:
   -k        keep input files
   -f        replace existing output files
   --help    show this help`,
-	"hostname": `Usage: hostname [-s]
-Display the system hostname. Setting the hostname is intentionally unsupported.
+	"hostname": `Usage: hostname [-a|-d|-f|-i|-s|-y] [NAME]
+Display or set the system hostname.
 
 Options:
-  -s        display the name before the first dot
-  --help    show this help`,
+  -a        alias names from the hosts database
+  -d        DNS domain name
+  -f        DNS host name or FQDN
+  -i        IP addresses for the host name
+  -s        short host name
+  -y        NIS/YP domain name
+  -F FILE   set the host name from FILE (needs root)`,
 
 	"hwclock": `Usage: hwclock [OPTION]...
 Read and set the real-time clock.
@@ -841,17 +860,29 @@ Options:
   -T        always treat the last operand as a link name
   -v        print each link as it is created
   --help    show this help`,
-	"readlink": `Usage: readlink [OPTION] FILE
-Print the value of a symbolic link.
+	"readlink": `Usage: readlink [OPTION]... FILE...
+Print the value of a symbolic link, or canonicalize the path.
 
 Options:
-  -f        canonicalize by following every symbolic link
-  --help    show this help`,
-	"realpath": `Usage: realpath FILE...
-Print canonical absolute paths. Every path component must exist.
+  -f        canonicalize; all but the last component must exist
+  -e        canonicalize; all components must exist
+  -m        canonicalize; nothing need exist
+  -n        do not print the trailing newline
+  -z        end each output line with NUL instead of newline
+  -s, -q    suppress error messages
+  -v        report error messages`,
+	"realpath": `Usage: realpath [OPTION]... FILE...
+Print resolved absolute paths.
 
 Options:
-  --help    show this help`,
+  -e        all components must exist
+  -m        no component need exist
+  -s        do not expand symlinks, only . and ..
+  -L        resolve .. components before symlinks
+  -P        resolve symlinks as encountered (default)
+  -z        end each output line with NUL
+  --relative-to=FILE    print paths relative to FILE
+  --relative-base=DIR   print relative paths only when inside DIR`,
 	"sleep": `Usage: sleep NUMBER[SUFFIX]...
 Pause for the combined duration of all operands.
 
@@ -1055,10 +1086,15 @@ Collapse adjacent equal lines.
 
 Options:
   -c        prefix lines with occurrence counts
-  -d        print only repeated lines
+  -d        print only duplicated lines
   -u        print only unique lines
-  -i        ignore case
-  --help    show this help`,
+  -i        ignore case when comparing
+  -f N      skip N fields before comparing
+  -s N      skip N characters before comparing
+  -w N      compare no more than N characters
+  -D        print every line of duplicated groups
+  --group   separate groups with blank lines
+  -z        lines are NUL-terminated`,
 	"cksum": `Usage: cksum [FILE]...
 Print the CRC-32/CKSUM checksum and byte count of each FILE, or of standard
 input with no operands.

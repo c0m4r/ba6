@@ -316,6 +316,41 @@ func TestXargsExtendedOptions(t *testing.T) {
 			t.Fatalf("xargs -P4 did not run item %s: %v", name, err)
 		}
 	}
+
+	// -L groups input lines into batches, honouring quoting and blank lines.
+	status, out, _ = captureApplet(t, cmdXargs, []string{"-L", "2", "/bin/echo"}, "a \"b c\"\nd e\nf\n")
+	if status != 0 || out != "a b c d e\nf\n" {
+		t.Fatalf("xargs -L2 = (%d, %q)", status, out)
+	}
+	status, out, _ = captureApplet(t, cmdXargs, []string{"-L", "1", "/bin/echo"}, "a \nb c\n")
+	if status != 0 || out != "a b c\n" {
+		t.Fatalf("xargs -L1 trailing blank should continue the line = (%d, %q)", status, out)
+	}
+	status, out, _ = captureApplet(t, cmdXargs, []string{"-L", "1", "/bin/echo"}, "x\n\n\n\ny\n")
+	if status != 0 || out != "x\ny\n" {
+		t.Fatalf("xargs -L1 blank lines should be skipped = (%d, %q)", status, out)
+	}
+	// -L and -n are mutually exclusive: the last one wins, with a warning.
+	status, out, errOut = captureApplet(t, cmdXargs, []string{"-L", "1", "-n", "2", "/bin/echo"}, "a\nb\n")
+	if status != 0 || out != "a b\n" || !strings.Contains(errOut, "mutually exclusive") {
+		t.Fatalf("xargs -L1 -n2 should let -n win = (%d, %q, %q)", status, out, errOut)
+	}
+	// --process-slot-var numbers children by their concurrency slot, from 0.
+	slotDir := t.TempDir()
+	slotScript := "echo $V > \"" + slotDir + "/$1\""
+	status, _, _ = captureApplet(t, cmdXargs, []string{"--process-slot-var=V", "-P", "2", "-n", "1", "/bin/sh", "-c", slotScript, "sh"}, "a\nb\nc\nd\n")
+	if status != 0 {
+		t.Fatalf("xargs --process-slot-var returned %d", status)
+	}
+	for name, want := range map[string]string{"a": "0", "b": "1", "c": "0", "d": "1"} {
+		data, err := os.ReadFile(filepath.Join(slotDir, name))
+		if err != nil {
+			t.Fatalf("xargs --process-slot-var did not run item %s: %v", name, err)
+		}
+		if got := strings.TrimSpace(string(data)); got != want {
+			t.Fatalf("xargs --process-slot-var slot for %s = %q, want %q", name, got, want)
+		}
+	}
 }
 
 func TestInitSupervisesAndPropagatesStatus(t *testing.T) {

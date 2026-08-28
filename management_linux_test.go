@@ -7,7 +7,10 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -224,5 +227,118 @@ func TestWatchTitleLayout(t *testing.T) {
 	}
 	if !strings.HasSuffix(title, "deb1: Fri Aug 28 18:45:09 2026") {
 		t.Fatalf("long title lost its right edge: %q", title)
+	}
+}
+
+func TestUptimeFormats(t *testing.T) {
+	cases := []struct {
+		seconds float64
+		want    string
+	}{
+		{30, "0 min"},
+		{83 * 60, " 1:23"},
+		{5*24*60*60 + 2*60*60 + 10*60, "5 days,  2:10"},
+		{2 * 24 * 60 * 60, "2 days, 0 min"},
+		{24*60*60 + 5*60, "1 day, 5 min"},
+	}
+	for _, c := range cases {
+		if got := formatUptimeShort(c.seconds); got != c.want {
+			t.Fatalf("formatUptimeShort(%v) = %q, want %q", c.seconds, got, c.want)
+		}
+	}
+	pretty := []struct {
+		seconds float64
+		want    string
+	}{
+		{83 * 60, "1 hour, 23 minutes"},
+		{5*24*60*60 + 2*60*60 + 10*60, "5 days, 2 hours, 10 minutes"},
+		{3 * 365 * 24 * 60 * 60, "3 years"},
+		{2*7*24*60*60 + 24*60*60, "2 weeks, 1 day"},
+		{11 * 365 * 24 * 60 * 60, "1 decade, 1 year"},
+		{90, "1 minute"},
+		{150, "2 minutes"},
+	}
+	for _, c := range pretty {
+		if got := formatUptimePretty(c.seconds); got != c.want {
+			t.Fatalf("formatUptimePretty(%v) = %q, want %q", c.seconds, got, c.want)
+		}
+	}
+	status, out, _ := captureApplet(t, cmdUptime, []string{"-s"}, "")
+	if status != 0 || !regexp.MustCompile(`^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\n$`).MatchString(out) {
+		t.Fatalf("uptime -s = (%d, %q)", status, out)
+	}
+	status, out, _ = captureApplet(t, cmdUptime, []string{"-r"}, "")
+	fields := strings.Fields(out)
+	if status != 0 || len(fields) != 6 {
+		t.Fatalf("uptime -r = (%d, %q)", status, out)
+	}
+	status, out, _ = captureApplet(t, cmdUptime, []string{"-p"}, "")
+	if status != 0 || !strings.HasPrefix(out, "up ") {
+		t.Fatalf("uptime -p = (%d, %q)", status, out)
+	}
+	status, out, _ = captureApplet(t, cmdUptime, nil, "")
+	if status != 0 || !regexp.MustCompile(`^ \d{2}:\d{2}:\d{2} up .*, +\d+ users?,  load average: .*\n$`).MatchString(out) {
+		t.Fatalf("uptime default = (%d, %q)", status, out)
+	}
+}
+
+func TestPidofScriptsAndOptions(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "pidof-script-check.sh")
+	scriptSource := "#!/bin/sh\nsleep 60\n"
+	if err := os.WriteFile(script, []byte(scriptSource), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	spawn := func() int {
+		cmd := exec.Command(script)
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = cmd.Process.Kill() })
+		return cmd.Process.Pid
+	}
+	first := spawn()
+	time.Sleep(50 * time.Millisecond)
+	second := spawn()
+	time.Sleep(50 * time.Millisecond)
+
+	name := "pidof-script-check.sh"
+	// Plain pidof does not match a shebang script: comm is not consulted.
+	status, out, _ := captureApplet(t, cmdPidof, []string{name}, "")
+	if status == 0 {
+		t.Fatalf("pidof without -x matched the script: (%d, %q)", status, out)
+	}
+	// -x finds the interpreters running it, newest first.
+	status, out, _ = captureApplet(t, cmdPidof, []string{"-x", name}, "")
+	if status != 0 {
+		t.Fatalf("pidof -x = (%d, %q)", status, out)
+	}
+	got := strings.Fields(out)
+	if len(got) != 2 || got[0] != strconv.Itoa(second) || got[1] != strconv.Itoa(first) {
+		t.Fatalf("pidof -x ordering = %q, want [%d %d]", out, second, first)
+	}
+	// -s keeps only the newest.
+	status, out, _ = captureApplet(t, cmdPidof, []string{"-x", "-s", name}, "")
+	if status != 0 || strings.TrimSpace(out) != strconv.Itoa(second) {
+		t.Fatalf("pidof -x -s = (%d, %q)", status, out)
+	}
+	// -o omits the named PID.
+	status, out, _ = captureApplet(t, cmdPidof, []string{"-x", "-o", strconv.Itoa(second), name}, "")
+	if status != 0 || strings.TrimSpace(out) != strconv.Itoa(first) {
+		t.Fatalf("pidof -o = (%d, %q)", status, out)
+	}
+	// -S changes the separator.
+	status, out, _ = captureApplet(t, cmdPidof, []string{"-x", "-S", ",", name}, "")
+	if status != 0 || out != strconv.Itoa(second)+","+strconv.Itoa(first)+"\n" {
+		t.Fatalf("pidof -S = (%d, %q)", status, out)
+	}
+	// -q prints nothing and only signals the result.
+	status, out, _ = captureApplet(t, cmdPidof, []string{"-q", "-x", name}, "")
+	if status != 0 || out != "" {
+		t.Fatalf("pidof -q = (%d, %q)", status, out)
+	}
+	status, _, _ = captureApplet(t, cmdPidof, []string{"-q", "pidof-no-such-program"}, "")
+	if status == 0 {
+		t.Fatalf("pidof -q on a missing program returned 0")
 	}
 }

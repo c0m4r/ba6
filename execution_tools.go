@@ -146,6 +146,7 @@ func cmdXargs(args []string) int {
 	haveDelim := false
 	verbose, interactive, exitOnOverflow := false, false, false
 	maxChars, maxProcs := 0, 1
+	maxLines, slotVar := 0, ""
 	commandArgs := []string{}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -170,7 +171,38 @@ func cmdXargs(args []string) int {
 				fatalf("xargs", "invalid argument count %q", text)
 				return 1
 			}
+			if maxLines > 0 {
+				fatalf("xargs", "warning: options --max-lines and --max-args/-n are mutually exclusive, ignoring previous --max-lines value")
+				maxLines = 0
+			}
+			if replace != "" {
+				fatalf("xargs", "warning: options --replace and --max-args/-n are mutually exclusive, ignoring previous --replace value")
+				replace = ""
+			}
 			maxArgs, i = count, next
+		case strings.HasPrefix(arg, "-L") || strings.HasPrefix(arg, "--max-lines"):
+			text, next, ok := optionArgument(args, i, "-L", "--max-lines")
+			count, convErr := strconv.Atoi(text)
+			if !ok || convErr != nil || count < 1 {
+				fatalf("xargs", "invalid max-lines count %q", text)
+				return 1
+			}
+			if maxArgs > 0 {
+				fatalf("xargs", "warning: options --max-args and -L are mutually exclusive, ignoring previous --max-args value")
+				maxArgs = 0
+			}
+			if replace != "" {
+				fatalf("xargs", "warning: options --max-lines and --replace/-I/-i are mutually exclusive, ignoring previous --replace value")
+				replace = ""
+			}
+			maxLines, i = count, next
+		case strings.HasPrefix(arg, "--process-slot-var"):
+			text, next, ok := optionArgument(args, i, "--process-slot-var")
+			if !ok || text == "" {
+				fatalf("xargs", "option requires an argument -- 'process-slot-var'")
+				return 1
+			}
+			slotVar, i = text, next
 		case strings.HasPrefix(arg, "-P") || strings.HasPrefix(arg, "--max-procs"):
 			text, next, ok := optionArgument(args, i, "-P", "--max-procs")
 			count, convErr := strconv.Atoi(text)
@@ -192,6 +224,14 @@ func cmdXargs(args []string) int {
 			if !ok || text == "" {
 				fatalf("xargs", "option requires an argument -- 'I'")
 				return 1
+			}
+			if maxArgs > 0 {
+				fatalf("xargs", "warning: options --replace and --max-args/-n are mutually exclusive, ignoring previous --max-args value")
+				maxArgs = 0
+			}
+			if maxLines > 0 {
+				fatalf("xargs", "warning: options --replace and --max-lines/-l are mutually exclusive, ignoring previous --max-lines value")
+				maxLines = 0
 			}
 			replace, i = text, next
 		case strings.HasPrefix(arg, "-a") || strings.HasPrefix(arg, "--arg-file"):
@@ -246,6 +286,7 @@ func cmdXargs(args []string) int {
 		return 1
 	}
 	var items []string
+	var lineEnds []bool
 	switch {
 	case haveDelim:
 		items = strings.Split(string(data), delim)
@@ -264,6 +305,33 @@ func cmdXargs(args []string) int {
 			if trimmed := strings.Trim(line, " \t"); trimmed != "" {
 				items = append(items, trimmed)
 			}
+		}
+	case maxLines > 0:
+		// -L groups input into logical lines: a line whose last character is a
+		// blank continues on the next physical line, blank lines are skipped,
+		// and quoting still applies within a line. lineEnds marks the last item
+		// of each logical line so the batching step can split between lines.
+		var logical strings.Builder
+		for _, line := range strings.Split(string(data), "\n") {
+			logical.WriteString(line)
+			if strings.HasSuffix(line, " ") || strings.HasSuffix(line, "\t") {
+				continue
+			}
+			if strings.TrimSpace(logical.String()) != "" {
+				lineItems, err := splitXargsInput(logical.String())
+				if err != nil {
+					fatalf("xargs", "%v", err)
+					return 1
+				}
+				for _, item := range lineItems {
+					items = append(items, item)
+					lineEnds = append(lineEnds, false)
+				}
+				if len(lineItems) > 0 {
+					lineEnds[len(lineEnds)-1] = true
+				}
+			}
+			logical.Reset()
 		}
 	default:
 		items, err = splitXargsInput(string(data))
@@ -291,7 +359,7 @@ func cmdXargs(args []string) int {
 		return 0
 	}
 
-	batches := xargsBatches(items, maxArgs, maxChars, commandArgs)
+	batches := xargsBatches(items, maxArgs, maxChars, maxLines, lineEnds, commandArgs)
 	if exitOnOverflow && maxChars > 0 {
 		prefixLen := xargsLineLen(commandArgs)
 		for _, item := range items {
@@ -302,7 +370,7 @@ func cmdXargs(args []string) int {
 		}
 	}
 
-	run := func(batch []string) int {
+	run := func(batch []string, slot int) int {
 		current := append([]string{}, commandArgs...)
 		if replace != "" {
 			joined := strings.Join(batch, " ")
@@ -321,6 +389,9 @@ func cmdXargs(args []string) int {
 			}
 		}
 		cmd := exec.Command(current[0], current[1:]...) //nolint:gosec // G204: xargs intentionally executes user-selected commands.
+		if slotVar != "" {
+			cmd.Env = setEnvironment(os.Environ(), fmt.Sprintf("%s=%d", slotVar, slot))
+		}
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 		if err := cmd.Run(); err != nil {
 			return commandStatus("xargs", err)
@@ -331,7 +402,7 @@ func cmdXargs(args []string) int {
 	if maxProcs == 1 || len(batches) <= 1 {
 		status := 0
 		for _, batch := range batches {
-			if s := run(batch); s != 0 {
+			if s := run(batch, 0); s != 0 {
 				status = s
 			}
 		}
@@ -346,14 +417,15 @@ func cmdXargs(args []string) int {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	status := 0
-	for _, batch := range batches {
+	for slot, batch := range batches {
 		batch := batch
+		slot := slot % limit
 		wg.Add(1)
 		sem <- struct{}{}
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if s := run(batch); s != 0 {
+			if s := run(batch, slot); s != 0 {
 				mu.Lock()
 				status = s
 				mu.Unlock()
@@ -368,8 +440,10 @@ func cmdXargs(args []string) int {
 // item-count limit and -s's total command-line-length limit (0 means
 // unlimited). A single item that alone exceeds maxChars still gets its own
 // batch rather than being dropped; -x turns that case into a hard error
-// before any command runs.
-func xargsBatches(items []string, maxArgs, maxChars int, prefixArgs []string) [][]string {
+// before any command runs. With -L (maxLines > 0), a batch additionally
+// breaks between input lines: lineEnds[i] marks the last item of a logical
+// line, and a batch never spans more than maxLines of them.
+func xargsBatches(items []string, maxArgs, maxChars, maxLines int, lineEnds []bool, prefixArgs []string) [][]string {
 	if len(items) == 0 {
 		return [][]string{{}}
 	}
@@ -380,14 +454,19 @@ func xargsBatches(items []string, maxArgs, maxChars int, prefixArgs []string) []
 	var batches [][]string
 	var current []string
 	curLen := prefixLen
-	for _, item := range items {
+	linesUsed := 0
+	for i, item := range items {
 		addLen := len(item) + 1
-		if len(current) > 0 && (len(current) >= maxArgs || (maxChars > 0 && curLen+addLen > maxChars)) {
+		lineBreak := maxLines > 0 && i > 0 && lineEnds[i-1] && linesUsed >= maxLines
+		if len(current) > 0 && (len(current) >= maxArgs || (maxChars > 0 && curLen+addLen > maxChars) || lineBreak) {
 			batches = append(batches, current)
-			current, curLen = nil, prefixLen
+			current, curLen, linesUsed = nil, prefixLen, 0
 		}
 		current = append(current, item)
 		curLen += addLen
+		if i < len(lineEnds) && lineEnds[i] {
+			linesUsed++
+		}
 	}
 	batches = append(batches, current)
 	return batches
