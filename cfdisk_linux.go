@@ -8,6 +8,7 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -264,7 +265,7 @@ func newCfdiskSession(options cfdiskOptions) (_ *cfdiskSession, err error) {
 	}
 	// GPT locations are addressed through int64-backed ReadAt/WriteAt calls.
 	// A partial logical sector would make its final backup header ambiguous.
-	if size < 1024 || size%512 != 0 || size > uint64(^uint64(0)>>1) {
+	if size < 1024 || size%512 != 0 || size > ^uint64(0)>>1 {
 		return nil, fmt.Errorf("unsupported disk geometry")
 	}
 	sector := make([]byte, 512)
@@ -365,7 +366,7 @@ func (s *cfdiskSession) run() error {
 		s.draw("", "")
 		key, readErr := readEditorKey()
 		if readErr != nil {
-			if readErr == io.EOF {
+			if errors.Is(readErr, io.EOF) {
 				return nil
 			}
 			return readErr
@@ -533,7 +534,7 @@ func (s *cfdiskSession) newPartition() error {
 		s.message = "Cannot create a partition: " + err.Error()
 		return nil
 	}
-	startText, ok, err := s.prompt(fmt.Sprintf("Start sector [%d]: ", region.start), "")
+	startText, ok, err := s.prompt(fmt.Sprintf("Start sector [%d]: ", region.start))
 	if err != nil || !ok {
 		return err
 	}
@@ -545,7 +546,7 @@ func (s *cfdiskSession) newPartition() error {
 			return nil
 		}
 	}
-	sizeText, ok, err := s.prompt(fmt.Sprintf("Size in sectors [%d]: ", region.size), "")
+	sizeText, ok, err := s.prompt(fmt.Sprintf("Size in sectors [%d]: ", region.size))
 	if err != nil || !ok {
 		return err
 	}
@@ -588,7 +589,7 @@ func (s *cfdiskSession) newLogicalPartition() error {
 		s.message = "Cannot create a logical partition: " + err.Error()
 		return nil
 	}
-	startText, ok, err := s.prompt(fmt.Sprintf("Start sector [%d]: ", suggested.dataStart), "")
+	startText, ok, err := s.prompt(fmt.Sprintf("Start sector [%d]: ", suggested.dataStart))
 	if err != nil || !ok {
 		return err
 	}
@@ -609,7 +610,7 @@ func (s *cfdiskSession) newLogicalPartition() error {
 	if start == suggested.dataStart {
 		defaultSize = suggested.dataSize
 	}
-	sizeText, ok, err := s.prompt(fmt.Sprintf("Size in sectors [%d]: ", defaultSize), "")
+	sizeText, ok, err := s.prompt(fmt.Sprintf("Size in sectors [%d]: ", defaultSize))
 	if err != nil || !ok {
 		return err
 	}
@@ -714,7 +715,7 @@ func (s *cfdiskSession) resizePartition() error {
 		s.message = "Select an existing partition first"
 		return nil
 	}
-	value, ok, err := s.prompt(fmt.Sprintf("New size in sectors [%d]: ", partition.size), "")
+	value, ok, err := s.prompt(fmt.Sprintf("New size in sectors [%d]: ", partition.size))
 	if err != nil || !ok {
 		return err
 	}
@@ -752,7 +753,7 @@ func (s *cfdiskSession) resizePartition() error {
 // bounds and overlap with the other logical partitions.
 func (s *cfdiskSession) resizeLogicalPartition(index int) error {
 	partition := s.logical[index].partition
-	value, ok, err := s.prompt(fmt.Sprintf("New size in sectors [%d]: ", partition.size), "")
+	value, ok, err := s.prompt(fmt.Sprintf("New size in sectors [%d]: ", partition.size))
 	if err != nil || !ok {
 		return err
 	}
@@ -832,7 +833,7 @@ func cfdiskSortedPartitions(partitions [4]mbrPartition) [4]mbrPartition {
 }
 
 func (s *cfdiskSession) dump() error {
-	path, ok, err := s.prompt("Dump sfdisk script to file: ", "")
+	path, ok, err := s.prompt("Dump sfdisk script to file: ")
 	if err != nil || !ok {
 		return err
 	}
@@ -842,7 +843,7 @@ func (s *cfdiskSession) dump() error {
 		return nil
 	}
 	if _, statErr := os.Lstat(path); statErr == nil {
-		answer, confirmed, promptErr := s.prompt("Overwrite existing dump? Type yes: ", "")
+		answer, confirmed, promptErr := s.prompt("Overwrite existing dump? Type yes: ")
 		if promptErr != nil || !confirmed {
 			return promptErr
 		}
@@ -929,7 +930,7 @@ func (s *cfdiskSession) changeType() error {
 		s.message = "Select an existing partition first"
 		return nil
 	}
-	value, ok, err := s.prompt(fmt.Sprintf("Hex type [%02x]: ", partition.kind), "")
+	value, ok, err := s.prompt(fmt.Sprintf("Hex type [%02x]: ", partition.kind))
 	if err != nil || !ok {
 		return err
 	}
@@ -961,7 +962,7 @@ func (s *cfdiskSession) changeType() error {
 // extended: DOS only nests one level of extended/logical partitions.
 func (s *cfdiskSession) changeLogicalType(index int) error {
 	partition := &s.logical[index].partition
-	value, ok, err := s.prompt(fmt.Sprintf("Hex type [%02x]: ", partition.kind), "")
+	value, ok, err := s.prompt(fmt.Sprintf("Hex type [%02x]: ", partition.kind))
 	if err != nil || !ok {
 		return err
 	}
@@ -1033,7 +1034,7 @@ func (s *cfdiskSession) write() error {
 		s.message = "Cannot write partition table: " + err.Error()
 		return nil
 	}
-	answer, ok, err := s.prompt("Write table to disk? Type yes: ", "")
+	answer, ok, err := s.prompt("Write table to disk? Type yes: ")
 	if err != nil || !ok {
 		return err
 	}
@@ -1109,7 +1110,7 @@ func (s *cfdiskSession) quit() (bool, error) {
 	if !s.dirty {
 		return true, nil
 	}
-	answer, ok, err := s.prompt("Discard unsaved changes? Type yes: ", "")
+	answer, ok, err := s.prompt("Discard unsaved changes? Type yes: ")
 	if err != nil || !ok {
 		return false, err
 	}
@@ -1622,26 +1623,19 @@ func cfdiskTypeName(kind byte) string {
 	}
 }
 
-func (s *cfdiskSession) prompt(label, defaultValue string) (string, bool, error) {
+func (s *cfdiskSession) prompt(label string) (string, bool, error) {
 	input := ""
 	for {
-		shown := label
-		if defaultValue != "" {
-			shown += "[" + defaultValue + "] "
-		}
-		s.draw(shown, input)
+		s.draw(label, input)
 		key, err := readEditorKey()
 		if err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				return "", false, nil
 			}
 			return "", false, err
 		}
 		switch key {
 		case '\r', '\n':
-			if input == "" {
-				return defaultValue, true, nil
-			}
 			return input, true, nil
 		case 3, 27:
 			return "", false, nil

@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"io"
@@ -29,7 +30,7 @@ const (
 	cfdiskGPTHeaderSize   = 92
 	cfdiskGPTEntryCount   = 128
 	cfdiskGPTEntrySize    = 128
-	cfdiskGPTEntrySectors = uint64(cfdiskGPTEntryCount * cfdiskGPTEntrySize / cfdiskGPTSectorSize)
+	cfdiskGPTEntrySectors = cfdiskGPTEntryCount * cfdiskGPTEntrySize / cfdiskGPTSectorSize
 )
 
 var (
@@ -227,12 +228,12 @@ func cfdiskReadGPTRawState(file *os.File, sectors uint64) (cfdiskGPTRawState, er
 
 func cfdiskReadGPTBytes(file *os.File, lba uint64, length int) ([]byte, error) {
 	const maxSignedOffset = ^uint64(0) >> 1
-	if lba > maxSignedOffset/cfdiskGPTSectorSize || uint64(length) > maxSignedOffset-lba*cfdiskGPTSectorSize {
+	if lba > maxSignedOffset/cfdiskGPTSectorSize || uint64(length) > maxSignedOffset-lba*cfdiskGPTSectorSize { //nolint:gosec // G115: length is always a non-negative caller-supplied constant.
 		return nil, fmt.Errorf("GPT data lies beyond addressable file offsets")
 	}
 	data := make([]byte, length)
 	count, err := file.ReadAt(data, int64(lba*cfdiskGPTSectorSize)) //nolint:gosec // Bounds above keep the offset in int64 range.
-	if err != nil && !(err == io.EOF && count == len(data)) {
+	if err != nil && (!errors.Is(err, io.EOF) || count != len(data)) {
 		return nil, err
 	}
 	if count != len(data) {
@@ -412,7 +413,7 @@ func (s *cfdiskSession) newGPTPartition() error {
 		s.message = "Cannot create a partition: " + err.Error()
 		return nil
 	}
-	startText, ok, err := s.prompt(fmt.Sprintf("Start sector [%d]: ", region.start), "")
+	startText, ok, err := s.prompt(fmt.Sprintf("Start sector [%d]: ", region.start))
 	if err != nil || !ok {
 		return err
 	}
@@ -424,7 +425,7 @@ func (s *cfdiskSession) newGPTPartition() error {
 			return nil
 		}
 	}
-	sizeText, ok, err := s.prompt(fmt.Sprintf("Size in sectors [%d]: ", region.size), "")
+	sizeText, ok, err := s.prompt(fmt.Sprintf("Size in sectors [%d]: ", region.size))
 	if err != nil || !ok {
 		return err
 	}
@@ -484,7 +485,7 @@ func (s *cfdiskSession) resizeGPTPartition() error {
 	}
 	partition := s.gpt.partitions[s.selected]
 	oldSize := partition.end - partition.start + 1
-	value, ok, err := s.prompt(fmt.Sprintf("New size in sectors [%d]: ", oldSize), "")
+	value, ok, err := s.prompt(fmt.Sprintf("New size in sectors [%d]: ", oldSize))
 	if err != nil || !ok {
 		return err
 	}
@@ -555,7 +556,7 @@ func (s *cfdiskSession) changeGPTType() error {
 		return nil
 	}
 	partition := s.gpt.partitions[s.selected]
-	value, ok, err := s.prompt(fmt.Sprintf("GPT type [%s]: ", gptTypeName(partition.typeGUID[:])), "")
+	value, ok, err := s.prompt(fmt.Sprintf("GPT type [%s]: ", gptTypeName(partition.typeGUID[:])))
 	if err != nil || !ok {
 		return err
 	}
@@ -676,7 +677,7 @@ func (s *cfdiskSession) writeGPT() error {
 		s.message = "Cannot write GPT: " + err.Error()
 		return nil
 	}
-	answer, ok, err := s.prompt("Write GPT to disk? Type yes: ", "")
+	answer, ok, err := s.prompt("Write GPT to disk? Type yes: ")
 	if err != nil || !ok {
 		return err
 	}

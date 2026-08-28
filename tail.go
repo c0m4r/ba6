@@ -124,10 +124,11 @@ rest:
 		// following a single growing file is the common case and simplest).
 		if follow && fname != "-" {
 			if osf, ok := f.(*os.File); ok && idx == len(files)-1 {
-				if followErr := followFile(out, osf); followErr != nil {
-					fatalf("tail", "error reading '%s': %s", fname, errText(followErr))
-					status = 1
-				}
+				// followFile only returns once it hits an error; it never
+				// completes with a nil error, so there is nothing to guard here.
+				followErr := followFile(out, osf)
+				fatalf("tail", "error reading '%s': %s", fname, errText(followErr))
+				status = 1
 			}
 		}
 		if closeErr := f.Close(); closeErr != nil {

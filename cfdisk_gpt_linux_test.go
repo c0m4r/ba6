@@ -146,7 +146,7 @@ func TestCfdiskGPTRejectsBackupDamageAndStaleTables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = mutator.WriteAt([]byte{state.backupEntries[0] ^ 1}, int64((session.diskSectors-cfdiskGPTEntrySectors-1)*512))
+	_, err = mutator.WriteAt([]byte{state.backupEntries[0] ^ 1}, int64((session.diskSectors-cfdiskGPTEntrySectors-1)*512)) //nolint:gosec // G115: test disk image size is far below int64 range.
 	if closeErr := mutator.Close(); err == nil {
 		err = closeErr
 	}
