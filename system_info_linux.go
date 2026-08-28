@@ -132,15 +132,26 @@ func cmdHostname(args []string) int {
 }
 
 func cmdTty(args []string) int {
-	if len(args) != 0 {
-		fatalf("tty", "extra operand %q", args[0])
-		return 1
-	}
-	if !isTerminal(os.Stdin.Fd()) {
-		if _, err := fmt.Fprintln(os.Stdout, "not a tty"); err != nil {
+	silent := false
+	for _, arg := range args {
+		switch arg {
+		case "-s", "--silent", "--quiet":
+			silent = true
+		default:
+			fatalf("tty", "extra operand %q", arg)
 			return 1
 		}
+	}
+	if !isTerminal(os.Stdin.Fd()) {
+		if !silent {
+			if _, err := fmt.Fprintln(os.Stdout, "not a tty"); err != nil {
+				return 1
+			}
+		}
 		return 1
+	}
+	if silent {
+		return 0
 	}
 	name, err := os.Readlink("/proc/self/fd/0")
 	if err != nil {

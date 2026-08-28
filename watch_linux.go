@@ -102,7 +102,7 @@ func runWatch(opts watchOptions, signals <-chan os.Signal) int {
 			if err != nil {
 				hostname = "?"
 			}
-			fmt.Fprintf(os.Stdout, "Every %s: %s\t%s\t%s\n\n", formatWatchInterval(opts.interval), strings.Join(opts.command, " "), hostname, time.Now().Format(time.RFC1123))
+			fmt.Fprint(os.Stdout, watchTitle(opts, hostname, time.Now())+"\n\n")
 		}
 		command := exec.Command(opts.command[0], opts.command[1:]...) //nolint:gosec // watch deliberately executes the requested command repeatedly.
 		command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
@@ -119,6 +119,30 @@ func runWatch(opts watchOptions, signals <-chan os.Signal) int {
 		case <-timer.C:
 		}
 	}
+}
+
+// watchTitle lays the header out the way the original does: the interval and
+// command on the left, and "host: date" pushed against the right edge of the
+// terminal, with the left side clipped rather than wrapped when the two would
+// collide. The date is in the ctime(3) form the original prints.
+func watchTitle(opts watchOptions, hostname string, now time.Time) string {
+	left := fmt.Sprintf("Every %s: %s", formatWatchInterval(opts.interval), strings.Join(opts.command, " "))
+	right := hostname + ": " + now.Format(time.ANSIC)
+	width, err := unixWinsize(os.Stdout.Fd())
+	if err != nil || width <= 0 {
+		width = 80
+	}
+	if room := width - len(right) - 1; room < len(left) {
+		if room < 0 {
+			room = 0
+		}
+		left = left[:room]
+	}
+	padding := width - len(left) - len(right)
+	if padding < 1 {
+		padding = 1
+	}
+	return left + strings.Repeat(" ", padding) + right
 }
 
 func formatWatchInterval(interval time.Duration) string {

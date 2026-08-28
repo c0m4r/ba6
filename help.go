@@ -176,9 +176,10 @@ statistics, q quit.`,
 	"swapon": `Usage: swapon [-a] [-p PRIORITY] [DEVICE]...
 Enable swap devices using the Linux swapon syscall. -a reads swap entries from
 /etc/fstab. Requires CAP_SYS_ADMIN.`,
-	"sysctl": `Usage: sysctl [-an] [-w] NAME[=VALUE]...
+	"sysctl": `Usage: sysctl [-aenN] [-w] NAME[=VALUE]...
 Read or write Linux /proc/sys settings. -a lists all settings, -n prints values
-without names, and -w requires assignments.`,
+without names, -N prints names without values, -e passes over failures, and -w
+requires assignments. Settings holding several lines repeat their name on each.`,
 	"swapoff": `Usage: swapoff [-a] [DEVICE]...
 Disable swap devices using the Linux swapoff syscall. -a reads /proc/swaps.
 Requires CAP_SYS_ADMIN.`,
@@ -1171,8 +1172,9 @@ Options:
   --dirsfirst  list directories before files
   --noreport   omit the closing count
   --help    show this help`,
-	"tty": `Usage: tty
-Report stdin's terminal path, or print "not a tty".`,
+	"tty": `Usage: tty [-s]
+Report stdin's terminal path, or print "not a tty". -s reports through the exit
+status alone and prints nothing.`,
 	"unxz": `Usage: unxz [-ckf] [FILE]...
 Decode BA6's stream-compatible XZ raw-LZMA2 subset. -c uses standard output,
 -k keeps inputs, and -f replaces an existing output.`,

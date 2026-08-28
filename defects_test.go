@@ -121,8 +121,18 @@ func TestMktempHonoursTemplate(t *testing.T) {
 	if !strings.HasPrefix(name, "foo") || !strings.HasSuffix(name, ".txt") {
 		t.Fatalf("name %q lost the literal parts of the template", name)
 	}
-	if strings.Contains(name, "X") {
-		t.Fatalf("name %q still contains placeholders", name)
+	// The placeholders must actually be substituted -- but not by asserting the
+	// result holds no "X": the originals draw the replacement from [A-Za-z0-9],
+	// so an X is a legitimate random character and checking for it fails a few
+	// runs in every hundred.
+	if name == "fooXXXX.txt" {
+		t.Fatalf("name %q kept the template's placeholders", name)
+	}
+	replaced := name[len("foo") : len(name)-len(".txt")]
+	for index := 0; index < len(replaced); index++ {
+		if !shellNameByteIsAlnum(replaced[index]) {
+			t.Fatalf("name %q has a replacement character outside [A-Za-z0-9]", name)
+		}
 	}
 	if _, err := os.Stat(strings.TrimSpace(stdout)); err != nil {
 		t.Fatalf("mktemp did not create the file: %v", err)

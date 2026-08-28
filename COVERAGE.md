@@ -7,14 +7,15 @@
 > measured, not estimated — see [How this was measured](#how-this-was-measured).
 
 As of commit `5303302` plus the `pivot_root` and `getty` additions below, `ba6`
-implements 170 applets (`main.go`'s `applets` map). This document assesses 152 of
-them against their originals; the 18 it does not yet cover are listed under
+implements 170 applets (`main.go`'s `applets` map). Every one of them has now been
+measured against its original; nothing is left under
 [Not yet assessed](#not-yet-assessed).
 
-**Short answer to "which are 1:1?"** — of the 152 assessed, 26 are genuine drop-ins,
-33 more are near-complete, 84 are partial or a narrow subset in ways that stay
-invisible until a script reaches for a flag, and 9 have no upstream counterpart to
-compare against; see the [verdict table](#verdict-in-one-table). `netstat`, `ps aux`/
+**Short answer to "which are 1:1?"** — of the 170, 27 are genuine drop-ins,
+39 more are near-complete, 94 are partial or a narrow subset in ways that stay
+invisible until a script reaches for a flag, 4 are a narrow subset that should not
+be treated as a replacement, and 9 have no upstream counterpart to compare
+against; see the [verdict table](#verdict-in-one-table). `netstat`, `ps aux`/
 `ps ax` and `host` are the closest matches recorded: every invocation tested against
 them is byte-identical to the original. The *filesystem* applets (`mkfs.*`, `fsck.*`,
 `fdisk`, `sfdisk`, `cfdisk`) score badly on flags but produce images that pass
@@ -30,24 +31,62 @@ options listed per applet below.
 
 | Tier | Meaning | Applets |
 |---|---|---|
-| **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `pwd` `echo` `basename` `tr` `base64` `uname` `whoami` `true` `false` `printenv` `sleep` `mknod` `seq` `dirname` `tac` `fold` `expand` `unexpand` `cksum` `nl` `paste` `comm` `split` `join` `nice` `pivot_root` |
-| **B — near-complete** | Common paths match; a handful of real gaps | `cat` `wc` `head` `tail` `rm` `mkdir` `tee` `test` `[` `expr` `printf` `id` `mktemp` `kill` `timeout` `chroot` `blockdev` `stat` `env` `cmp` `sync` `dd` `sha256sum` `which` `rmdir` `top` `host` `setsid` `nohup` `renice` `lsusb` `lspci` `hwclock` |
-| **C — partial** | Everyday cases work, well-known flags or output details missing | `ls` `cp` `mv` `ln` `touch` `sort` `uniq` `cut` `grep` `find` `du` `df` `date` `readlink` `realpath` `strings` `od` `hexdump` `diff` `sh` `awk` `sed` `file` `tar` `gzip` `gunzip` `chown` `chgrp` `chmod` `free` `uptime` `hostname` `wget` `lsof` `lsblk` `blkid` `mount` `umount` `losetup` `swapon` `swapoff` `mkswap` `ss` `ip` `iptables` `ping` `traceroute` `mtr` `nc` `nslookup` `curl` `iftop` `pgrep` `pkill` `pidof` `modprobe` `insmod` `rmmod` `lsmod` `fdisk` `sfdisk` `mkfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkfs.btrfs` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `login` `passwd` `getty` `ps` `netstat` `tree` `less` `dmesg` `xargs` `dig` `nano` `ncdu` `cfdisk` |
-| **D — narrow subset** | A slice of the original; do not treat as a replacement | _(none)_ |
+| **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `pwd` `echo` `basename` `tr` `base64` `uname` `whoami` `true` `false` `printenv` `sleep` `mknod` `seq` `dirname` `tac` `fold` `expand` `unexpand` `cksum` `nl` `paste` `comm` `split` `join` `nice` `pivot_root` `tty` |
+| **B — near-complete** | Common paths match; a handful of real gaps | `cat` `wc` `head` `tail` `rm` `mkdir` `tee` `test` `[` `expr` `printf` `id` `mktemp` `kill` `timeout` `chroot` `blockdev` `stat` `env` `cmp` `sync` `dd` `sha256sum` `which` `rmdir` `top` `host` `setsid` `nohup` `renice` `lsusb` `lspci` `hwclock` `md5sum` `sha1sum` `sha512sum` `sysctl` `bzip2` `bunzip2` `groupadd` |
+| **C — partial** | Everyday cases work, well-known flags or output details missing | `ls` `cp` `mv` `ln` `touch` `sort` `uniq` `cut` `grep` `find` `du` `df` `date` `readlink` `realpath` `strings` `od` `hexdump` `diff` `sh` `awk` `sed` `file` `tar` `gzip` `gunzip` `chown` `chgrp` `chmod` `free` `uptime` `hostname` `wget` `lsof` `lsblk` `blkid` `mount` `umount` `losetup` `swapon` `swapoff` `mkswap` `ss` `ip` `iptables` `ping` `traceroute` `mtr` `nc` `nslookup` `curl` `iftop` `pgrep` `pkill` `pidof` `modprobe` `insmod` `rmmod` `lsmod` `fdisk` `sfdisk` `mkfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkfs.btrfs` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `login` `passwd` `getty` `ps` `netstat` `tree` `less` `dmesg` `xargs` `dig` `nano` `ncdu` `cfdisk` `cpio` `unzip` `zip` `useradd` `adduser` `watch` |
+| **D — narrow subset** | A slice of the original; do not treat as a replacement | `xz` `unxz` `zstd` `unzstd` |
 | **N/A** | ba6-specific, no upstream counterpart | `help` `man` `completion` `init` `halt` `reboot` `poweroff` `switch_root` `udhcpc` |
 
 ## Not yet assessed
 
-These applets exist in the binary but are not yet measured against their originals
-in this document: `adduser` `bunzip2` `bzip2` `cpio` `groupadd` `md5sum` `sha1sum`
-`sha512sum` `sysctl` `tty` `unxz` `unzip` `unzstd` `useradd` `watch` `xz` `zip`
-`zstd`.
+None. The eighteen applets previously listed here — `adduser` `bunzip2` `bzip2`
+`cpio` `groupadd` `md5sum` `sha1sum` `sha512sum` `sysctl` `tty` `unxz` `unzip`
+`unzstd` `useradd` `watch` `xz` `zip` `zstd` — were measured against their
+originals and are now placed in the [verdict table](#verdict-in-one-table), with
+per-applet notes below. The account tools (`useradd`, `groupadd`, `adduser`) and
+`watch` were exercised on a disposable VM, because they modify a real account
+database or need a terminal.
 
 ## Open defects
 
 None. All known behaviour defects are fixed and pinned by `defects_test.go`; the
 four `ps`-specific ones are pinned by `TestPsMatchesProcpsArithmetic` in
-`inspection_test.go`.
+`inspection_test.go`, and the checksum, `sysctl` and `watch` defects found while
+assessing the applets above are pinned by `checksum_escape_test.go`,
+`TestSysctlTree` and `TestWatchTitleLayout` in `management_linux_test.go`.
+
+Fixed during that assessment pass, each previously a silent wrong answer rather
+than a missing option:
+
+* **`sysctl -a` printed nothing at all.** The walk returned the first error it
+  met, and `/proc/sys/fs/binfmt_misc/register` is write-only, so an unprivileged
+  sweep aborted on it and reported zero settings. Unreadable keys are now
+  skipped — silently when the file carries no read bit, and with the original's
+  `permission denied on key` line otherwise. `sysctl -a` now matches procps key
+  for key and value for value (1590 keys here), stderr included.
+* **`sysctl` flattened multi-line values.** Keys such as `fs.binfmt_misc.CLR`
+  hold several lines; ba6 emitted them as one record with embedded newlines,
+  which does not survive being read back. The original repeats the key on each
+  line, and now so does ba6.
+* **The digest tools could not read their own or GNU's escaped lines.** A name
+  containing a backslash, newline or carriage return is written with those
+  characters escaped and the line flagged with a leading `\`. ba6 wrote such
+  names raw and rejected the originals' escaped lines as malformed, so any
+  checksum file covering such a name failed to verify in either direction.
+* **`-c` treated a malformed line as a failure.** GNU counts them and warns once
+  (`WARNING: N lines are improperly formatted`) while leaving the exit status at
+  zero; ba6 printed a diagnostic per line and exited 1, so a checksum file with
+  a stray comment failed the build. The `could not be read` and `did NOT match`
+  warnings, the `FAILED open or read` marker, and the
+  `no properly formatted checksum lines found` error were all missing too.
+* **`tty -s` was rejected** as an extra operand instead of selecting the
+  status-only mode scripts use it for.
+* **`watch` drew a tab-separated header** rather than the original's layout with
+  `host: ctime` aligned against the right edge of the terminal.
+* **The account tools exited 1 for every failure.** shadow-utils uses distinct
+  statuses that scripts branch on — 9 for a name already in use, 4 for a UID or
+  GID already taken, 6 for a missing group, 3 and 19 for invalid names — and ba6
+  now returns those, with the originals' message wording.
 
 ## Cross-cutting gaps
 
@@ -92,6 +131,7 @@ Absent behaviour rather than wrong behaviour, each of which touches many applets
 | `join` | 11/11 | — | `-1` `-2` `-a` `-v` `-o` `-t` `-e` `-i` `--header` `-z`, field re-join rules and unsorted-input reporting match _(run)_ |
 | `nice` | 2/2 | — | `-n` and the legacy `-N` form; niceness applies to the whole command run, exit codes match _(run)_ |
 | `pivot_root` | n/a | — | thin `pivot_root(2)` wrapper, no chdir/exec; success, `EBUSY` on a non-mount-point `new_root`, `EPERM` for a non-root caller, and the missing-argument guard all match util-linux, tested under `unshare --mount --propagation private` on a disposable VM so nothing touched a real root filesystem _(run)_ |
+| `tty` | 1/1 | — | `-s`/`--silent`/`--quiet` and the bare form; `/dev/pts/N` name, the `not a tty` message and both exit statuses match, checked under a pseudo-terminal _(run)_ |
 
 ### Tier B — near-complete
 
@@ -128,6 +168,10 @@ Absent behaviour rather than wrong behaviour, each of which touches many applets
 | `lsusb` | 1/7 | `-t` `-s` `-d` `-v` `-D` `-P` | default listing matches with usb.ids installed; no tree or verbose modes _(run)_ |
 | `lspci` | 2/11 | `-m` `-v` `-t` `-s` `-d` `-x` `-k` `-b` `-nn` | default and `-n` listings are byte-identical to pciutils with pci.ids, including built-in class names; no verbose/tree modes _(run)_ |
 | `hwclock` | 5/8 | `--adjfile` drift handling `--directisa` `--test` | `--show`/`--get` format, `--hctosys`, `--systohc`, `--set --date`, `--utc`/`--localtime`; ioctl on /dev/rtc with a sysfs fallback _(run)_ |
+| `md5sum` `sha1sum` `sha512sum` | 5/10 | `--tag` `-z` `--ignore-missing` `--strict` `-w` | share one implementation with `sha256sum`. Byte-identical to coreutils across 2361 adversarial file names covering backslash, newline, carriage-return, quote and control-character cases: the escaped-line format and its `\` marker, the shell-style quoting of names in `-c` output, all three `WARNING` summaries with correct singular/plural, `FAILED open or read`, `no properly formatted checksum lines found`, and the exit status in every combination of `--quiet`/`--status` _(run)_ |
+| `sysctl` | 6/17 | `-p`/`--load` `--system` `-r`/`--pattern` `-q` `-b` `--deprecated` | `-a`, `-n`, `-N`, `-e`, `-w` and bare reads. `sysctl -a` matches procps key for key and value for value (1590 keys on the measurement host) with identical stderr, including the write-only, permission-denied, empty-file, multi-line and deprecated-key rules _(run)_ |
+| `bzip2` / `bunzip2` | 6/12 | `-t` `-1`..`-9` `-v` `-z` `-L` | round-trips against the real tool in both directions, unlike the xz and zstd pair. `-c` `-d` `-k` `-f`, the in-place convention (replace the file, add or strip `.bz2`) and stdin/stdout streaming match _(run)_ |
+| `groupadd` | 2/10 | `-f` `-o` `-r`/`--system` `-p` `-K` `-R` `-P` `-U` | `-g` and the bare form; the created `/etc/group` line, shadow-utils exit statuses (9 name in use, 4 GID in use, 3 invalid name) and message wording match, tested against a real account database on a disposable VM _(run)_ |
 
 ### Tier C — partial
 
@@ -513,6 +557,45 @@ flags are given separately (`-f -n`, not `-fn`), and it identifies itself as
 **`login` / `passwd`** — no options _(src)_; `login` is missing `-p -f -h`, `passwd`
 is missing the whole administrative set (`-l -u -d -e -S -n -x -w -i -a -R -s`).
 
+**`useradd` / `adduser`** — 8/27 options _(run, against a real account database on
+a disposable VM)_. Present: `-u` `-g` `-G` `-d` `-s` `-c` `-m` `-M`. The resulting
+`/etc/passwd`, `/etc/shadow` and `/etc/group` lines match shadow-utils, as do the
+home-directory creation, the private-group default, and the exit statuses and
+message wording for every failure path tested — 9 for a name already in use, 4 for
+a UID already taken, 6 for a missing group, 19 for an invalid user name. Missing:
+`-r`/`--system`, `-o`/`--non-unique`, `-e`/`--expiredate`, `-f`/`--inactive`,
+`-k`/`--skel`, `-p`/`--password`, `-D`/`--defaults`, `-b`/`--base-dir`,
+`-R`/`--root`, `-N`/`-U` group control, and the SELinux and subid options. The one
+wording difference left is deliberate: the original's invalid-name message ends
+`: use --badname to ignore`, naming a flag ba6 does not implement. `adduser` is
+the same implementation, plus the two-operand `adduser USER GROUP` form; it is not
+Debian's interactive Perl `adduser` and asks no questions.
+
+**`cpio`** — 10/61 options _(run)_. `-o` `-i` `-t` `-v` `-F` `-H newc` and the
+`-d`/`--make-directories` behaviour; archives round-trip against GNU cpio in both
+directions. Only the `newc` format is implemented, so the `-H` variants (`odc`,
+`crc`, the binary formats) and `-p`/`--pass-through` are absent, along with
+`-a` `-m` `-u` `-l` `--sparse` and the rename and pattern-file options.
+Extraction rejects paths that escape the destination.
+
+**`zip` / `unzip`** — 2/175 and 1/35 options _(run)_. Both interoperate with Info-ZIP
+in both directions, including deflate-compressed and multi-directory archives, and
+`unzip -t` on a ba6-written archive passes. What is missing is nearly the whole
+option surface rather than the format: no `-t`/`-v`/`-l` listing modes, no
+`-d EXDIR`, `-o`/`-n` overwrite control, `-j`, `-P`/encryption, `-x` exclusions,
+update or delete modes, or split archives. Extraction rejects paths that escape the
+destination.
+
+**`watch`** — 2/16 options _(run, under a pseudo-terminal on a disposable VM)_.
+`-n`/`--interval` and `-t`/`--no-title`, the alternate-screen clear-and-redraw
+cycle, and the header layout — interval and command on the left, `host: ctime`
+against the right edge, left side clipped rather than wrapped — are byte-identical
+to procps at an 80-column width. Missing: `-d`/`--differences` highlighting,
+`-g`/`--chgexit`, `-q`/`--equexit`, `-e`/`--errexit`, `-b`/`--beep`,
+`-c`/`--color`, `-x`/`--exec`, `-p`/`--precise` and `-w`/`--no-wrap`. The command
+is run directly rather than through `sh -c`, so shell syntax in the command needs
+an explicit `sh -c`.
+
 **`getty`** — 10/34 options against `agetty --help` (util-linux 2.42.2), counted by
 hand rather than by the automated man-page comparison behind the other rows: the
 real tool on the measurement host is only installed as `agetty`, and the
@@ -719,7 +802,19 @@ alignment `/dev/kmsg`-backed dmesg produces. Missing: `-H`/`--human`,
 
 ### Tier D — narrow subset
 
-_(none)_
+**`xz` / `unxz` / `zstd` / `unzstd`** — 5/62 and 1/21 options _(run)_. These read
+and write their real container formats, and a file ba6 writes is decompressed
+correctly by the vendor tools, verified both ways. The limitation is the payload
+rather than the wrapper: ba6 emits stored/raw blocks (plus Zstandard RLE blocks)
+and implements no entropy-coded block decoder, so **a `.xz` or `.zst` produced by
+the real `xz` or `zstd` cannot be read back** — LZMA2 and FSE/Huffman blocks are
+rejected with `unsupported XZ stream` / `compressed Zstandard blocks are
+unsupported`. Since practically every `.xz` and `.zst` in the wild is entropy
+coded, treat these as archive *writers* and format probes, not as general
+decompressors. `bzip2`/`bunzip2` are the exception in this family and round-trip
+against the real tool in both directions, which is why they sit in Tier B.
+Missing beyond that: compression levels `-0`..`-9`, `-t`/`--test`, `-l`/`--list`,
+`--keep`'s siblings, threading, and the filter chain options.
 
 ## What to fix first
 
@@ -736,9 +831,15 @@ Ordered by how many applets each item moves, not by effort.
    remaining gap.
 5. **`ss` `Recv-Q`/`Send-Q`** — the netlink query added for `IPV6_V6ONLY` already
    returns `idiag_rqueue` and `idiag_wqueue`; only the columns are missing.
-6. **Assess the 18 unmeasured applets** listed under
-   [Not yet assessed](#not-yet-assessed) — they run, but nothing here says how
-   closely they match their originals.
+6. **A real LZMA2 decoder for `unxz`, and FSE/Huffman for `unzstd`** — the
+   largest remaining functional gap in the binary. Both applets write their
+   container formats correctly and are read back fine by the vendor tools, but
+   neither can decompress what the real `xz` or `zstd` produces, which is
+   essentially every `.xz` and `.zst` that exists. A rescue toolbox that cannot
+   open a vendor-compressed archive is limited in exactly the situation it is
+   meant for. `bzip2` already has a full decoder and shows the shape of the work.
+7. **`watch -d` and `-g`** — change highlighting and exit-on-change are most of
+   why `watch` gets reached for interactively.
 
 ## How this was measured
 
@@ -787,8 +888,11 @@ Assessed from source and help text only, because they need root, a real device, 
 terminal, or an irreversible action: `iptables`, `mount`/`umount` writes, `swapon`,
 `swapoff`, `mkswap`, `blockdev`, `insmod`, `rmmod`, `modprobe`, `chroot`,
 `switch_root`, `init`, `halt`, `reboot`, `poweroff`, `login`, `passwd`, `udhcpc`,
-`iftop`, `traceroute`, `mtr`, `nano`. The `mkfs.*`, `fsck.*`, `fdisk`, `sfdisk` and
-`cfdisk` applets *were* executed — against image files rather than block devices —
+`iftop`, `traceroute`, `mtr`, `nano`. The account tools (`useradd`, `groupadd`,
+`adduser`), `watch`, `getty` and `pivot_root` were executed after all, against a
+real account database, a real terminal and a private mount namespace on a
+disposable Debian 13 VM rather than on the measurement host. The `mkfs.*`,
+`fsck.*`, `fdisk`, `sfdisk` and `cfdisk` applets *were* executed — against image files rather than block devices —
 and validated with the vendor tools; `nc` was exercised over loopback.
 
 `tree` is the one applet with an upstream counterpart that was not compared at all,

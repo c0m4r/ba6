@@ -7,6 +7,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -67,6 +68,50 @@ type accountDatabase struct {
 	gids                  map[int]bool
 }
 
+// The account tools report failures through the exit statuses shadow-utils
+// documents, because scripts branch on them; see useradd(8) EXIT VALUES. The
+// default of 1 is its "can't update password file" case.
+const (
+	accountStatusUsage     = 2
+	accountStatusBadArg    = 3
+	accountStatusIDInUse   = 4
+	accountStatusNotFound  = 6
+	accountStatusNameInUse = 9
+	accountStatusHomedir   = 12
+	accountStatusBadName   = 19
+)
+
+// accountError pairs a failure with the status the originals exit with.
+type accountError struct {
+	status int
+	err    error
+}
+
+func (e accountError) Error() string { return e.err.Error() }
+func (e accountError) Unwrap() error { return e.err }
+
+func accountFail(status int, format string, args ...any) error {
+	return accountError{status: status, err: fmt.Errorf(format, args...)}
+}
+
+func accountStatus(err error) int {
+	var failure accountError
+	if errors.As(err, &failure) {
+		return failure.status
+	}
+	return 1
+}
+
+// accountIDError labels a clash on an explicitly requested UID or GID with the
+// caller's wording and the originals' "already in use" status. Exhaustion of
+// the identifier space is a different failure and keeps the generic status.
+func accountIDError(err error, format string, requested *int) error {
+	if errors.Is(err, errAccountIDInUse) && requested != nil {
+		return accountFail(accountStatusIDInUse, format, *requested)
+	}
+	return err
+}
+
 func cmdGroupadd(args []string) int {
 	if !accountAdministrator("groupadd") {
 		return 1
@@ -74,11 +119,11 @@ func cmdGroupadd(args []string) int {
 	name, gid, err := parseGroupaddArgs(args)
 	if err != nil {
 		fatalf("groupadd", "%v", err)
-		return 1
+		return accountStatus(err)
 	}
 	if err := createAccountGroup(currentAccountPaths(), name, gid); err != nil {
 		fatalf("groupadd", "%v", err)
-		return 1
+		return accountStatus(err)
 	}
 	return 0
 }
@@ -90,11 +135,11 @@ func cmdUseradd(args []string) int {
 	spec, err := parseUseraddArgs(args, false)
 	if err != nil {
 		fatalf("useradd", "%v", err)
-		return 1
+		return accountStatus(err)
 	}
 	if err := createAccountUser(currentAccountPaths(), spec, time.Now()); err != nil {
 		fatalf("useradd", "%v", err)
-		return 1
+		return accountStatus(err)
 	}
 	return 0
 }
@@ -106,18 +151,18 @@ func cmdAdduser(args []string) int {
 	if len(args) == 2 && !strings.HasPrefix(args[0], "-") && !strings.HasPrefix(args[1], "-") {
 		if err := addAccountUserToGroup(currentAccountPaths(), args[0], args[1]); err != nil {
 			fatalf("adduser", "%v", err)
-			return 1
+			return accountStatus(err)
 		}
 		return 0
 	}
 	spec, err := parseUseraddArgs(args, true)
 	if err != nil {
 		fatalf("adduser", "%v", err)
-		return 1
+		return accountStatus(err)
 	}
 	if err := createAccountUser(currentAccountPaths(), spec, time.Now()); err != nil {
 		fatalf("adduser", "%v", err)
-		return 1
+		return accountStatus(err)
 	}
 	return 0
 }
@@ -163,8 +208,11 @@ func parseGroupaddArgs(args []string) (string, *int, error) {
 			operands = append(operands, arg)
 		}
 	}
-	if len(operands) != 1 || !validAccountName(operands[0]) {
-		return "", nil, fmt.Errorf("expected one valid group name")
+	if len(operands) != 1 {
+		return "", nil, accountFail(accountStatusUsage, "expected one group name")
+	}
+	if !validAccountName(operands[0]) {
+		return "", nil, accountFail(accountStatusBadArg, "'%s' is not a valid group name", operands[0])
 	}
 	return operands[0], gid, nil
 }
@@ -255,8 +303,11 @@ func parseUseraddArgs(args []string, createHome bool) (useraddSpec, error) {
 			operands = append(operands, arg)
 		}
 	}
-	if len(operands) != 1 || !validAccountName(operands[0]) {
-		return spec, fmt.Errorf("expected one valid user name")
+	if len(operands) != 1 {
+		return spec, accountFail(accountStatusUsage, "expected one user name")
+	}
+	if !validAccountName(operands[0]) {
+		return spec, accountFail(accountStatusBadName, "invalid user name '%s'", operands[0])
 	}
 	if strings.ContainsAny(spec.gecos, ":\r\n") || strings.ContainsAny(spec.home, ":\r\n") ||
 		strings.ContainsAny(spec.shell, ":\r\n") {
@@ -297,14 +348,14 @@ func validAccountName(value string) bool {
 func createAccountGroup(paths accountPaths, name string, wantedGID *int) error {
 	return withAccountDatabase(paths, func(database *accountDatabase) error {
 		if !validAccountName(name) {
-			return fmt.Errorf("invalid group name %q", name)
+			return accountFail(accountStatusBadArg, "'%s' is not a valid group name", name)
 		}
 		if _, found := database.groups[name]; found {
-			return fmt.Errorf("group %q already exists", name)
+			return accountFail(accountStatusNameInUse, "group '%s' already exists", name)
 		}
 		gid, err := chooseAccountID(wantedGID, database.gids, nil)
 		if err != nil {
-			return fmt.Errorf("gid: %w", err)
+			return accountIDError(err, "GID '%d' already exists", wantedGID)
 		}
 		database.appendGroup(name, gid)
 		return nil
@@ -339,13 +390,13 @@ type createdAccount struct {
 
 func (database *accountDatabase) planUser(spec useraddSpec, homeRoot string, now time.Time) (createdAccount, error) {
 	if !validAccountName(spec.name) {
-		return createdAccount{}, fmt.Errorf("invalid user name %q", spec.name)
+		return createdAccount{}, accountFail(accountStatusBadName, "invalid user name '%s'", spec.name)
 	}
 	if _, found := database.users[spec.name]; found {
-		return createdAccount{}, fmt.Errorf("user %q already exists", spec.name)
+		return createdAccount{}, accountFail(accountStatusNameInUse, "user '%s' already exists", spec.name)
 	}
 	if database.shadowNames[spec.name] {
-		return createdAccount{}, fmt.Errorf("shadow entry for %q already exists", spec.name)
+		return createdAccount{}, accountFail(accountStatusNameInUse, "shadow entry for '%s' already exists", spec.name)
 	}
 	usedForPrivateGroup := map[int]bool(nil)
 	if spec.primaryGroup == "" {
@@ -353,12 +404,12 @@ func (database *accountDatabase) planUser(spec useraddSpec, homeRoot string, now
 	}
 	uid, err := chooseAccountID(spec.uid, database.uids, usedForPrivateGroup)
 	if err != nil {
-		return createdAccount{}, fmt.Errorf("uid: %w", err)
+		return createdAccount{}, accountIDError(err, "UID %d is not unique", spec.uid)
 	}
 	gid := uid
 	if spec.primaryGroup == "" {
 		if _, found := database.groups[spec.name]; found {
-			return createdAccount{}, fmt.Errorf("group %q already exists", spec.name)
+			return createdAccount{}, accountFail(accountStatusNameInUse, "group '%s' already exists", spec.name)
 		}
 		database.appendGroup(spec.name, gid)
 	} else {
@@ -406,9 +457,9 @@ func (database *accountDatabase) planUser(spec useraddSpec, homeRoot string, now
 func createAccountHome(path string, uid, gid int) error {
 	if info, err := os.Lstat(path); err == nil {
 		if info.IsDir() {
-			return fmt.Errorf("home directory %q already exists", path)
+			return accountFail(accountStatusHomedir, "home directory '%s' already exists", path)
 		}
-		return fmt.Errorf("home path %q already exists", path)
+		return accountFail(accountStatusHomedir, "home path '%s' already exists", path)
 	} else if !os.IsNotExist(err) {
 		return err
 	}
@@ -435,10 +486,14 @@ func addAccountUserToGroup(paths accountPaths, username, groupName string) error
 	})
 }
 
+// errAccountIDInUse marks a requested identifier that is already taken, so the
+// caller can attach the wording and status its own tool uses.
+var errAccountIDInUse = errors.New("identifier is already in use")
+
 func chooseAccountID(requested *int, used, alsoUsed map[int]bool) (int, error) {
 	if requested != nil {
 		if used[*requested] || alsoUsed != nil && alsoUsed[*requested] {
-			return 0, fmt.Errorf("%d is already in use", *requested)
+			return 0, errAccountIDInUse
 		}
 		return *requested, nil
 	}
@@ -456,14 +511,14 @@ func (database *accountDatabase) resolveGroup(nameOrID string) (accountGroup, er
 	}
 	id, err := parseAccountID(nameOrID)
 	if err != nil {
-		return accountGroup{}, fmt.Errorf("unknown group %q", nameOrID)
+		return accountGroup{}, accountFail(accountStatusNotFound, "group '%s' does not exist", nameOrID)
 	}
 	for _, group := range database.groups {
 		if group.gid == id {
 			return group, nil
 		}
 	}
-	return accountGroup{}, fmt.Errorf("unknown group %q", nameOrID)
+	return accountGroup{}, accountFail(accountStatusNotFound, "group '%s' does not exist", nameOrID)
 }
 
 func (database *accountDatabase) appendGroup(name string, gid int) {
@@ -476,7 +531,7 @@ func (database *accountDatabase) appendGroup(name string, gid int) {
 func (database *accountDatabase) addUserToGroup(username, groupName string) error {
 	group, found := database.groups[groupName]
 	if !found {
-		return fmt.Errorf("unknown group %q", groupName)
+		return accountFail(accountStatusNotFound, "group '%s' does not exist", groupName)
 	}
 	for _, member := range group.members {
 		if member == username {

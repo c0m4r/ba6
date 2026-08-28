@@ -97,16 +97,77 @@ func cmdChecksum(spec checksumSpec, args []string) int {
 	for _, name := range files {
 		sum, err := checksumFile(spec, name)
 		if err != nil {
-			fatalf(spec.prog, "%s: %v", name, err)
+			fatalf(spec.prog, "%s: %s", name, errText(err))
 			statusCode = 1
 			continue
 		}
-		if _, err := fmt.Fprintf(os.Stdout, "%x %s%s\n", sum, marker, name); err != nil {
+		// A name holding a backslash, newline or carriage return would otherwise
+		// be ambiguous in this line-oriented format, so the originals escape it
+		// and flag the line with a leading backslash for -c to reverse.
+		line, escaped := escapeChecksumName(name)
+		prefix := ""
+		if escaped {
+			prefix = `\`
+		}
+		if _, err := fmt.Fprintf(os.Stdout, "%s%x %s%s\n", prefix, sum, marker, line); err != nil {
 			fatalf(spec.prog, "write error: %v", err)
 			return 1
 		}
 	}
 	return statusCode
+}
+
+// escapeChecksumName renders name for a checksum line. Only the three
+// characters that would break the format are escaped -- the backslash that
+// does the escaping, plus newline and carriage return; tabs and other control
+// characters are written through untouched, as in the originals. The second
+// result reports whether anything was escaped, which is what tells the caller
+// to mark the line.
+func escapeChecksumName(name string) (string, bool) {
+	if !strings.ContainsAny(name, "\\\n\r") {
+		return name, false
+	}
+	var out strings.Builder
+	for index := 0; index < len(name); index++ {
+		switch name[index] {
+		case '\\':
+			out.WriteString(`\\`)
+		case '\n':
+			out.WriteString(`\n`)
+		case '\r':
+			out.WriteString(`\r`)
+		default:
+			out.WriteByte(name[index])
+		}
+	}
+	return out.String(), true
+}
+
+// unescapeChecksumName reverses escapeChecksumName for a line that carried the
+// leading backslash marker. An unknown escape means the line is malformed.
+func unescapeChecksumName(name string) (string, bool) {
+	var out strings.Builder
+	for index := 0; index < len(name); index++ {
+		if name[index] != '\\' {
+			out.WriteByte(name[index])
+			continue
+		}
+		index++
+		if index >= len(name) {
+			return "", false
+		}
+		switch name[index] {
+		case '\\':
+			out.WriteByte('\\')
+		case 'n':
+			out.WriteByte('\n')
+		case 'r':
+			out.WriteByte('\r')
+		default:
+			return "", false
+		}
+	}
+	return out.String(), true
 }
 
 func checksumFile(spec checksumSpec, name string) ([]byte, error) {
@@ -122,76 +183,136 @@ func checksumFile(spec checksumSpec, name string) ([]byte, error) {
 	return digest.Sum(nil), nil
 }
 
+// checksumTally counts the three things that can go wrong while verifying one
+// checksum list. The originals report each as a single summary warning rather
+// than a diagnostic per line.
+type checksumTally struct {
+	badFormat  int
+	unreadable int
+	mismatched int
+}
+
 func checkChecksumFiles(spec checksumSpec, lists []string, quiet, statusOnly bool) int {
 	statusCode := 0
 	for _, list := range lists {
 		input, err := openInput(list)
 		if err != nil {
 			if !statusOnly {
-				fatalf(spec.prog, "%s: %v", list, err)
+				fatalf(spec.prog, "%s: %s", list, errText(err))
 			}
 			statusCode = 1
 			continue
 		}
+		var tally checksumTally
 		scanner := newLineScanner(input)
-		lineNumber, validLines := 0, 0
+		validLines := 0
 		for scanner.Scan() {
-			lineNumber++
-			expected, name, parseErr := parseChecksumCheckLine(scanner.Text(), spec.size)
-			if parseErr != nil {
-				if !statusOnly {
-					fatalf(spec.prog, "%s:%d: improperly formatted checksum line", list, lineNumber)
-				}
-				statusCode = 1
+			expected, name, ok := parseChecksumCheckLine(scanner.Text(), spec.size)
+			if !ok {
+				tally.badFormat++
 				continue
 			}
 			validLines++
 			actual, hashErr := checksumFile(spec, name)
-			matches := hashErr == nil && bytesEqual(actual, expected)
-			if !statusOnly && (!matches || !quiet) {
-				result := "OK"
-				if !matches {
-					result = "FAILED"
+			switch {
+			case hashErr != nil:
+				// The originals report the underlying error on stderr and still
+				// mark the entry on stdout, so a reader of either stream alone
+				// sees the failure.
+				if !statusOnly {
+					fatalf(spec.prog, "%s: %s", name, errText(hashErr))
+					fmt.Fprintf(os.Stdout, "%s: FAILED open or read\n", shellQuoteName(name))
 				}
-				fmt.Fprintf(os.Stdout, "%s: %s\n", name, result)
-			}
-			if !matches {
-				if hashErr != nil && !statusOnly {
-					fatalf(spec.prog, "%s: %v", name, hashErr)
-				}
+				tally.unreadable++
 				statusCode = 1
+			case !bytesEqual(actual, expected):
+				if !statusOnly {
+					fmt.Fprintf(os.Stdout, "%s: FAILED\n", shellQuoteName(name))
+				}
+				tally.mismatched++
+				statusCode = 1
+			default:
+				if !statusOnly && !quiet {
+					fmt.Fprintf(os.Stdout, "%s: OK\n", shellQuoteName(name))
+				}
 			}
 		}
 		if err := scanner.Err(); err != nil {
 			if !statusOnly {
-				fatalf(spec.prog, "%s: %v", list, err)
+				fatalf(spec.prog, "%s: %s", list, errText(err))
 			}
 			statusCode = 1
 		}
 		if closeErr := input.Close(); closeErr != nil {
 			statusCode = 1
 		}
+		// A list with nothing usable in it is an error in its own right, and
+		// replaces the per-category warnings. Malformed lines alongside valid
+		// ones are only ever a warning: they do not change the exit status.
 		if validLines == 0 {
+			if !statusOnly {
+				fatalf(spec.prog, "%s: no properly formatted checksum lines found", list)
+			}
 			statusCode = 1
+			continue
+		}
+		if !statusOnly {
+			reportChecksumTally(spec.prog, tally)
 		}
 	}
 	return statusCode
 }
 
-func parseChecksumCheckLine(line string, size int) ([]byte, string, error) {
+func reportChecksumTally(prog string, tally checksumTally) {
+	if tally.badFormat > 0 {
+		noun, verb := "lines", "are"
+		if tally.badFormat == 1 {
+			noun, verb = "line", "is"
+		}
+		fmt.Fprintf(os.Stderr, "%s: WARNING: %d %s %s improperly formatted\n", prog, tally.badFormat, noun, verb)
+	}
+	if tally.unreadable > 0 {
+		noun := "files"
+		if tally.unreadable == 1 {
+			noun = "file"
+		}
+		fmt.Fprintf(os.Stderr, "%s: WARNING: %d listed %s could not be read\n", prog, tally.unreadable, noun)
+	}
+	if tally.mismatched > 0 {
+		noun := "checksums"
+		if tally.mismatched == 1 {
+			noun = "checksum"
+		}
+		fmt.Fprintf(os.Stderr, "%s: WARNING: %d computed %s did NOT match\n", prog, tally.mismatched, noun)
+	}
+}
+
+func parseChecksumCheckLine(line string, size int) ([]byte, string, bool) {
+	// A leading backslash marks a line whose name was escaped when written.
+	escaped := strings.HasPrefix(line, `\`)
+	if escaped {
+		line = line[1:]
+	}
 	if len(line) < size*2+2 {
-		return nil, "", fmt.Errorf("short checksum line")
+		return nil, "", false
 	}
 	digest, err := hex.DecodeString(line[:size*2])
 	if err != nil || len(digest) != size || line[size*2] != ' ' ||
 		line[size*2+1] != ' ' && line[size*2+1] != '*' {
-		return nil, "", fmt.Errorf("invalid checksum line")
+		return nil, "", false
 	}
 	name := strings.TrimSuffix(line[size*2+2:], "\r")
 	if name == "" {
-		return nil, "", fmt.Errorf("missing filename")
+		return nil, "", false
 	}
-	return digest, name, nil
+	if escaped {
+		unescaped, ok := unescapeChecksumName(name)
+		if !ok {
+			return nil, "", false
+		}
+		name = unescaped
+	}
+	return digest, name, true
 }
 
 func bytesEqual(left, right []byte) bool {

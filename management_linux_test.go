@@ -49,16 +49,17 @@ func TestSysctlTree(t *testing.T) {
 	if err := os.WriteFile(path, []byte("0\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	value, err := readSysctl(root, "net.ipv4.ip_forward")
-	if err != nil || value != "0" {
-		t.Fatalf("readSysctl = (%q, %v)", value, err)
+	value, present, err := readSysctl(root, "net.ipv4.ip_forward")
+	if err != nil || !present || value != "0" {
+		t.Fatalf("readSysctl = (%q, %v, %v)", value, present, err)
 	}
 	if err := writeSysctl(root, "net/ipv4/ip_forward", "1"); err != nil {
 		t.Fatal(err)
 	}
-	entries, err := listSysctls(root)
-	if err != nil || len(entries) != 1 || entries[0] != (sysctlEntry{key: "net.ipv4.ip_forward", value: "1"}) {
-		t.Fatalf("listSysctls = (%+v, %v)", entries, err)
+	entries, denied, err := listSysctls(root, false)
+	if err != nil || len(denied) != 0 || len(entries) != 1 ||
+		entries[0] != (sysctlEntry{key: "net.ipv4.ip_forward", value: "1"}) {
+		t.Fatalf("listSysctls = (%+v, %+v, %v)", entries, denied, err)
 	}
 	if _, err := sysctlPath(root, "../kernel.panic"); err == nil {
 		t.Fatal("path traversal was accepted")
@@ -67,8 +68,44 @@ func TestSysctlTree(t *testing.T) {
 		t.Fatal("multiline sysctl value was accepted")
 	}
 	opts, err := parseSysctlOptions([]string{"-an"})
-	if err != nil || !opts.all || !opts.nameOnly {
+	if err != nil || !opts.all || !opts.valuesOnly {
 		t.Fatalf("parseSysctlOptions(-an) = %+v, %v", opts, err)
+	}
+
+	// An unreadable key must not abandon the walk, and an empty file is passed
+	// over rather than printed as a bare "name = ".
+	if err := os.WriteFile(filepath.Join(root, "net", "ipv4", "secret"), []byte("x\n"), 0o200); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "net", "ipv4", "blank"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entries, denied, err = listSysctls(root, false)
+	if err != nil {
+		t.Fatalf("listSysctls after unreadable key: %v", err)
+	}
+	if len(entries) != 1 || entries[0].key != "net.ipv4.ip_forward" {
+		t.Fatalf("listSysctls entries = %+v; want only the readable, non-empty key", entries)
+	}
+	// The write-only key has no read bit at all, so it is skipped silently
+	// rather than reported.
+	if len(denied) != 0 {
+		t.Fatalf("listSysctls denied = %+v; want none", denied)
+	}
+
+	// Listing names needs no read, so the forbidden and empty keys reappear
+	// and nothing is reported as denied.
+	entries, denied, err = listSysctls(root, true)
+	if err != nil || len(denied) != 0 {
+		t.Fatalf("listSysctls(namesOnly) = (%+v, %v)", denied, err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.key)
+	}
+	want := []string{"net.ipv4.blank", "net.ipv4.ip_forward"}
+	if !sameStrings(names, want) {
+		t.Fatalf("listSysctls(namesOnly) names = %v, want %v", names, want)
 	}
 }
 
@@ -160,4 +197,32 @@ func sameStrings(left, right []string) bool {
 		}
 	}
 	return true
+}
+
+// The header must match the original's layout: interval and command on the
+// left, "host: ctime" against the right edge.
+func TestWatchTitleLayout(t *testing.T) {
+	opts := watchOptions{interval: 500 * time.Millisecond, command: []string{"echo", "hi"}}
+	when := time.Date(2026, time.August, 28, 18, 45, 9, 0, time.UTC)
+	title := watchTitle(opts, "deb1", when)
+	if !strings.HasPrefix(title, "Every 0.5s: echo hi") {
+		t.Fatalf("title = %q", title)
+	}
+	if !strings.HasSuffix(title, "deb1: Fri Aug 28 18:45:09 2026") {
+		t.Fatalf("title = %q; want a ctime-formatted right edge", title)
+	}
+	if strings.Contains(title, "\t") {
+		t.Fatalf("title = %q; padding must be spaces, not tabs", title)
+	}
+
+	// A command too long to sit beside the right-hand side is clipped, never
+	// wrapped onto a second line.
+	long := watchOptions{interval: time.Second, command: []string{strings.Repeat("x", 200)}}
+	title = watchTitle(long, "deb1", when)
+	if strings.Contains(title, "\n") {
+		t.Fatalf("long title wrapped: %q", title)
+	}
+	if !strings.HasSuffix(title, "deb1: Fri Aug 28 18:45:09 2026") {
+		t.Fatalf("long title lost its right edge: %q", title)
+	}
 }

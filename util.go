@@ -65,6 +65,126 @@ func errText(err error) string {
 	return err.Error()
 }
 
+// The two character sets below were derived by probing GNU coreutils rather
+// than read off any rule: shellNameBare holds the bytes it prints unquoted,
+// and shellNameDoubleQuotable the bytes it is willing to wrap in double quotes
+// instead of single ones. They overlap but neither contains the other -- '{'
+// is fine bare yet forces single quotes, while ' ' and ':' are the reverse.
+const (
+	shellNameBare           = "#%+,-./@]_{}~"
+	shellNameDoubleQuotable = " %'+,-./:@]_"
+)
+
+func shellNameByteIsAlnum(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9'
+}
+
+// shellNameByteIsSafe reports whether b can appear in a diagnostic unquoted.
+func shellNameByteIsSafe(b byte) bool {
+	if shellNameByteIsAlnum(b) || b >= 0x80 { // >= 0x80: multibyte text in a UTF-8 locale
+		return true
+	}
+	return strings.IndexByte(shellNameBare, b) >= 0
+}
+
+// shellQuoteName renders name the way the GNU tools quote a path in a
+// diagnostic: bare when every byte is unambiguous, and otherwise quoted so the
+// result could be pasted back into a shell. Control characters need ANSI-C
+// $'..' escapes, so a single-quoted string alone is not always enough.
+func shellQuoteName(name string) string {
+	safe, hasSingleQuote, doubleQuotable := true, false, true
+	for index := 0; index < len(name); index++ {
+		b := name[index]
+		if !shellNameByteIsSafe(b) {
+			safe = false
+		}
+		if b == '\'' {
+			hasSingleQuote = true
+		}
+		if !shellNameByteIsAlnum(b) && b < 0x80 && strings.IndexByte(shellNameDoubleQuotable, b) < 0 {
+			doubleQuotable = false
+		}
+	}
+	if safe {
+		return name
+	}
+	// Double quotes are the shorter rendering when the single quote is the
+	// only reason to quote at all, and are what the originals then choose.
+	if hasSingleQuote && doubleQuotable {
+		return `"` + name + `"`
+	}
+	// The originals emit one quoted run, stepping outside it for an escaped
+	// quote or an ANSI-C group. An escaped quote leaves the run open, so an
+	// empty '' closes it before anything that is not itself a quoted run --
+	// another group, or the end of the name.
+	var out strings.Builder
+	quoted, pendingEmpty := false, false
+	for index := 0; index < len(name); index++ {
+		b := name[index]
+		switch {
+		case b == '\'':
+			if quoted {
+				out.WriteByte('\'')
+				quoted = false
+			} else if pendingEmpty {
+				out.WriteString("''")
+			}
+			out.WriteString(`\'`)
+			pendingEmpty = true
+		case b < 0x20 || b == 0x7f:
+			if quoted {
+				out.WriteByte('\'')
+				quoted = false
+			} else if pendingEmpty {
+				out.WriteString("''")
+			}
+			// Adjacent control characters share one $'..' group, as in the
+			// originals' output.
+			out.WriteString("$'")
+			for ; index < len(name) && (name[index] < 0x20 || name[index] == 0x7f); index++ {
+				out.WriteString(ansiCEscape(name[index]))
+			}
+			index--
+			out.WriteByte('\'')
+			pendingEmpty = false
+		default:
+			if !quoted {
+				out.WriteByte('\'')
+				quoted = true
+			}
+			out.WriteByte(b)
+			pendingEmpty = false
+		}
+	}
+	switch {
+	case quoted:
+		out.WriteByte('\'')
+	case pendingEmpty:
+		out.WriteString("''")
+	}
+	return out.String()
+}
+
+func ansiCEscape(b byte) string {
+	switch b {
+	case '\a':
+		return `\a`
+	case '\b':
+		return `\b`
+	case '\t':
+		return `\t`
+	case '\n':
+		return `\n`
+	case '\v':
+		return `\v`
+	case '\f':
+		return `\f`
+	case '\r':
+		return `\r`
+	}
+	return fmt.Sprintf(`\%03o`, b)
+}
+
 func humanSizeUint64(value uint64) string {
 	if value > math.MaxInt64 {
 		return fmt.Sprintf("%.1fE", float64(value)/(1024*1024*1024*1024*1024*1024))
