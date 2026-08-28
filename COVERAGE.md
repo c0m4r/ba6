@@ -85,7 +85,7 @@ breaking every `sed 'N;s/\n/x/'`-style multiline idiom and any `grep` pattern
 relying on those escapes; fixing it improved `grep`, `sed` and `diff`'s
 line-matching at once.
 
-**Short answer to "which are 1:1?"** — 20 applets are genuine drop-ins, 26 more are
+**Short answer to "which are 1:1?"** — 25 applets are genuine drop-ins, 32 more are
 near-complete, 81 are partial or a narrow subset in ways that stay invisible until a
 script reaches for a flag, and 9 have no upstream counterpart to compare against.
 `netstat` and `ps aux` are the closest of the recent additions: every invocation
@@ -103,8 +103,8 @@ the missing options listed per applet below.
 
 | Tier | Meaning | Applets |
 |---|---|---|
-| **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `pwd` `echo` `basename` `tr` `base64` `uname` `whoami` `true` `false` `printenv` `sleep` `mknod` `seq` `dirname` `tac` `fold` `expand` `unexpand` `cksum` `nl` |
-| **B — near-complete** | Common paths match; a handful of real gaps | `cat` `wc` `head` `tail` `rm` `mkdir` `tee` `test` `[` `expr` `printf` `id` `mktemp` `kill` `timeout` `chroot` `blockdev` `stat` `env` `cmp` `sync` `dd` `sha256sum` `which` `rmdir` `top` `host` |
+| **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `pwd` `echo` `basename` `tr` `base64` `uname` `whoami` `true` `false` `printenv` `sleep` `mknod` `seq` `dirname` `tac` `fold` `expand` `unexpand` `cksum` `nl` `paste` `comm` `split` `join` `nice` |
+| **B — near-complete** | Common paths match; a handful of real gaps | `cat` `wc` `head` `tail` `rm` `mkdir` `tee` `test` `[` `expr` `printf` `id` `mktemp` `kill` `timeout` `chroot` `blockdev` `stat` `env` `cmp` `sync` `dd` `sha256sum` `which` `rmdir` `top` `host` `setsid` `nohup` `renice` `lsusb` `lspci` `hwclock` |
 | **C — partial** | Everyday cases work, well-known flags or output details missing | `ls` `cp` `mv` `ln` `touch` `sort` `uniq` `cut` `grep` `find` `du` `df` `date` `readlink` `realpath` `strings` `od` `hexdump` `diff` `sh` `awk` `sed` `file` `tar` `gzip` `gunzip` `chown` `chgrp` `chmod` `free` `uptime` `hostname` `wget` `lsof` `lsblk` `blkid` `mount` `umount` `losetup` `swapon` `swapoff` `mkswap` `ss` `ip` `iptables` `ping` `traceroute` `mtr` `nc` `nslookup` `curl` `iftop` `pgrep` `pkill` `pidof` `modprobe` `insmod` `rmmod` `lsmod` `fdisk` `sfdisk` `mkfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkfs.btrfs` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `login` `passwd` `ps` `netstat` `tree` `less` `dmesg` `xargs` `dig` `nano` `ncdu` `cfdisk` |
 | **D — narrow subset** | A slice of the original; do not treat as a replacement | _(none)_ |
 | **N/A** | ba6-specific, no upstream counterpart | `help` `man` `completion` `init` `halt` `reboot` `poweroff` `switch_root` `udhcpc` |
@@ -197,6 +197,11 @@ Absent behaviour rather than wrong behaviour, each of which touches many applets
 | `expand` | 2/2 | — | `-i` `-t` (size, stop list, `/N` and `+N` forms) byte-identical on randomized inputs _(run)_ |
 | `unexpand` | 3/3 | — | `-a` `--first-only` `-t`, including the `-t`-implies-`-a` rule, byte-identical on randomized inputs _(run)_ |
 | `cksum` | n/a | — | POSIX CRC-32/CKSUM, byte count and stdin form match _(run)_ |
+| `paste` | 3/3 | — | `-d` `-s` `-z`, delimiter cycling, escape handling, short files and multi-file padding match _(run)_ |
+| `comm` | 5/5 | — | `-1/-2/-3` (combined too), `-z`, `--total`, and the check-on-unpairable order semantics of `--check-order`/`--nocheck-order` match _(run)_ |
+| `split` | 11/13 | `--filter` `-u`'s effect | `-l` `-b` `-C` `-n N|l/N|r/N|K/N` `-d` `-x` `-a` `-e` `-t` `--verbose` `--additional-suffix`, legacy `-N`, suffix widening sequence and byte-chunk arithmetic match _(run)_ |
+| `join` | 11/11 | — | `-1` `-2` `-a` `-v` `-o` `-t` `-e` `-i` `--header` `-z`, field re-join rules and unsorted-input reporting match _(run)_ |
+| `nice` | 2/2 | — | `-n` and the legacy `-N` form; niceness applies to the whole command run, exit codes match _(run)_ |
 
 ### Tier B — near-complete
 
@@ -228,7 +233,15 @@ Absent behaviour rather than wrong behaviour, each of which touches many applets
 | `dd` | 8/13 operands | `iflag=` `oflag=` `cbs=`, `conv=fsync\|fdatasync\|noerror\|swab\|excl\|ucase\|lcase`, `status=progress` | `if of bs ibs obs count skip seek conv=notrunc,sync status=none` produce byte-identical results to GNU on every combination tested, including stdin/stdout; the summary omits GNU's `, T s, R MB/s` tail _(run)_ |
 | `top` | common display paths | configuration files, alternate windows, field-layout editor, colour mapping, kill/renice prompts, and task-area scrolling | Provides the five standard summary lines; procps-style task columns; batch and terminal modes; `-b -n -d -p -u/-U -o/-O -c -H -i -S -E -e -w -1`; and basic live keys for sorting and view toggles. Dynamic CPU percentages use adjacent `/proc` snapshots rather than lifetime averages. In raw terminal mode, each rendered row now ends in CRLF so the process table remains column-aligned. |
 
+| `setsid` | 3/3 | — | `-c` `-f` `-w`, session/process-group identity and exit statuses match; -f forks via Go's exec rather than a raw fork+exec _(run)_ |
+| `nohup` | n/a | — | SIGHUP immunity, /dev/null stdin and nohup.out redirection under a pseudo-terminal, 125/126/127 exit paths all match _(run)_ |
+| `renice` | 3/3 | — | `-n` `-p` `-g` `-u` and the legacy positional form; old/new priority reporting matches, including kernel clamping of out-of-range requests _(run)_ |
+| `lsusb` | 1/7 | `-t` `-s` `-d` `-v` `-D` `-P` | default listing matches with usb.ids installed; no tree or verbose modes _(run)_ |
+| `lspci` | 2/11 | `-m` `-v` `-t` `-s` `-d` `-x` `-k` `-b` `-nn` | default and `-n` listings are byte-identical to pciutils with pci.ids, including built-in class names; no verbose/tree modes _(run)_ |
+| `hwclock` | 5/8 | `--adjfile` drift handling `--directisa` `--test` | `--show`/`--get` format, `--hctosys`, `--systohc`, `--set --date`, `--utc`/`--localtime`; ioctl on /dev/rtc with a sysfs fallback _(run)_ |
+
 ### Tier C — partial
+
 
 **`ls`** — 9/56 options _(run)_. Present: `-l -a -A -d -h -r -t -S -R -F -1`.
 Missing everything else, notably `-i` `-c` `-u` `-U` `-v` `-C` `-x` `-m` `-n` `-g` `-o`

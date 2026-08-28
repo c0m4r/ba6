@@ -200,6 +200,16 @@ Ordinary users may change only their own password and must enter the current
 password; sufficient permission to update the password database is still
 required. Root may name any user and can replace unsupported or locked hashes.
 New passwords are stored as salted SHA-512 crypt hashes.`,
+
+	"paste": `Usage: paste [OPTION]... [FILE]...
+Write the lines of each FILE side by side, separated by cycled delimiter
+characters.
+
+Options:
+  -d LIST   use the characters of LIST as delimiters instead of TAB
+  -s        write each FILE on a single line instead
+  -z        use NUL instead of newline as the record terminator
+  --help    show this help`,
 	"lsof": `Usage: lsof [-nP] [-p PID,...] [-i] [FILE]...
 List process file descriptors by inspecting /proc. -p selects processes, -i
 selects IPv4/IPv6 sockets, and FILE operands select exact open paths. Entries
@@ -209,6 +219,20 @@ List Linux block devices from sysfs. Columns include NAME, KNAME, MAJ:MIN, RM,
 SIZE, RO, TYPE, MOUNTPOINT, and MOUNTPOINTS.`,
 	"lsmod": `Usage: lsmod
 Display loaded kernel modules from /proc/modules.`,
+
+	"lspci": `Usage: lspci [OPTION]...
+List PCI devices from /sys with vendor, device, and class names from pci.ids
+when it is installed.
+
+Options:
+  -n        print numeric IDs instead of names
+  --help    show this help`,
+	"lsusb": `Usage: lsusb [OPTION]...
+List USB devices from /sys with vendor and product names from usb.ids when it
+is installed.
+
+Options:
+  --help    show this help`,
 	"mktemp": `Usage: mktemp [-d] [-p DIRECTORY] [TEMPLATE]
 Create a securely named temporary file or directory. TEMPLATE must contain a
 run of at least three X characters, which are replaced -- exactly those, and no
@@ -413,9 +437,45 @@ Format and print arguments with standard escape sequences.`,
 	"reboot": `Usage: reboot [-nf]
 Ask PID 1 to restart. -f uses the reboot syscall directly and requires
 CAP_SYS_BOOT; -n skips the pre-syscall sync in forced mode.`,
+
+	"renice": `Usage: renice [OPTION]... TARGET...
+Change the niceness of running processes.
+
+Options:
+  -n N      the new niceness
+  -p PID    change process PID (the default target)
+  -g PGRP   change process group PGRP
+  -u USER   change every process of USER
+  --help    show this help`,
 	"seq": `Usage: seq [-w] [-s STRING] [-f FORMAT] [FIRST [INCREMENT]] LAST
 Print a numeric sequence. How many decimals each value carries is taken from the
 operands: 0.10 asks for two. -w pads with leading zeros to an equal width.`,
+
+	"setsid": `Usage: setsid [OPTION]... COMMAND [ARG]...
+Run COMMAND in a new session.
+
+Options:
+  -c        make the current terminal the controlling one
+  -f        fork first, then create the session
+  -w        wait for the program to finish
+  --help    show this help`,
+	"split": `Usage: split [OPTION]... [FILE [PREFIX]]
+Write pieces of the input into files named PREFIXaa, PREFIXab, ... (1000
+lines per piece by default).
+
+Options:
+  -l N      put N lines per piece
+  -b SIZE   put SIZE bytes per piece (K, M, G multiply by 1024; KB by 1000)
+  -n CHUNKS make CHUNKS pieces; K/N selects one, l/N keeps lines whole, r/N
+            distributes lines round-robin
+  -a N      use suffixes of length N
+  -d        number the pieces instead of lettering them
+  -x        use hexadecimal numbering
+  -e        leave out empty pieces
+  --additional-suffix=SUFFIX  append SUFFIX to every piece name
+  --verbose print a notice as each piece opens
+  -t SEP    use SEP as the record separator
+  --help    show this help`,
 	"sh": `Usage: sh [-c COMMAND | FILE]
 Run a small shell supporting quoting, expansion, pipelines, redirection, and basic builtins.`,
 	"ss": `Usage: ss [-atuxlnp]
@@ -436,6 +496,13 @@ Options:
   --help        show this help
 
 -p can only name processes the caller owns, unless netstat runs as root.`,
+
+	"nice": `Usage: nice [OPTION]... [COMMAND [ARG]...]
+Run COMMAND at an adjusted niceness (default 10).
+
+Options:
+  -n N      set the niceness adjustment to N
+  --help    show this help`,
 	"ncdu": `Usage: ncdu [OPTION]... [DIRECTORY]
 Scan a directory and browse its disk usage on a full-screen display. The
 listing is ordered by size, with a bar drawn relative to the largest entry.
@@ -574,6 +641,19 @@ Display the system hostname. Setting the hostname is intentionally unsupported.
 Options:
   -s        display the name before the first dot
   --help    show this help`,
+
+	"hwclock": `Usage: hwclock [OPTION]...
+Read and set the real-time clock.
+
+Options:
+  -r, --show     print the current RTC time (the default)
+  --get          like --show
+  -s, --hctosys  copy the RTC value into the system time
+  -w, --systohc  store the system time into the RTC
+  --set --date S store the given time into the RTC
+  --utc          the RTC holds UTC (the default)
+  --localtime    the RTC holds local time
+  --help         show this help`,
 	"iftop": `Usage: iftop [-t] [-i INTERFACE] [-s SECONDS]
 Sample /proc/net/dev and report receive/transmit rates and totals per interface.
 This focused batch implementation accepts -n, -N, and -P for compatibility.`,
@@ -960,6 +1040,19 @@ input with no operands.
 
 Options:
   --help    show this help`,
+
+	"comm": `Usage: comm [OPTION]... FILE1 FILE2
+Print the lines that only one of two sorted inputs has, and those both have.
+Column 1 lists lines only in FILE1, column 2 only in FILE2, and column 3
+common lines.
+
+Options:
+  -1        suppress column 1
+  -2        suppress column 2
+  -3        suppress column 3
+  -z        use NUL instead of newline as the record terminator
+  --total   print a counts summary line
+  --help    show this help`,
 	"expand": `Usage: expand [OPTION]... [FILE]...
 Replace tab characters in each FILE with runs of spaces.
 
@@ -989,6 +1082,13 @@ Options:
   -v N      first line number (default 1)
   -i N      line number increment (default 1)
   -l N      count every Nth blank line as a line (default 1)
+  --help    show this help`,
+
+	"nohup": `Usage: nohup COMMAND [ARG]...
+Run COMMAND immune to hangups: terminal input becomes /dev/null and terminal
+output is appended to nohup.out (or $HOME/nohup.out).
+
+Options:
   --help    show this help`,
 	"tac": `Usage: tac [OPTION]... [FILE]...
 Emit each FILE with its records reversed (last one first).
@@ -1097,6 +1197,23 @@ Objects and commands:
   ip rule [show]
   ip rule add|del [from PREFIX] [to PREFIX] [priority NUM] [table TABLE]
   --help    show this help`,
+
+	"join": `Usage: join [OPTION]... FILE1 FILE2
+Pair the lines of two sorted files whose join fields are equal, and write the
+joined lines. The join field is the first one by default.
+
+Options:
+  -1 FIELD   use FIELD of FILE1 as the join field
+  -2 FIELD   use FIELD of FILE2 as the join field
+  -a NUM     also print lines of file NUM that have no partner
+  -v NUM     print only lines of file NUM that have no partner
+  -o LIST    print only the fields LIST names (0 for the join field)
+  -t CHAR    select CHAR as the field separator
+  -e STRING  substitute STRING for fields a line lacks
+  -i         compare join fields ignoring case
+  --header   copy each input's leading line into the output as a header
+  -z         use NUL instead of newline as the record terminator
+  --help     show this help`,
 	"iptables": `Usage: iptables COMMAND [CHAIN] [RULE]
 Manage a focused IPv4 filter ruleset through the kernel nftables API.
 

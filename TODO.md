@@ -41,20 +41,20 @@ validation, fixture-based tests, and clearly documented filesystem support.
 ## Boot and process recovery
 
 - [ ] `pivot_root`
-- [ ] `setsid`
+- [x] `setsid`
 - [ ] `getty`
 - [x] `login`
-- [ ] `nice`
-- [ ] `renice`
-- [ ] `nohup`
+- [x] `nice`
+- [x] `renice`
+- [x] `nohup`
 - [x] `watch`
 
 ## Kernel and system management
 
 - [x] `sysctl`
-- [ ] `hwclock`
-- [ ] `lsusb`
-- [ ] `lspci`
+- [x] `hwclock`
+- [x] `lsusb`
+- [x] `lspci`
 - [x] `passwd`
 - [x] `useradd`
 - [x] `groupadd`
@@ -71,10 +71,10 @@ validation, fixture-based tests, and clearly documented filesystem support.
 
 ## Text and data processing
 
-- [ ] `paste`
-- [ ] `join`
-- [ ] `comm`
-- [ ] `split`
+- [x] `paste`
+- [x] `join`
+- [x] `comm`
+- [x] `split`
 - [x] `nl`
 - [x] `tac`
 - [x] `fold`
