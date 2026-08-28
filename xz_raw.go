@@ -6,8 +6,11 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"hash"
 	"hash/crc32"
 	"io"
 )
@@ -155,115 +158,278 @@ func xzVLI(value uint64) []byte {
 	}
 }
 
+// xzReader decodes a complete XZ stream: every block of it, each block's
+// LZMA2 filter, the integrity check the stream declares, and any further
+// streams concatenated after the first.
 type xzReader struct {
-	input        *bufio.Reader
-	blockHeader  uint64
-	dataBytes    uint64
-	remaining    uint64
-	finished     bool
-	initialChunk bool
+	input     *bufio.Reader
+	checkType byte
+	check     *xzChecker
+	block     *lzma2Reader
+	finished  bool
 }
 
 func newXZReader(input io.Reader) (io.Reader, error) {
 	reader := &xzReader{input: bufio.NewReader(input)}
-	if err := reader.readHeaders(); err != nil {
+	if err := reader.readStreamHeader(); err != nil {
 		return nil, err
 	}
 	return reader, nil
 }
 
-func (reader *xzReader) readHeaders() error {
-	streamHeader := make([]byte, 12)
-	if _, err := io.ReadFull(reader.input, streamHeader); err != nil {
-		return err
+func (reader *xzReader) readStreamHeader() error {
+	header := make([]byte, 12)
+	if _, err := io.ReadFull(reader.input, header); err != nil {
+		return unexpectedEOF(err)
 	}
-	if !bytes.Equal(streamHeader[:6], xzStreamMagic) || streamHeader[6] != 0 || streamHeader[7] != 0 {
+	if !bytes.Equal(header[:6], xzStreamMagic) {
 		return fmt.Errorf("unsupported XZ stream")
 	}
-	if binary.LittleEndian.Uint32(streamHeader[8:]) != crc32.ChecksumIEEE(streamHeader[6:8]) {
+	if header[6] != 0 || header[7]&0xf0 != 0 {
+		return fmt.Errorf("unsupported XZ stream flags")
+	}
+	if binary.LittleEndian.Uint32(header[8:]) != crc32.ChecksumIEEE(header[6:8]) {
 		return fmt.Errorf("invalid XZ stream header")
 	}
-	first, err := reader.input.ReadByte()
+	reader.checkType = header[7] & 0x0f
+	check, err := newXZChecker(reader.checkType)
 	if err != nil {
 		return err
 	}
-	if first == 0 {
-		return fmt.Errorf("empty XZ streams are unsupported")
-	}
-	reader.blockHeader = uint64(first+1) * 4
-	if reader.blockHeader < 12 || reader.blockHeader > 1024 {
-		return fmt.Errorf("invalid XZ block header")
-	}
-	rest := make([]byte, reader.blockHeader-1)
-	if _, err := io.ReadFull(reader.input, rest); err != nil {
-		return err
-	}
-	header := append([]byte{first}, rest[:len(rest)-4]...)
-	if binary.LittleEndian.Uint32(rest[len(rest)-4:]) != crc32.ChecksumIEEE(header) {
-		return fmt.Errorf("invalid XZ block header")
-	}
-	if len(header) < 5 || header[1] != 0 || header[2] != 0x21 || header[3] != 1 {
-		return fmt.Errorf("unsupported XZ filter chain")
-	}
-	for _, value := range header[5:] {
-		if value != 0 {
-			return fmt.Errorf("invalid XZ block header padding")
-		}
-	}
+	reader.check = check
 	return nil
 }
 
 func (reader *xzReader) Read(output []byte) (int, error) {
-	for reader.remaining == 0 && !reader.finished {
-		control, err := reader.input.ReadByte()
-		if err != nil {
+	for {
+		if reader.finished {
+			return 0, io.EOF
+		}
+		// Finishing a stream may roll straight into another one concatenated
+		// after it, so keep going until a block is actually open.
+		for reader.block == nil && !reader.finished {
+			if err := reader.startBlock(); err != nil {
+				return 0, err
+			}
+		}
+		if reader.finished {
+			return 0, io.EOF
+		}
+		n, err := reader.block.Read(output)
+		if n > 0 {
+			reader.check.Write(output[:n])
+			return n, nil
+		}
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, io.EOF) {
 			return 0, err
 		}
-		reader.dataBytes++
-		switch control {
-		case 0:
-			if err := reader.finishBlock(); err != nil {
-				return 0, err
-			}
-			reader.finished = true
-			return 0, io.EOF
-		case 1, 2:
-			if control == 2 && !reader.initialChunk {
-				return 0, fmt.Errorf("XZ raw chunk lacks an initial dictionary reset")
-			}
-			sizes := []byte{0, 0}
-			if _, err := io.ReadFull(reader.input, sizes); err != nil {
-				return 0, err
-			}
-			reader.dataBytes += 2
-			reader.remaining = uint64(binary.BigEndian.Uint16(sizes)) + 1
-			reader.initialChunk = true
-		default:
-			return 0, fmt.Errorf("compressed LZMA2 chunks are unsupported")
+		if err := reader.finishBlock(); err != nil {
+			return 0, err
 		}
 	}
-	if reader.finished {
-		return 0, io.EOF
-	}
-	amount := min(uint64(len(output)), reader.remaining)
-	read, err := reader.input.Read(output[:amount])
-	if read < 0 {
-		return 0, fmt.Errorf("XZ reader returned a negative byte count")
-	}
-	readCount := uint64(read)
-	reader.remaining -= readCount
-	reader.dataBytes += readCount
-	if err != nil && err != io.EOF {
-		return read, err
-	}
-	if read == 0 && err == io.EOF {
-		return 0, io.ErrUnexpectedEOF
-	}
-	return read, nil
 }
 
+// startBlock reads the next block header, or hands over to the index when the
+// stream's blocks are done.
+func (reader *xzReader) startBlock() error {
+	first, err := reader.input.ReadByte()
+	if err != nil {
+		return unexpectedEOF(err)
+	}
+	if first == 0 {
+		return reader.finishStream()
+	}
+	size := (int(first) + 1) * 4
+	header := make([]byte, size)
+	header[0] = first
+	if _, err := io.ReadFull(reader.input, header[1:]); err != nil {
+		return unexpectedEOF(err)
+	}
+	body := header[:size-4]
+	if binary.LittleEndian.Uint32(header[size-4:]) != crc32.ChecksumIEEE(body) {
+		return fmt.Errorf("invalid XZ block header")
+	}
+	dictSize, err := parseXZBlockHeader(body)
+	if err != nil {
+		return err
+	}
+	reader.block = newLZMA2Reader(reader.input, dictSize)
+	reader.check.reset()
+	return nil
+}
+
+// finishBlock consumes the block padding and verifies the declared check over
+// the block's uncompressed data.
 func (reader *xzReader) finishBlock() error {
-	return skipXZPadding(reader.input, reader.blockHeader+reader.dataBytes)
+	compressed := reader.block.compressed
+	if compressed < 0 {
+		return fmt.Errorf("invalid XZ block size")
+	}
+	if err := skipXZPadding(reader.input, uint64(compressed)); err != nil {
+		return err
+	}
+	if size := reader.check.size; size > 0 {
+		stored := make([]byte, size)
+		if _, err := io.ReadFull(reader.input, stored); err != nil {
+			return unexpectedEOF(err)
+		}
+		if err := reader.check.verify(stored); err != nil {
+			return err
+		}
+	}
+	reader.block = nil
+	return nil
+}
+
+// finishStream consumes the index and footer, then looks for another stream
+// concatenated after this one, which xz allows and produces.
+func (reader *xzReader) finishStream() error {
+	if err := reader.skipIndex(); err != nil {
+		return err
+	}
+	footer := make([]byte, 12)
+	if _, err := io.ReadFull(reader.input, footer); err != nil {
+		return unexpectedEOF(err)
+	}
+	if footer[10] != 'Y' || footer[11] != 'Z' {
+		return fmt.Errorf("invalid XZ stream footer")
+	}
+	if err := reader.skipStreamPadding(); err != nil {
+		return err
+	}
+	if _, err := reader.input.Peek(1); err != nil {
+		reader.finished = true
+		return nil
+	}
+	return reader.readStreamHeader()
+}
+
+// skipIndex walks the index records. The indicator byte has already been read.
+func (reader *xzReader) skipIndex() error {
+	consumed := uint64(1)
+	records, width, err := readXZVLI(reader.input)
+	if err != nil {
+		return err
+	}
+	consumed += uint64(width) //nolint:gosec // G115: width is the 1..9 byte count of one VLI.
+	if records > 1<<32 {
+		return fmt.Errorf("invalid XZ index")
+	}
+	for i := uint64(0); i < records; i++ {
+		for range 2 {
+			_, width, err := readXZVLI(reader.input)
+			if err != nil {
+				return err
+			}
+			consumed += uint64(width) //nolint:gosec // G115: width is the 1..9 byte count of one VLI.
+		}
+	}
+	if err := skipXZPadding(reader.input, consumed); err != nil {
+		return err
+	}
+	// The index CRC32 follows its padding.
+	_, err = io.CopyN(io.Discard, reader.input, 4)
+	return unexpectedEOF(err)
+}
+
+// skipStreamPadding consumes the four-byte zero groups xz may insert between
+// concatenated streams.
+func (reader *xzReader) skipStreamPadding() error {
+	for {
+		next, err := reader.input.Peek(4)
+		if err != nil || !bytes.Equal(next, []byte{0, 0, 0, 0}) {
+			return nil
+		}
+		if _, err := reader.input.Discard(4); err != nil {
+			return err
+		}
+	}
+}
+
+// parseXZBlockHeader validates the filter chain and returns the LZMA2
+// dictionary size. Only a lone LZMA2 filter is supported: the BCJ and delta
+// filters would each need their own decoder.
+func parseXZBlockHeader(body []byte) (int, error) {
+	if len(body) < 2 {
+		return 0, fmt.Errorf("invalid XZ block header")
+	}
+	flags := body[1]
+	if flags&0x3c != 0 {
+		return 0, fmt.Errorf("invalid XZ block flags")
+	}
+	if filters := int(flags&0x03) + 1; filters != 1 {
+		return 0, fmt.Errorf("unsupported XZ filter chain of %d filters", filters)
+	}
+	rest := bytes.NewReader(body[2:])
+	if flags&0x40 != 0 { // compressed size present
+		if _, _, err := readXZVLI(rest); err != nil {
+			return 0, err
+		}
+	}
+	if flags&0x80 != 0 { // uncompressed size present
+		if _, _, err := readXZVLI(rest); err != nil {
+			return 0, err
+		}
+	}
+	id, _, err := readXZVLI(rest)
+	if err != nil {
+		return 0, err
+	}
+	if id != 0x21 {
+		return 0, fmt.Errorf("unsupported XZ filter %#x", id)
+	}
+	propsSize, _, err := readXZVLI(rest)
+	if err != nil {
+		return 0, err
+	}
+	if propsSize != 1 {
+		return 0, fmt.Errorf("invalid LZMA2 filter properties")
+	}
+	encoded, err := rest.ReadByte()
+	if err != nil {
+		return 0, fmt.Errorf("invalid LZMA2 filter properties")
+	}
+	return lzma2DictSize(encoded)
+}
+
+// lzma2DictSize expands the six-bit dictionary size the LZMA2 filter stores.
+func lzma2DictSize(encoded byte) (int, error) {
+	value := encoded & 0x3f
+	if encoded&0xc0 != 0 || value > 40 {
+		return 0, fmt.Errorf("invalid LZMA2 dictionary size")
+	}
+	if value == 40 {
+		return 1 << 30, nil
+	}
+	size := (uint64(2) | uint64(value&1)) << (value/2 + 11)
+	// The window is only ever as large as the data, so a huge declared size
+	// costs nothing until that much output exists.
+	if size > 1<<30 {
+		size = 1 << 30
+	}
+	return int(size), nil
+}
+
+// readXZVLI reads one variable-length integer, returning its value and width.
+func readXZVLI(input io.ByteReader) (uint64, int, error) {
+	var value uint64
+	for i := 0; i < 9; i++ {
+		b, err := input.ReadByte()
+		if err != nil {
+			return 0, 0, unexpectedEOF(err)
+		}
+		value |= uint64(b&0x7f) << (7 * i)
+		if b&0x80 == 0 {
+			if b == 0 && i > 0 {
+				return 0, 0, fmt.Errorf("invalid XZ variable-length integer")
+			}
+			return value, i + 1, nil
+		}
+	}
+	return 0, 0, fmt.Errorf("invalid XZ variable-length integer")
 }
 
 func skipXZPadding(input io.Reader, size uint64) error {
@@ -272,5 +438,93 @@ func skipXZPadding(input io.Reader, size uint64) error {
 		return nil
 	}
 	_, err := io.CopyN(io.Discard, input, int64(padding))
-	return err
+	return unexpectedEOF(err)
+}
+
+// xzChecker computes the integrity check a stream declares. Types xz defines
+// but does not produce are accepted and their bytes consumed without
+// verification, which is better than refusing to read the data at all.
+type xzChecker struct {
+	kind     byte
+	size     int
+	crc32Sum uint32
+	crc64Sum uint64
+	digest   hash.Hash
+}
+
+func newXZChecker(kind byte) (*xzChecker, error) {
+	sizes := map[byte]int{0: 0, 1: 4, 2: 4, 3: 4, 4: 8, 5: 8, 6: 8,
+		7: 16, 8: 16, 9: 16, 10: 32, 11: 32, 12: 32, 13: 64, 14: 64, 15: 64}
+	size, ok := sizes[kind]
+	if !ok {
+		return nil, fmt.Errorf("unsupported XZ check type %#x", kind)
+	}
+	checker := &xzChecker{kind: kind, size: size}
+	if kind == 10 {
+		checker.digest = sha256.New()
+	}
+	return checker, nil
+}
+
+func (c *xzChecker) reset() {
+	c.crc32Sum, c.crc64Sum = 0, 0
+	if c.digest != nil {
+		c.digest.Reset()
+	}
+}
+
+func (c *xzChecker) Write(data []byte) {
+	switch c.kind {
+	case 1:
+		c.crc32Sum = crc32.Update(c.crc32Sum, crc32.IEEETable, data)
+	case 4:
+		c.crc64Sum = updateCRC64(c.crc64Sum, data)
+	case 10:
+		c.digest.Write(data)
+	}
+}
+
+func (c *xzChecker) verify(stored []byte) error {
+	var computed []byte
+	switch c.kind {
+	case 1:
+		computed = binary.LittleEndian.AppendUint32(nil, c.crc32Sum)
+	case 4:
+		computed = binary.LittleEndian.AppendUint64(nil, c.crc64Sum)
+	case 10:
+		computed = c.digest.Sum(nil)
+	default:
+		return nil // a check ba6 does not compute; its bytes are still consumed
+	}
+	if !bytes.Equal(computed, stored) {
+		return fmt.Errorf("XZ integrity check failed")
+	}
+	return nil
+}
+
+// crc64Table holds the reflected ECMA-182 polynomial xz uses for its default
+// check, built once on first use.
+var crc64Table = func() [256]uint64 {
+	const polynomial = 0xc96c5795d7870f42
+	var table [256]uint64
+	for i := range table {
+		value := uint64(i)
+		for range 8 {
+			if value&1 != 0 {
+				value = value>>1 ^ polynomial
+			} else {
+				value >>= 1
+			}
+		}
+		table[i] = value
+	}
+	return table
+}()
+
+func updateCRC64(sum uint64, data []byte) uint64 {
+	sum = ^sum
+	for _, b := range data {
+		sum = crc64Table[byte(sum&0xff)^b] ^ sum>>8
+	}
+	return ^sum
 }

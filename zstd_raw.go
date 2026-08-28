@@ -6,6 +6,8 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 )
@@ -98,14 +100,18 @@ func zstdUniform(data []byte) bool {
 	return true
 }
 
+// zstdReader decodes a complete Zstandard stream: every frame in it, all three
+// block types including entropy-coded ones, the sliding window matches reach
+// back through, and any skippable frames in between.
 type zstdReader struct {
-	input          *bufio.Reader
-	remaining      uint32
-	rle            byte
-	rleBlock       bool
-	lastAfterBlock bool
-	checksum       bool
-	finished       bool
+	input    *bufio.Reader
+	dec      *zstdBlockDecoder
+	window   []byte
+	frameAt  int // index in window where the current frame's history starts
+	consumed int
+	winSize  int
+	checksum bool
+	finished bool
 }
 
 func newZstdReader(input io.Reader) (io.Reader, error) {
@@ -116,32 +122,64 @@ func newZstdReader(input io.Reader) (io.Reader, error) {
 	return reader, nil
 }
 
+// readFrameHeader reads one frame header, skipping over any skippable frames
+// that precede it. It reports io.EOF when the input is exhausted.
 func (reader *zstdReader) readFrameHeader() error {
-	magic := make([]byte, len(zstdFrameMagic))
-	if _, err := io.ReadFull(reader.input, magic); err != nil {
-		return err
+	for {
+		magic := make([]byte, 4)
+		if _, err := io.ReadFull(reader.input, magic); err != nil {
+			return err
+		}
+		value := binary.LittleEndian.Uint32(magic)
+		if value&0xfffffff0 == 0x184d2a50 {
+			// A skippable frame: a four-byte length then that much payload.
+			var size [4]byte
+			if _, err := io.ReadFull(reader.input, size[:]); err != nil {
+				return unexpectedEOF(err)
+			}
+			skip := int64(binary.LittleEndian.Uint32(size[:]))
+			if _, err := io.CopyN(io.Discard, reader.input, skip); err != nil {
+				return unexpectedEOF(err)
+			}
+			continue
+		}
+		if !bytes.Equal(magic, zstdFrameMagic) {
+			return fmt.Errorf("not a Zstandard frame")
+		}
+		break
 	}
-	if !bytes.Equal(magic, zstdFrameMagic) {
-		return fmt.Errorf("not a Zstandard frame")
-	}
+
 	descriptor, err := reader.input.ReadByte()
 	if err != nil {
-		return err
+		return unexpectedEOF(err)
 	}
 	if descriptor&0x08 != 0 {
 		return fmt.Errorf("invalid Zstandard frame header")
 	}
 	reader.checksum = descriptor&0x04 != 0
 	singleSegment := descriptor&0x20 != 0
+
+	windowSize := 0
 	if !singleSegment {
-		if _, err := reader.input.ReadByte(); err != nil {
-			return err
+		windowByte, err := reader.input.ReadByte()
+		if err != nil {
+			return unexpectedEOF(err)
 		}
+		exponent := int(windowByte>>3) + 10
+		mantissa := int(windowByte & 0x07)
+		if exponent > 40 {
+			return fmt.Errorf("unsupported Zstandard window size")
+		}
+		base := 1 << uint(exponent)
+		windowSize = base + (base/8)*mantissa
 	}
-	dictionarySize := []int{0, 1, 2, 4}[descriptor&0x03]
-	contentSizeFlag := descriptor >> 6
+
+	dictionaryIDSize := []int{0, 1, 2, 4}[descriptor&0x03]
+	if dictionaryIDSize > 0 {
+		return fmt.Errorf("dictionary-compressed Zstandard frames are unsupported")
+	}
 	contentSizeSize := 0
-	switch contentSizeFlag {
+	switch descriptor >> 6 {
 	case 0:
 		if singleSegment {
 			contentSizeSize = 1
@@ -153,81 +191,142 @@ func (reader *zstdReader) readFrameHeader() error {
 	case 3:
 		contentSizeSize = 8
 	}
-	if _, err := io.CopyN(io.Discard, reader.input, int64(dictionarySize+contentSizeSize)); err != nil {
-		return err
+	var contentSize uint64
+	if contentSizeSize > 0 {
+		field := make([]byte, contentSizeSize)
+		if _, err := io.ReadFull(reader.input, field); err != nil {
+			return unexpectedEOF(err)
+		}
+		switch contentSizeSize {
+		case 1:
+			contentSize = uint64(field[0])
+		case 2:
+			contentSize = uint64(binary.LittleEndian.Uint16(field)) + 256
+		case 4:
+			contentSize = uint64(binary.LittleEndian.Uint32(field))
+		default:
+			contentSize = binary.LittleEndian.Uint64(field)
+		}
 	}
+	if singleSegment {
+		// The whole frame is one segment, so the window must span its content.
+		windowSize = int(min(contentSize, 1<<31))
+	}
+	if windowSize < 1024 {
+		windowSize = 1024
+	}
+	reader.winSize = windowSize
+	reader.dec = newZstdBlockDecoder()
+	reader.frameAt = len(reader.window)
 	return nil
 }
 
 func (reader *zstdReader) Read(output []byte) (int, error) {
-	if len(output) == 0 {
-		return 0, nil
-	}
-	for reader.remaining == 0 && !reader.finished {
-		if reader.lastAfterBlock {
-			if reader.checksum {
-				if _, err := io.CopyN(io.Discard, reader.input, 4); err != nil {
-					return 0, err
-				}
-			}
-			reader.finished = true
+	for reader.consumed == len(reader.window) {
+		if reader.finished {
 			return 0, io.EOF
 		}
-		if err := reader.readBlockHeader(); err != nil {
+		reader.compact()
+		if err := reader.readBlock(); err != nil {
 			return 0, err
 		}
 	}
-	if reader.finished {
-		return 0, io.EOF
-	}
-	amount := len(output)
-	if uint64(amount) > uint64(reader.remaining) {
-		amount = int(reader.remaining)
-	}
-	if reader.rleBlock {
-		for index := 0; index < amount; index++ {
-			output[index] = reader.rle
-		}
-		reader.remaining -= uint32(amount) //nolint:gosec // amount is no greater than reader.remaining.
-		return amount, nil
-	}
-	read, err := reader.input.Read(output[:amount])
-	if read < 0 || read > amount {
-		return 0, fmt.Errorf("zstandard reader returned an invalid byte count")
-	}
-	reader.remaining -= uint32(read) //nolint:gosec // read is nonnegative and no greater than amount <= remaining.
-	if err != nil && err != io.EOF {
-		return read, err
-	}
-	if read == 0 && err == io.EOF {
-		return 0, io.ErrUnexpectedEOF
-	}
-	return read, nil
+	n := copy(output, reader.window[reader.consumed:])
+	reader.consumed += n
+	return n, nil
 }
 
-func (reader *zstdReader) readBlockHeader() error {
-	headerBytes := []byte{0, 0, 0}
-	if _, err := io.ReadFull(reader.input, headerBytes); err != nil {
-		return err
+// compact drops history no match can reach any more, bounding memory for a
+// long stream. Only bytes already handed to the caller are eligible.
+func (reader *zstdReader) compact() {
+	keep := reader.winSize
+	if len(reader.window) <= keep {
+		return
 	}
-	header := uint32(headerBytes[0]) | uint32(headerBytes[1])<<8 | uint32(headerBytes[2])<<16
-	reader.lastAfterBlock = header&1 != 0
-	blockType := (header >> 1) & 0x03
-	reader.remaining = header >> 3
-	reader.rleBlock = false
+	drop := len(reader.window) - keep
+	if drop > reader.consumed {
+		drop = reader.consumed
+	}
+	if drop < 1<<20 {
+		return
+	}
+	copy(reader.window, reader.window[drop:])
+	reader.window = reader.window[:len(reader.window)-drop]
+	reader.consumed -= drop
+	reader.frameAt -= drop
+	if reader.frameAt < 0 {
+		reader.frameAt = 0
+	}
+}
+
+// readBlock decodes one block, or closes the frame and moves on to the next.
+func (reader *zstdReader) readBlock() error {
+	var header [3]byte
+	if _, err := io.ReadFull(reader.input, header[:]); err != nil {
+		return unexpectedEOF(err)
+	}
+	value := uint32(header[0]) | uint32(header[1])<<8 | uint32(header[2])<<16
+	last := value&1 != 0
+	blockType := (value >> 1) & 0x03
+	size := int(value >> 3)
+	if size > zstdMaxBlockSize {
+		return errZstdData
+	}
+
 	switch blockType {
-	case 0:
-		return nil
-	case 1:
+	case 0: // stored
+		start := len(reader.window)
+		reader.window = append(reader.window, make([]byte, size)...)
+		if _, err := io.ReadFull(reader.input, reader.window[start:]); err != nil {
+			reader.window = reader.window[:start]
+			return unexpectedEOF(err)
+		}
+	case 1: // one byte repeated
 		value, err := reader.input.ReadByte()
+		if err != nil {
+			return unexpectedEOF(err)
+		}
+		for range size {
+			reader.window = append(reader.window, value)
+		}
+	case 2: // entropy coded
+		body := make([]byte, size)
+		if _, err := io.ReadFull(reader.input, body); err != nil {
+			return unexpectedEOF(err)
+		}
+		expanded, err := reader.dec.decodeBlock(body, reader.window, reader.frameAt)
 		if err != nil {
 			return err
 		}
-		reader.rle, reader.rleBlock = value, true
-		return nil
-	case 2:
-		return fmt.Errorf("compressed Zstandard blocks are unsupported")
+		reader.window = expanded
 	default:
 		return fmt.Errorf("invalid Zstandard block type")
 	}
+
+	if !last {
+		return nil
+	}
+	return reader.finishFrame()
+}
+
+// finishFrame consumes the frame checksum and looks for another frame after
+// it, which zstd allows and produces when concatenating.
+func (reader *zstdReader) finishFrame() error {
+	if reader.checksum {
+		if _, err := io.CopyN(io.Discard, reader.input, 4); err != nil {
+			return unexpectedEOF(err)
+		}
+	}
+	if _, err := reader.input.Peek(1); err != nil {
+		reader.finished = true
+		return nil
+	}
+	if err := reader.readFrameHeader(); err != nil {
+		if errors.Is(err, io.EOF) {
+			reader.finished = true
+			return nil
+		}
+		return err
+	}
+	return nil
 }
