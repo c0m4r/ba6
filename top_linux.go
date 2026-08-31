@@ -736,19 +736,24 @@ func readTopSnapshot(options topOptions) (topSnapshot, error) {
 	return snapshot, nil
 }
 
+var systemdSessionsDir = "/run/systemd/sessions"
+
 // topUserCount counts logged-in users the way procps does: systemd sessions
 // first (only active ones whose class starts with "user"), falling back to
 // Linux's fixed-size utmp records when systemd is not running. It avoids a
 // child process and is deliberately best-effort: minimal recovery images often
 // do not create an utmp file at all.
 func topUserCount() int {
-	if sessions, err := os.ReadDir("/run/systemd/sessions"); err == nil && len(sessions) > 0 {
+	if sessions, err := os.ReadDir(systemdSessionsDir); err == nil && len(sessions) > 0 {
 		count := 0
 		for _, entry := range sessions {
-			if entry.IsDir() {
+			// The directory also holds "<id>.ref" FIFOs that systemd keeps
+			// open for reference counting. Reading one blocks until systemd
+			// drops the session, so only plain session files are parsed.
+			if !entry.Type().IsRegular() {
 				continue
 			}
-			data, err := os.ReadFile(filepath.Join("/run/systemd/sessions", entry.Name()))
+			data, err := os.ReadFile(filepath.Join(systemdSessionsDir, entry.Name()))
 			if err != nil {
 				continue
 			}

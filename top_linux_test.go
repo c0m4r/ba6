@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -126,5 +127,31 @@ func TestTopBatchIncludesProcpsSummaryAreas(t *testing.T) {
 		if !strings.Contains(output, want) {
 			t.Errorf("batch report missing %q:\n%s", want, output)
 		}
+	}
+}
+
+func TestTopUserCountSkipsSessionRefFifos(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/119344", []byte("# This is private data.\nUID=0\nCLASS=user\n"), 0o644); err != nil {
+		t.Fatalf("write session: %v", err)
+	}
+	// systemd keeps a "<id>.ref" FIFO open per session; reading it blocks
+	// until the session goes away, which used to hang top on boot.
+	if err := syscall.Mkfifo(dir+"/119344.ref", 0o600); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+	saved := systemdSessionsDir
+	systemdSessionsDir = dir
+	defer func() { systemdSessionsDir = saved }()
+
+	done := make(chan int, 1)
+	go func() { done <- topUserCount() }()
+	select {
+	case count := <-done:
+		if count != 1 {
+			t.Fatalf("topUserCount() = %d, want 1", count)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("topUserCount blocked on a session ref FIFO")
 	}
 }
