@@ -1285,27 +1285,39 @@ Options:
   --header   copy each input's leading line into the output as a header
   -z         use NUL instead of newline as the record terminator
   --help     show this help`,
-	"iptables": `Usage: iptables COMMAND [CHAIN] [RULE]
-Manage a focused IPv4 filter ruleset through the kernel nftables API.
+	"iptables": `Usage: iptables [-t TABLE] COMMAND [CHAIN] [RULE]
+Inspect and edit the kernel IPv4 packet filter through the nftables API, on the
+same tables the system firewall keeps its rules in.
 
 Commands:
-  -L [CHAIN]             list rules
+  -L [CHAIN]             list rules as a table
+  -S [CHAIN]             print rules as the commands that would recreate them
   -A CHAIN RULE          append a rule
   -D CHAIN RULE|NUMBER   delete a matching rule or rule number
   -F [CHAIN]             flush rules
   -P CHAIN ACCEPT|DROP   set the base-chain policy
 
-Rule matches:
-  -p all|tcp|udp|icmp
+Rule matches, each of which "!" negates:
+  -p PROTOCOL            protocol name or number, or all
   -s ADDRESS[/PREFIX]    source network
   -d ADDRESS[/PREFIX]    destination network
-  --sport PORT           TCP/UDP source port
-  --dport PORT           TCP/UDP destination port
-  -j ACCEPT|DROP|REJECT  rule target
+  -i INTERFACE           arriving interface, "+" matching any suffix
+  -o INTERFACE           departing interface
+  --sport PORT[:PORT]    TCP/UDP source port or range
+  --dport PORT[:PORT]    TCP/UDP destination port or range
+  --icmp-type TYPE[/CODE] ICMP type by name or number
+  -f                     second and later fragments
+  -j TARGET              jump to ACCEPT, DROP, RETURN, QUEUE, REJECT or a chain
+  -g CHAIN               jump to a chain without returning
+  --reject-with TYPE     rejection to send back, with -j REJECT
 
 Options:
-  -n                     numeric output (the default)
-  --line-numbers         show rule numbers
+  -t TABLE               filter (the default), nat, mangle, raw or security
+  -n                     leave addresses, ports and protocols as numbers
+  -v                     add counters and interface columns
+  -x                     print counters in full instead of rounding them
+  --line-numbers         number the rules of each chain
+  -w, -W                 accepted and ignored; every change is already atomic
   --help                 show this help`,
 	"help": `Usage: ba6 help [COMMAND]
 Show general help or detailed help for COMMAND.

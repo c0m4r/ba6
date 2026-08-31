@@ -462,9 +462,24 @@ resolves them, so `ip r s`, `ip a s`, `ip n s`, `ip ru s` and `ip l sh` all list
 `neigh show` lists multicast NOARP entries the original filters out. Global options:
 only `-4`/`-6` — **no `-br`, `-j`, `-s`, `-d`, `-o`, `-c`**.
 
-**`iptables`** — 9/26 _(src)_. Commands `-A -D -F -L -P`; matches `-p -s -d --sport
---dport`; `-j`, `-n`, `-v`, `--line-numbers`. Missing `-I -R -C -S -Z -N -X -E`, `-t`
-(filter table only), `-m` (no match extensions), `--goto`, `-w`, `-x`, IPv6.
+**`iptables`** — 18/27 _(run)_. Works on the tables the system tool works on: the
+nftables filter/nat/mangle/raw/security tables of iptables-nft, not a private one
+of its own, so `-L` and `-S` report the ruleset that is actually filtering — user
+chains, the jumps between them, reference counts and counters included. Listing
+output is byte-identical to iptables 1.8.13 for the rules it decodes, in every
+combination of `-v`, `-x`, `-n` and `--line-numbers`, and so is `-S`; a rule ba6
+appends is read back by the original as the same rule. Commands `-A -D -F -L -P
+-S`, and `-t` selects the table. Matches `-p -s -d -i -o -f --sport --dport
+--icmp-type`, each negatable with `!`, and `-j`/`-g` targeting ACCEPT, DROP,
+RETURN, QUEUE, REJECT (`--reject-with`) or a user chain. Rules **read back**
+decode more than rules can be written with: `-m multiport`, `-m conntrack` and
+`-m state`, `-m comment`, `-m limit`, and the LOG, SNAT, DNAT, MASQUERADE and
+REDIRECT targets; an extension with no decoder prints its name rather than being
+dropped, so a listed rule never looks broader than it is. Missing `-I -R -C -Z -N
+-X -E -c --modprobe`, IPv6, and `-m` extensions when *writing* a rule. Without
+`-n`, addresses resolve through `/etc/hosts` and ports and protocols through
+`/etc/services` and `/etc/protocols`; there is no DNS fallback, because the
+seccomp profile permits netlink and nothing else.
 
 **`ping`** — 3/33 _(run)_. `-c -i -W -4 -6` present. **Needs `CAP_NET_RAW`/root** —
 it opens a raw ICMP socket where iputils falls back to an unprivileged ICMP datagram
@@ -855,6 +870,11 @@ side of `ip` and `cfdisk` are driven under a pseudo-terminal (`script -qc`, with
 resulting screen compared with the original's; `cfdisk`'s on-disk table and dump
 round trip are additionally checked with `fdisk` and `sfdisk`. `tree` cannot be
 measured this way because the package is not installed on the measurement host.
+`iptables` needs `CAP_NET_ADMIN` rather than root as such, so it is diffed inside
+an unprivileged network namespace (`unshare -rn`): a ruleset is built with the
+original and listed with both tools, then built with ba6 and listed with both,
+which catches a divergence in either direction without touching the host's own
+firewall.
 
 ### Reading the percentages
 
@@ -868,7 +888,7 @@ meaningless (`sh`, `awk`, `sed`, `find`, `test`, `expr`, `printf`, `dd`, `ip`,
 ### What was not executed
 
 Assessed from source and help text only, because they need root, a real device, a
-terminal, or an irreversible action: `iptables`, `mount`/`umount` writes, `swapon`,
+terminal, or an irreversible action: `mount`/`umount` writes, `swapon`,
 `swapoff`, `mkswap`, `blockdev`, `insmod`, `rmmod`, `modprobe`, `chroot`,
 `switch_root`, `init`, `halt`, `reboot`, `poweroff`, `login`, `passwd`, `udhcpc`,
 `iftop`, `traceroute`, `mtr`, `nano`. The account tools (`useradd`, `groupadd`,
