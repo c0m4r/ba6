@@ -429,10 +429,10 @@ func extractTar(opts tarOptions) error {
 				return err
 			}
 		case tar.TypeSymlink:
-			if err := validateTarSymlink(header.Name, header.Linkname); err != nil {
+			if err := ensureTarParents(root, target); err != nil {
 				return err
 			}
-			if err := ensureTarParents(root, target); err != nil {
+			if err := validateTarSymlink(root, target, header.Name, header.Linkname); err != nil {
 				return err
 			}
 			if err := extractTarSymlink(target, header.Linkname, header.Name, opts.keepOld); err != nil {
@@ -563,7 +563,7 @@ func safeTarTarget(root, name string) (string, error) {
 		return "", fmt.Errorf("unsafe absolute archive path %q", name)
 	}
 	cleaned := filepath.Clean(converted)
-	if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(os.PathSeparator)) {
+	if !filepath.IsLocal(cleaned) {
 		return "", fmt.Errorf("archive path escapes destination: %q", name)
 	}
 	target := filepath.Join(root, cleaned)
@@ -602,15 +602,59 @@ func ensureTarParents(root, target string) error {
 	return nil
 }
 
-func validateTarSymlink(name, link string) error {
+// validateTarSymlink rejects archive symbolic links that would point outside
+// the extraction root. The lexical check catches links that escape on their
+// own; resolving the components that already exist on disk also catches
+// escapes staged across members, where a purely lexical check folds
+// "subdir/link/.." back into "subdir" even though "subdir/link" is a symbolic
+// link extracted earlier from the same archive. The parent directory of the
+// link must already exist, so callers run ensureTarParents first.
+func validateTarSymlink(root, target, name, link string) error {
 	if filepath.IsAbs(filepath.FromSlash(link)) {
 		return fmt.Errorf("unsafe absolute symbolic link %q", name)
 	}
 	resolved := filepath.Clean(filepath.Join(filepath.Dir(filepath.FromSlash(name)), filepath.FromSlash(link)))
-	if resolved == ".." || strings.HasPrefix(resolved, ".."+string(os.PathSeparator)) {
+	if !filepath.IsLocal(resolved) {
+		return fmt.Errorf("symbolic link escapes destination: %q", name)
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return err
+	}
+	base, err := filepath.EvalSymlinks(filepath.Dir(target))
+	if err != nil {
+		return err
+	}
+	destination := resolveArchiveLink(base, link)
+	relative, err := filepath.Rel(realRoot, destination)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
 		return fmt.Errorf("symbolic link escapes destination: %q", name)
 	}
 	return nil
+}
+
+// resolveArchiveLink walks the components of an archive symbolic-link target
+// from the directory that will hold the link, following the links that already
+// exist on disk the way the kernel would. Components that do not resolve are
+// appended as written, since they cannot redirect the link anywhere.
+func resolveArchiveLink(base, link string) string {
+	current := base
+	for _, component := range strings.Split(filepath.ToSlash(link), "/") {
+		switch component {
+		case "", ".":
+			continue
+		case "..":
+			current = filepath.Dir(current)
+			continue
+		}
+		next := filepath.Join(current, component)
+		if resolved, err := filepath.EvalSymlinks(next); err == nil {
+			current = resolved
+			continue
+		}
+		current = next
+	}
+	return current
 }
 
 func cmdGzip(args []string) int {

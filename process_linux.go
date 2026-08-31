@@ -277,7 +277,7 @@ func cmdRenice(args []string) int {
 				fatalf("renice", "option requires an argument -- 'n'")
 				return 1
 			}
-			parsed, err := strconv.ParseInt(value, 10, 64)
+			parsed, err := strconv.ParseInt(value, 10, 32)
 			if err != nil {
 				fatalf("renice", "invalid priority %q", value)
 				return 1
@@ -289,7 +289,7 @@ func cmdRenice(args []string) int {
 				fatalf("renice", "option requires an argument -- 'p'")
 				return 1
 			}
-			parsed, err := strconv.ParseInt(value, 10, 64)
+			parsed, err := strconv.ParseInt(value, 10, 32)
 			if err != nil {
 				fatalf("renice", "invalid process ID: %q", value)
 				return 1
@@ -301,7 +301,7 @@ func cmdRenice(args []string) int {
 				fatalf("renice", "option requires an argument -- 'g'")
 				return 1
 			}
-			parsed, err := strconv.ParseInt(value, 10, 64)
+			parsed, err := strconv.ParseInt(value, 10, 32)
 			if err != nil {
 				fatalf("renice", "invalid process group ID: %q", value)
 				return 1
@@ -330,7 +330,7 @@ rest:
 	// and targets.
 	remaining := args[i:]
 	if len(remaining) > 0 {
-		if value, err := strconv.ParseInt(remaining[0], 10, 64); err == nil {
+		if value, err := strconv.ParseInt(remaining[0], 10, 32); err == nil {
 			priority = value
 			remaining = remaining[1:]
 		}
@@ -338,7 +338,7 @@ rest:
 			remaining = remaining[1:]
 		}
 		for _, value := range remaining {
-			parsed, err := strconv.ParseInt(value, 10, 64)
+			parsed, err := strconv.ParseInt(value, 10, 32)
 			if err != nil {
 				fatalf("renice", "invalid process ID: %q", value)
 				return 1
@@ -408,7 +408,7 @@ func userProcesses(uid int64) []int64 {
 		return nil
 	}
 	for _, entry := range entries {
-		pid, err := strconv.ParseInt(entry.Name(), 10, 64)
+		pid, err := strconv.ParseInt(entry.Name(), 10, 32)
 		if err != nil {
 			continue
 		}

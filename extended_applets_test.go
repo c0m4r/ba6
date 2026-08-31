@@ -185,6 +185,47 @@ func TestTarGzipRoundTripAndTraversalProtection(t *testing.T) {
 	}
 }
 
+// A symbolic link whose target is lexically inside the archive can still
+// escape once it is resolved through a link extracted earlier from the same
+// archive: "subdir/parent/.." folds to "subdir" lexically, but reaches the
+// parent of the destination when "subdir/parent" is a link to "..".
+func TestTarRejectsSymlinkEscapingThroughExtractedLink(t *testing.T) {
+	root := t.TempDir()
+	destination := filepath.Join(root, "destination")
+	if err := os.Mkdir(destination, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	malicious := filepath.Join(root, "malicious.tar")
+	file, err := os.Create(malicious)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := archivetar.NewWriter(file)
+	headers := []*archivetar.Header{
+		{Name: "subdir", Mode: 0o755, Typeflag: archivetar.TypeDir},
+		{Name: "subdir/parent", Mode: 0o777, Typeflag: archivetar.TypeSymlink, Linkname: ".."},
+		{Name: "escape", Mode: 0o777, Typeflag: archivetar.TypeSymlink, Linkname: "subdir/parent/.."},
+	}
+	for _, header := range headers {
+		if err := writer.WriteHeader(header); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	status, _, stderr := captureApplet(t, cmdTar, []string{"-xf", malicious, "-C", destination}, "")
+	if status == 0 || !strings.Contains(stderr, "escapes destination") {
+		t.Fatalf("tar extract = (%d, %q)", status, stderr)
+	}
+	if _, err := os.Lstat(filepath.Join(destination, "escape")); !os.IsNotExist(err) {
+		t.Fatalf("escaping symbolic link was created: %v", err)
+	}
+}
+
 func TestTarExtractionReplacesExistingHardLink(t *testing.T) {
 	root := t.TempDir()
 	source := filepath.Join(root, "source")

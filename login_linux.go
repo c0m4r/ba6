@@ -325,12 +325,12 @@ func shaCryptPassword(password []byte, encoded string) (string, error) {
 			return "", errUnsupportedPasswordHash
 		}
 		if parsed < 1000 {
-			parsed = 1000
+			rounds = 1000
+		} else if parsed > 999999999 {
+			rounds = 999999999
+		} else {
+			rounds = int(parsed)
 		}
-		if parsed > 999999999 {
-			parsed = 999999999
-		}
-		rounds = int(parsed)
 		explicitRounds = true
 		index++
 	}

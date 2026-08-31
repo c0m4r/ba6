@@ -479,10 +479,10 @@ func extractCpioSymlink(reader io.Reader, root, target string, header cpioHeader
 		return err
 	}
 	link := string(value)
-	if err := validateTarSymlink(header.name, link); err != nil {
+	if err := ensureTarParents(root, target); err != nil {
 		return err
 	}
-	if err := ensureTarParents(root, target); err != nil {
+	if err := validateTarSymlink(root, target, header.name, link); err != nil {
 		return err
 	}
 	if _, err := os.Lstat(target); err == nil {

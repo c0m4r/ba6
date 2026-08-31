@@ -149,8 +149,8 @@ func cmdBlockdev(args []string) int {
 		}
 		err = ioctlPointer(fd, blkROSet, unsafe.Pointer(&number)) //nolint:gosec // Fixed-width Linux ioctl argument.
 	case "--setra":
-		parsed, parseErr := strconv.ParseUint(value, 10, 64)
-		if parseErr != nil || parsed > uint64(^uintptr(0)) {
+		parsed, parseErr := strconv.ParseUint(value, 10, 32)
+		if parseErr != nil {
 			fatalf("blockdev", "invalid readahead value %q", value)
 			return 1
 		}

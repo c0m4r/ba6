@@ -408,10 +408,10 @@ func extractZipSymlink(member *archivezip.File, root, target string) error {
 		return fmt.Errorf("symbolic link target is too long for %q", member.Name)
 	}
 	link := string(targetBytes)
-	if err := validateTarSymlink(member.Name, link); err != nil {
+	if err := ensureTarParents(root, target); err != nil {
 		return err
 	}
-	if err := ensureTarParents(root, target); err != nil {
+	if err := validateTarSymlink(root, target, member.Name, link); err != nil {
 		return err
 	}
 	if _, err := os.Lstat(target); err == nil {

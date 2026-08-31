@@ -191,7 +191,7 @@ func loadPciIds() *pciIds {
 			if strings.HasPrefix(line, "C ") {
 				parts := strings.SplitN(line[2:], " ", 2)
 				if len(parts) == 2 {
-					if id, err := strconv.ParseInt(parts[0], 16, 64); err == nil {
+					if id, err := strconv.ParseUint(parts[0], 16, 8); err == nil {
 						class = int(id)
 						subclass = 0
 						inClass = true
@@ -207,7 +207,7 @@ func loadPciIds() *pciIds {
 				}
 				parts := strings.SplitN(strings.TrimLeft(line, "\t"), " ", 2)
 				if len(parts) == 2 {
-					if id, err := strconv.ParseInt(parts[0], 16, 64); err == nil {
+					if id, err := strconv.ParseUint(parts[0], 16, 8); err == nil {
 						subclass = int(id)
 						db.classes[[2]int{class, subclass}] = strings.TrimSpace(parts[1])
 					}
