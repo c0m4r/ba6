@@ -653,20 +653,46 @@ Options:
   --exclude=PATTERN
             skip names matching PATTERN
   --help    show this help`,
-	"find": `Usage: find [PATH]... [EXPRESSION]
+	"find": `Usage: find [-HLP] [PATH]... [EXPRESSION]
 Walk each PATH and evaluate EXPRESSION without executing external commands.
 
-Predicates and actions:
+Global options:
+  -H/-L/-P                follow symlinks never, always, or only for a PATH
+  -follow                 the same as -L
+  -mindepth/-maxdepth N   control traversal depth
+  -depth                  visit a directory after what it holds
+  -xdev                   stay on one filesystem
+
+Predicates:
   -name/-iname PATTERN    match a basename
   -path/-ipath PATTERN    match the complete path
+  -lname/-ilname PATTERN  match a symlink's target
+  -regex/-iregex REGEX    match the complete path against REGEX
   -type [fdlbcps]         match a file type
   -empty                  match empty files or directories
-  -size N[c|k|M|G]        match size; +N/-N mean greater/less
-  -mtime N                match age in days; +N/-N are supported
-  -newer FILE             match files newer than FILE
-  -mindepth/-maxdepth N   control traversal depth
-  -print/-print0          print matching paths
+  -size N[c|w|b|k|M|G]    match size; +N/-N mean greater/less
+  -perm [-|/]MODE         match a mode exactly, with all, or with any of MODE
+  -links/-inum N          match a link count or an inode number
+  -samefile FILE          match what FILE itself is
+  -fstype TYPE            match the filesystem the file lives on
+  -user/-group NAME       match an owner; -uid/-gid take numbers
+  -nouser/-nogroup        match an id no account or group claims
+  -readable/-writable/-executable
+                          match what this user may do with the file
+  -mtime/-atime/-ctime N  match age in days; -mmin/-amin/-cmin use minutes
+  -newer/-anewer/-cnewer FILE
+                          match files modified after FILE's stamp
   !, -a, -o, ( )          boolean operators
+
+Actions:
+  -print/-print0          print matching paths
+  -printf FORMAT          print FORMAT, expanding %p %f %h %P %s %m %M %n %i
+                          %u %g %U %G %y %d %l %b %k %t and %T/%A/%C plus a
+                          strftime letter
+  -ls                     print a long listing
+  -delete                 remove what matched, deepest entry first
+  -prune                  do not descend into the directory just matched
+  -quit                   stop the walk at once
   --help                  show this help`,
 	"free": `Usage: free [OPTION]
 Display physical and swap memory usage from /proc/meminfo.
@@ -998,10 +1024,41 @@ Options:
   -r/-R     recurse through directories
   -q        stop after the first match
   -e PAT    add a pattern
+  -f FILE   take the patterns from FILE, one to a line
   -m NUM    stop after NUM matches per file
+  -L        print names of files with no match
+  -o        print each match on its own line
+  -A/-B/-C NUM
+            print NUM lines of trailing/leading/surrounding context
+  -NUM      the same as -C NUM
+  -b        print each output line's byte offset
+  -s        do not report unreadable files
+  -a        treat a binary file as text
+  -I        skip binary files
+  -z        input and output records end with a NUL byte
+  -Z        end a printed file name with a NUL byte
+  -d ACTION what to do with a directory operand: read, skip or recurse
+  -D ACTION the same for a device, FIFO or socket: read or skip
+  -T        line the output up behind a tab
+  --label=NAME
+            report standard input under NAME
+  --color[=WHEN]
+            highlight matches when WHEN is always, never or auto
+  --binary-files=TYPE
+            binary, text or without-match
+  --include/--exclude=GLOB
+            select or skip files by name while recursing
+  --exclude-from=FILE
+            read those skip patterns from FILE
+  --exclude-dir=GLOB
+            skip directories by name while recursing
+  --group-separator=SEP / --no-group-separator
+            what to write between non-adjacent context groups
   --help    show this help
 
-Regex backreferences in patterns are rejected because RE2 cannot implement them.`,
+Patterns may use the GNU escapes \<, \>, \b, \B, \w, \W, \s and \S; RE2 has
+one two-sided word boundary, so \< and \> both become it. Regex
+backreferences are rejected because RE2 cannot implement them.`,
 	"head": `Usage: head [OPTION]... [FILE]...
 Print the beginning of each FILE.
 

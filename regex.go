@@ -35,8 +35,30 @@ func compilePOSIXRegexp(pattern string, syntax posixRegexpSyntax, ignoreCase boo
 // compilePOSIXERE compiles an already-translated POSIX ERE. It is also used
 // for expressions assembled by an applet around independently translated
 // user patterns.
+// posixValidationForm hides the word-boundary escapes the translators emit
+// from the POSIX syntax check, which knows only POSIX operators. RE2's own
+// parser accepts them in the compile that follows.
+func posixValidationForm(expression string) string {
+	var b strings.Builder
+	b.Grow(len(expression))
+	for i := 0; i < len(expression); i++ {
+		if expression[i] == '\\' && i+1 < len(expression) {
+			if expression[i+1] == 'b' || expression[i+1] == 'B' {
+				b.WriteByte('x')
+			} else {
+				b.WriteByte(expression[i])
+				b.WriteByte(expression[i+1])
+			}
+			i++
+			continue
+		}
+		b.WriteByte(expression[i])
+	}
+	return b.String()
+}
+
 func compilePOSIXERE(expression string, ignoreCase bool) (*regexp.Regexp, error) {
-	if _, err := regexp.CompilePOSIX(expression); err != nil {
+	if _, err := regexp.CompilePOSIX(posixValidationForm(expression)); err != nil {
 		return nil, err
 	}
 	if ignoreCase {
@@ -127,9 +149,15 @@ func translatePOSIXBRE(pattern string) (string, error) {
 				i += 2
 				continue
 			default:
+				if expansion, ok := posixWordEscape(next); ok {
+					result.WriteString(expansion)
+					atStart = false
+					i += 2
+					continue
+				}
 				// A backslash quotes the following BRE character. Quote it
 				// again for RE2 rather than admitting RE2-only escapes such
-				// as \b or \d.
+				// as \d.
 				result.WriteString(regexp.QuoteMeta(string(next)))
 				atStart = false
 				i += 2
@@ -188,8 +216,12 @@ func translatePOSIXERE(pattern string) (string, error) {
 			if i+1 >= len(pattern) {
 				return "", fmt.Errorf("trailing backslash in ERE")
 			}
-			result.WriteByte(character)
-			result.WriteByte(pattern[i+1])
+			if expansion, ok := posixWordEscape(pattern[i+1]); ok {
+				result.WriteString(expansion)
+			} else {
+				result.WriteByte(character)
+				result.WriteByte(pattern[i+1])
+			}
 			atStart = false
 			i += 2
 			continue
@@ -219,6 +251,29 @@ func translatePOSIXERE(pattern string) (string, error) {
 		i++
 	}
 	return result.String(), nil
+}
+
+// posixWordEscape maps the GNU word and character-class escapes that both BREs
+// and EREs accept onto their RE2 spellings. RE2 has only the two-sided \b where
+// GNU has \< and \>, which agree everywhere a word actually begins or ends;
+// they differ only for a pattern that anchors the wrong edge of a word, such as
+// \>foo. The class escapes match GNU's own C-locale definitions.
+func posixWordEscape(escaped byte) (string, bool) {
+	switch escaped {
+	case '<', '>', 'b':
+		return `\b`, true
+	case 'B':
+		return `\B`, true
+	case 'w':
+		return "[[:alnum:]_]", true
+	case 'W':
+		return "[^[:alnum:]_]", true
+	case 's':
+		return "[[:space:]]", true
+	case 'S':
+		return "[^[:space:]]", true
+	}
+	return "", false
 }
 
 func unsupportedRegexpBackreference() error {

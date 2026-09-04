@@ -12,7 +12,7 @@ measured against its original; nothing is left under
 [Not yet assessed](#not-yet-assessed).
 
 **Short answer to "which are 1:1?"** — of the 170, 29 are genuine drop-ins,
-49 more are near-complete, 82 are partial or a narrow subset in ways that stay
+51 more are near-complete, 80 are partial or a narrow subset in ways that stay
 invisible until a script reaches for a flag, 4 are a narrow subset that should not
 be treated as a replacement, and 9 have no upstream counterpart to compare
 against; see the [verdict table](#verdict-in-one-table). `netstat`, `ps aux`/
@@ -32,8 +32,8 @@ options listed per applet below.
 | Tier | Meaning | Applets |
 |---|---|---|
 | **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `pwd` `echo` `basename` `tr` `base64` `uname` `whoami` `true` `false` `printenv` `sleep` `mknod` `seq` `dirname` `tac` `fold` `expand` `unexpand` `cksum` `nl` `paste` `comm` `split` `join` `nice` `pivot_root` `tty` `touch` `cut` |
-| **B — near-complete** | Common paths match; a handful of real gaps | `cat` `wc` `head` `tail` `rm` `mkdir` `tee` `test` `[` `expr` `printf` `id` `mktemp` `kill` `timeout` `chroot` `blockdev` `stat` `env` `cmp` `sync` `dd` `sha256sum` `which` `rmdir` `top` `host` `setsid` `nohup` `renice` `lsusb` `lspci` `hwclock` `md5sum` `sha1sum` `sha512sum` `sysctl` `bzip2` `bunzip2` `groupadd` `xargs` `uniq` `uptime` `readlink` `realpath` `hostname` `pidof` `sort` `du` `date` |
-| **C — partial** | Everyday cases work, well-known flags or output details missing | `ls` `cp` `mv` `ln` `uniq` `grep` `find` `df` `strings` `od` `hexdump` `diff` `sh` `awk` `sed` `file` `tar` `gzip` `gunzip` `chown` `chgrp` `chmod` `free` `wget` `lsof` `lsblk` `blkid` `mount` `umount` `losetup` `swapon` `swapoff` `mkswap` `ss` `ip` `iptables` `ping` `traceroute` `mtr` `nc` `nslookup` `curl` `iftop` `pgrep` `pkill` `modprobe` `insmod` `rmmod` `lsmod` `fdisk` `sfdisk` `mkfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkfs.btrfs` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `login` `passwd` `getty` `ps` `netstat` `tree` `less` `dmesg` `dig` `nano` `ncdu` `cfdisk` `cpio` `unzip` `zip` `useradd` `adduser` `watch` `xz` `unxz` `zstd` `unzstd` |
+| **B — near-complete** | Common paths match; a handful of real gaps | `cat` `wc` `head` `tail` `rm` `mkdir` `tee` `test` `[` `expr` `printf` `id` `mktemp` `kill` `timeout` `chroot` `blockdev` `stat` `env` `cmp` `sync` `dd` `sha256sum` `which` `rmdir` `top` `host` `setsid` `nohup` `renice` `lsusb` `lspci` `hwclock` `md5sum` `sha1sum` `sha512sum` `sysctl` `bzip2` `bunzip2` `groupadd` `xargs` `uniq` `uptime` `readlink` `realpath` `hostname` `pidof` `sort` `du` `date` `grep` `find` |
+| **C — partial** | Everyday cases work, well-known flags or output details missing | `ls` `cp` `mv` `ln` `uniq` `df` `strings` `od` `hexdump` `diff` `sh` `awk` `sed` `file` `tar` `gzip` `gunzip` `chown` `chgrp` `chmod` `free` `wget` `lsof` `lsblk` `blkid` `mount` `umount` `losetup` `swapon` `swapoff` `mkswap` `ss` `ip` `iptables` `ping` `traceroute` `mtr` `nc` `nslookup` `curl` `iftop` `pgrep` `pkill` `modprobe` `insmod` `rmmod` `lsmod` `fdisk` `sfdisk` `mkfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkfs.btrfs` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `login` `passwd` `getty` `ps` `netstat` `tree` `less` `dmesg` `dig` `nano` `ncdu` `cfdisk` `cpio` `unzip` `zip` `useradd` `adduser` `watch` `xz` `unxz` `zstd` `unzstd` |
 | **D — narrow subset** | A slice of the original; do not treat as a replacement | _(none)_ |
 | **N/A** | ba6-specific, no upstream counterpart | `help` `man` `completion` `init` `halt` `reboot` `poweroff` `switch_root` `udhcpc` |
 
@@ -183,6 +183,8 @@ Absent behaviour rather than wrong behaviour, each of which touches many applets
 | `pidof` | 8/8 | — | `-s` (one PID per name), `-c` (root only, like procps itself), `-q`, `-w`, `-x`, `-o` (including the historic `%PPID` token), `-t`, `-S`/`-d`. Matching follows procps' own rules — argv0 (login-shell `-` stripped), basename comparisons, the executable link, comm only under `-w` or a rewritten argv0, and `-x`'s interpreter check against argv1 — so a shebang script is found only with `-x`, exactly like the original. Newest-first ordering, the shared separator and the exit status match; the `illegal omit pid value` warning wording too _(run)_ |
 | `sort` | 20/27 | `-R`/`--random-sort` `--random-source` `-S`/`--buffer-size` `-T` `--parallel` `--batch-size` `--compress-program` `--debug` `--files0-from` `-V` | `-k` field keys with per-key modifiers (`bdfgiMnr`), `-t`, `-n -g -h -M -f -d -i -b -r -u -s -c -C -o -z`, and `-m` (every input is read and ordered, so a merge of sorted inputs is identical). The field rules match GNU's: without `-t` a field starts at the first blank of the run preceding it, with `-t` the separator belongs to neither neighbour, and a `.C` offset counts from there. The last-resort whole-line comparison is applied unless `-s` or `-u` is given, a global `-r` reverses it while a key's own `r` does not, and a key with no modifiers of its own inherits the global ones. Verified against GNU on 400 randomized inputs across 31 option sets, plus the `-c` disorder message and `-o` _(run)_ |
 | `du` | 19/25 | `--files0-from` `-l`/`--count-links` `--si` `--time` `--time-style` `-X`/`--exclude-from` | `-a -s -c -d/--max-depth -S -x -L -D/-H -P -h -k -m -b -B/--block-size -t/--threshold -0 --apparent-size --inodes --exclude`. Byte-identical to GNU on every case tested, including the details: directories contribute no apparent size, a hard link or a repeated operand is counted and listed once, `-B` with a bare unit (`-B K`) echoes that unit after each value while `-B 1K` does not, `-S` still passes the full total up to the parent, and entries are walked in kernel directory order the way the original's `fts` walk is _(run)_ |
+| `grep` | 43/45 | `-P`/`--perl-regexp` (RE2 is not PCRE) | measured against GNU grep 3.12 and diffed on 1000 randomized inputs across 35 option sets plus 60 hand-built cases, every one byte-identical. Present: `-i -v -n -c -l -L -h -H -w -x -F -E -G -r -R -q -o -s -b -a -I -z -Z -T -U -e -f -m -A -B -C -NUM -d -D --color --binary-files --include --exclude --exclude-from --exclude-dir --label --group-separator --no-group-separator --line-buffered`. The context machinery matches GNU's exactly: `:` for a selected line against `-` for a context line, the `--` separator only where the printed *coverage* is non-contiguous (so `-A1 -o` prints one where the groups really are apart and none where the trailing context closed the gap), trailing context surviving `-m`, and an empty match selecting a line while printing and highlighting nothing. Binary files report `binary file matches` on stderr while `-c`, `-l` and `-q` still read them; `-T` right-aligns numbers in a field as wide as the input's largest possible offset (the file's size, or 19 digits for a pipe). `--color=always` writes GNU's own escapes for matches, names, separators and line numbers. Patterns gained the GNU escapes `\< \> \b \B \w \W \s \S` in both BRE and ERE, and `-w`/`-x` are applied as position tests rather than as regexp syntax, so `-o -w` finds every word on a line the way the original does _(run)_ |
+| `find` | every predicate and action but the four that run a command | `-exec` `-execdir` `-ok` `-okdir` (see below), `-fprint`/`-fprint0`/`-fprintf`/`-fls`, `-newerXY`, `-daystart`, `-used`, `-context`, `-regextype` | diffed against findutils 4.11 over 300 randomized expression/operand pairs and 60 hand-built cases, all identical, output order included: the walk now visits entries in kernel directory order the way the original's `fts` does, and keeps each operand's spelling (`./x`, `x/`, `x//y`) instead of cleaning it. Added since the last pass: `-depth -xdev -follow -H -L -P`, `-perm` (all three forms, octal or symbolic), `-user -group -uid -gid -nouser -nogroup`, `-links -inum -samefile -fstype`, `-regex -iregex -lname -ilname -wholename`, `-xtype`, `-readable -writable -executable`, `-atime -ctime -mmin -amin -cmin -anewer -cnewer`, and the actions `-printf -ls -delete -prune -quit` (`-delete` turns on `-depth`, `-quit` stops before the implicit `-print`, and an unusable `-printf` directive is reported once and then written out verbatim). Patterns use fnmatch semantics rather than a shell glob's, so a `*` in `-path` crosses `/`. The diagnostics use find's own `` `x' `` quoting _(run)_ |
 | `date` | 10/11 | `--debug` | `-d`/`--date`, `-s`/`--set`, `-f`/`--file`, `-R`, `-I[SPEC]`, `--rfc-3339=SPEC`, `--resolution`, plus `-u` and `-r`. The date-string parser covers epoch stamps, calendar dates (ISO, `YYYY/MM/DD`, `MM/DD/YYYY`, compact `YYYYMMDD`, month names either side of the day), clock times with meridiem and zone, the day words, weekday names with `next`/`last`, and relative items in any combination — including GNU's rule that `ago` reverses only the item before it, and that any absolute item truncates the nanoseconds while a purely relative one keeps them. Not covered: named zones beyond `UTC`/`GMT`/`Z`, `--debug`, and the more exotic corners of GNU's parser. Format directives now include `%U %W %V %G %g %k %l %q %:z %::z`; `-s` reports the same failure as the original when the caller lacks `CAP_SYS_TIME`, and still prints the requested time _(run)_ |
 
 ### Tier C — partial
@@ -202,21 +204,6 @@ headers and C-locale sort order all match.
 
 **`ln`** — 5/14 _(run)_. Present: `-s -f -n -v -T`. Missing `-r -b -i -d -L -P -S -t`.
 Hard and symbolic links match.
-
-**`grep`** — 15/49 _(run, vs GNU grep 3.12)_. Present and byte-identical: `-c -n -i -w
--x -v -l -H -h -q -e -m -E -F -r/-R`. Missing: **`-o` `-A` `-B` `-C` `-s` `--color`**,
-plus `-f -L -P -G -a -z -b -I --include --exclude --exclude-dir --binary-files`.
-The default pattern syntax is POSIX BRE and `-E` uses POSIX ERE. Pattern
-backreferences are rejected because RE2 cannot implement them.
-
-**`find`** — predicates present: `-name -iname -path -ipath -type -size -mtime -newer
--empty -maxdepth -mindepth -print -true -false -a/-and -o/-or -not` _(run)_; each of
-those returns exactly the same set of paths as findutils on the trees tested.
-Missing: **`-exec` `-execdir` `-ok` `-delete` `-print0` `-printf` `-prune` `-perm`
-`-user` `-group` `-uid` `-gid` `-links` `-inum` `-regex` `-lname` `-depth` `-xdev`
-`-atime` `-ctime` `-mmin` `-amin` `-cmin` `-fstype` `-ls` `-quit` `-samefile`
-`-readable`/`-writable`/`-executable` `-follow`/`-L`/`-H`**. Traversal order differs
-from the original's directory order.
 
 **`df`** — 3/15 _(run)_. Present: `-h -k -a`. Missing `-i -T -l -t -x -B -H --total
 --output`. `df`, `df -h`, `df -k`, `df -a` and explicit paths are byte-identical to
@@ -809,23 +796,23 @@ _(none)_
 
 Ordered by how many applets each item moves, not by effort.
 
-1. **`grep -o`/`-A`/`-B`/`-C`** — the highest-frequency missing options in the
-   most-used text tool now that `sed -i` (and sed's whole command language —
-   `a i c y n N D P h H g G x b t T { }` — see the `sed` entry above) is done.
-2. **`find -exec`/`-print0`/`-prune`/`-delete`** — the actions that turn `find`
-   from a lister into a tool a script drives, now that `sort -k`/`-t`,
-   `touch -d`/`-t`/`-r`, `cut -b`/`--complement`, `du -d`/`-c`/`-x` and
-   `date -d`/`-s` are done.
-3. **`ps` process selection** — `-u`, `-C`, `-t` and `--sort`. `ps aux` already
+1. **`find -exec`/`-ok`** — every other predicate and action is now in place,
+   but running a command per result is what a script reaches for `find` to do.
+   It is the one gap here that is a *policy* question rather than work: the
+   seccomp denylist kills `execve`, so `find` would have to join the applets
+   listed in `appletNeedsUnrestrictedSyscalls` (as `xargs`, `nice`, `nohup` and
+   `setsid` already are) and give up its own filter. Until then `find -print0 |
+   xargs -0` covers the same ground with the exemption confined to `xargs`.
+2. **`ps` process selection** — `-u`, `-C`, `-t` and `--sort`. `ps aux` already
    matches procps byte for byte, so picking *which* processes to list is the
    remaining gap.
-4. **`ss` `Recv-Q`/`Send-Q`** — the netlink query added for `IPV6_V6ONLY` already
+3. **`ss` `Recv-Q`/`Send-Q`** — the netlink query added for `IPV6_V6ONLY` already
    returns `idiag_rqueue` and `idiag_wqueue`; only the columns are missing.
-5. **Compression for `xz` and `zstd`.** Both now *decode* the real formats in
+4. **Compression for `xz` and `zstd`.** Both now *decode* the real formats in
    full, but still write stored blocks, so `ba6 xz file` produces a valid but
    much larger archive than the original would. This is the remaining half of
    the job and matters far less than decoding did.
-6. **`watch -d` and `-g`** — change highlighting and exit-on-change are most of
+5. **`watch -d` and `-g`** — change highlighting and exit-on-change are most of
    why `watch` gets reached for interactively.
 
 ## How this was measured
