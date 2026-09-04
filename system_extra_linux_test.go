@@ -7,7 +7,10 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -203,5 +206,143 @@ func TestTtyReportsNonTerminal(t *testing.T) {
 	status, stdout, stderr := captureApplet(t, cmdTty, nil, "")
 	if status != 1 || stdout != "not a tty\n" || stderr != "" {
 		t.Fatalf("tty = (%d, %q, %q)", status, stdout, stderr)
+	}
+}
+
+// TestPgrepSelection covers the selection options pgrep grew beyond -f/-x/-v:
+// the id filters, the listing forms, the delimiter and the exit statuses procps
+// reserves for a bad command line. pid 1 is the one process every system has.
+func TestPgrepSelection(t *testing.T) {
+	self, err := readProcess(1)
+	if err != nil {
+		t.Skip("cannot read /proc/1")
+	}
+	status, out, _ := captureApplet(t, cmdPgrep, []string{"-p", "1"}, "")
+	if status != 0 || out != "1\n" {
+		t.Fatalf("pgrep -p 1 = (%d, %q)", status, out)
+	}
+	status, out, _ = captureApplet(t, cmdPgrep, []string{"-l", "-p", "1"}, "")
+	if status != 0 || out != "1 "+self.comm+"\n" {
+		t.Fatalf("pgrep -l -p 1 = (%d, %q)", status, out)
+	}
+	if _, out, _ = captureApplet(t, cmdPgrep, []string{"-a", "-p", "1"}, ""); !strings.HasPrefix(out, "1 ") || len(out) <= len("1 "+self.comm+"\n") {
+		t.Fatalf("pgrep -a -p 1 = %q, want the whole command line", out)
+	}
+	// -x anchors the pattern, so a prefix of the name no longer matches.
+	if status, _, _ = captureApplet(t, cmdPgrep, []string{"-x", "-p", "1", self.comm}, ""); status != 0 {
+		t.Fatalf("pgrep -x on the exact name = %d", status)
+	}
+	if status, _, _ = captureApplet(t, cmdPgrep, []string{"-x", "-p", "1", self.comm[:len(self.comm)-1]}, ""); status != 1 {
+		t.Fatalf("pgrep -x on a prefix = %d, want no match", status)
+	}
+	// -v inverts the whole verdict, the id filters included.
+	if status, out, _ = captureApplet(t, cmdPgrep, []string{"-c", "-v", "-p", "1"}, ""); status != 0 {
+		t.Fatalf("pgrep -c -v -p 1 = (%d, %q)", status, out)
+	}
+	count, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil || count < 2 {
+		t.Fatalf("pgrep -c -v -p 1 counted %q", out)
+	}
+	// A process only matches once, and pgrep never reports itself.
+	if status, out, _ = captureApplet(t, cmdPgrep, []string{"-p", strconv.Itoa(os.Getpid())}, ""); status != 1 || out != "" {
+		t.Fatalf("pgrep on its own pid = (%d, %q)", status, out)
+	}
+	// -d joins the ids and still ends the line.
+	parent := os.Getppid()
+	status, out, _ = captureApplet(t, cmdPgrep, []string{"-d", ",", "-p", "1," + strconv.Itoa(parent)}, "")
+	if status != 0 || out != "1,"+strconv.Itoa(parent)+"\n" {
+		t.Fatalf("pgrep -d , = (%d, %q)", status, out)
+	}
+	// -w reports the thread ids, of which pid 1 has at least its own.
+	if status, out, _ = captureApplet(t, cmdPgrep, []string{"-w", "-p", "1"}, ""); status != 0 || !strings.HasPrefix(out, "1") {
+		t.Fatalf("pgrep -w -p 1 = (%d, %q)", status, out)
+	}
+	// --quiet reports through the status alone.
+	if status, out, _ = captureApplet(t, cmdPgrep, []string{"--quiet", "-p", "1"}, ""); status != 0 || out != "" {
+		t.Fatalf("pgrep --quiet = (%d, %q)", status, out)
+	}
+	// -O keeps only processes at least that old; pid 1 is older than the boot
+	// second and no process is a century old.
+	if status, _, _ = captureApplet(t, cmdPgrep, []string{"-O", "3153600000", "-p", "1"}, ""); status != 1 {
+		t.Fatalf("pgrep -O on an impossible age = %d", status)
+	}
+	// A name in /proc/PID/stat is 15 characters at most, so a longer pattern
+	// draws procps' warning and matches nothing.
+	status, out, errOut := captureApplet(t, cmdPgrep, []string{"abcdefghijklmnopqrstuv"}, "")
+	if status != 1 || out != "" || !strings.Contains(errOut, "longer than 15 characters") {
+		t.Fatalf("pgrep on a long pattern = (%d, %q, %q)", status, out, errOut)
+	}
+}
+
+// TestPgrepCommandLineErrors pins the three shapes of failure procps reports,
+// each of which exits 2.
+func TestPgrepCommandLineErrors(t *testing.T) {
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{nil, "no matching criteria specified"},
+		{[]string{"a", "b"}, "only one pattern can be provided"},
+		{[]string{"-u", "definitely-no-such-user", "x"}, "invalid user name"},
+		{[]string{"-G", "definitely-no-such-group", "x"}, "invalid group name"},
+		{[]string{"-P", "notanumber", "x"}, "not a number"},
+		{[]string{"-Z"}, "invalid option -- 'Z'"},
+		{[]string{"--nosuchoption"}, "unrecognized option '--nosuchoption'"},
+	} {
+		status, out, errOut := captureApplet(t, cmdPgrep, c.args, "")
+		if status != 2 || out != "" || !strings.Contains(errOut, c.want) {
+			t.Fatalf("pgrep %v = (%d, %q, %q), want %q", c.args, status, out, errOut, c.want)
+		}
+	}
+	// The two selectors that keep a single process cannot be combined; procps
+	// answers with its usage text and no diagnostic of its own.
+	status, _, errOut := captureApplet(t, cmdPgrep, []string{"-n", "-o", "x"}, "")
+	if status != 2 || !strings.Contains(errOut, "Usage: pgrep") {
+		t.Fatalf("pgrep -n -o = (%d, %q)", status, errOut)
+	}
+	// "no matching criteria" is the one shape that carries the Try line.
+	if _, _, errOut = captureApplet(t, cmdPgrep, nil, ""); !strings.Contains(errOut, "Try `pgrep --help'") {
+		t.Fatalf("pgrep with no criteria = %q", errOut)
+	}
+}
+
+// TestPkillSignalsMatches drives pkill against a process of the test's own
+// making: the signal named as -SIGNAL reaches it, -e reports what was hit, and
+// the option letters that follow keep their own meaning.
+func TestPkillSignalsMatches(t *testing.T) {
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("no sleep binary")
+	}
+	child := exec.Command(sleep, "300") //nolint:gosec // G204: the fixed sleep binary found on PATH, as the test needs a process it may signal.
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = child.Process.Kill()
+		_, _ = child.Process.Wait()
+	}()
+	pid := strconv.Itoa(child.Process.Pid)
+	// Signal 0 selects without delivering anything, so the child survives it.
+	if status, _, _ := captureApplet(t, cmdPkill, []string{"-0", "-x", "-p", pid, "sleep"}, ""); status != 0 {
+		t.Fatalf("pkill -0 = %d", status)
+	}
+	if err := child.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Fatalf("child did not survive pkill -0: %v", err)
+	}
+	status, out, _ := captureApplet(t, cmdPkill, []string{"-e", "-KILL", "-x", "-p", pid, "sleep"}, "")
+	if status != 0 || out != "sleep killed (pid "+pid+")\n" {
+		t.Fatalf("pkill -e -KILL = (%d, %q)", status, out)
+	}
+	state, err := child.Process.Wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waitStatus, ok := state.Sys().(syscall.WaitStatus); !ok || waitStatus.Signal() != syscall.SIGKILL {
+		t.Fatalf("child ended as %v, want SIGKILL", state)
+	}
+	// Nothing left to match, and no output without -e.
+	if status, out, _ = captureApplet(t, cmdPkill, []string{"-x", "-p", pid, "sleep"}, ""); status != 1 || out != "" {
+		t.Fatalf("pkill on a dead pid = (%d, %q)", status, out)
 	}
 }

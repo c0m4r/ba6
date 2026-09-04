@@ -6,9 +6,12 @@
 package main
 
 import (
+	"bufio"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"os"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -901,84 +904,557 @@ func pidofRead(id int) struct {
 	proc.exe, _ = os.Readlink(filepath.Join(base, "exe"))
 	return proc
 }
-func processMatchCommand(prog string, args []string, send bool) int {
-	full, exact, invert := false, false, false
-	signal := syscall.SIGTERM
-	for len(args) > 0 && strings.HasPrefix(args[0], "-") {
-		a := args[0]
-		switch a {
-		case "-f", "--full":
-			full = true
-		case "-x", "--exact":
-			exact = true
-		case "-v", "--inverse":
-			invert = true
-		case "-signal":
-			if !send || len(args) < 2 {
-				return 2
-			}
-			s, e := parseSignal(args[1])
-			if e != nil {
-				return 2
-			}
-			signal = s
-			args = args[1:]
-		default:
-			if send {
-				s, e := parseSignal(strings.TrimPrefix(a, "-"))
-				if e == nil {
-					signal = s
-					args = args[1:]
-					continue
-				}
-			}
-			fatalf(prog, "unsupported option %q", a)
-			return 2
+
+// procMatch is one pgrep or pkill command line: every selection filter, and
+// how the matches are reported once they are found.
+type procMatch struct {
+	full, exact, invert, ignoreCase bool
+	newest, oldest                  bool
+	count, listName, listFull       bool
+	quiet, echo, threads            bool
+	ignoreAncestors, requireHandler bool
+	delimiter                       string
+	older                           uint64
+	haveOlder                       bool
+	states                          string
+	signal                          syscall.Signal
+	pids, ppids, pgroups, sessions  map[int]bool
+	euids, uids, gids               map[uint32]bool
+	terminals                       map[string]bool
+	// criteria records whether any option that selects processes was given,
+	// which is what makes the pattern operand optional.
+	criteria bool
+}
+
+// procMatchIDs parses one comma-separated list of numeric ids for -p, -P, -g
+// and -s.
+func procMatchIDs(value string, into map[int]bool) error {
+	for _, part := range strings.Split(value, ",") {
+		n, err := strconv.Atoi(strings.TrimSpace(part))
+		if err != nil {
+			return fmt.Errorf("not a number: %s", part)
 		}
-		args = args[1:]
+		into[n] = true
 	}
-	if len(args) != 1 {
-		fatalf(prog, "expected one pattern")
-		return 2
+	return nil
+}
+
+// procMatchNames parses a comma-separated list of user or group names and ids,
+// as -u, -U and -G take them. lookup turns one name into its numeric id.
+func procMatchNames(value string, into map[uint32]bool, lookup func(string) (uint32, bool)) error {
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if n, err := strconv.ParseUint(part, 10, 32); err == nil {
+			into[uint32(n)] = true
+			continue
+		}
+		id, ok := lookup(part)
+		if !ok {
+			return fmt.Errorf("%s", part)
+		}
+		into[id] = true
 	}
-	re, err := regexp.Compile(args[0])
+	return nil
+}
+
+func procMatchLookupUser(name string) (uint32, bool) {
+	account, err := user.Lookup(name)
 	if err != nil {
+		return 0, false
+	}
+	id, err := strconv.ParseUint(account.Uid, 10, 32)
+	return uint32(id), err == nil
+}
+
+func procMatchLookupGroup(name string) (uint32, bool) {
+	group, err := user.LookupGroup(name)
+	if err != nil {
+		return 0, false
+	}
+	id, err := strconv.ParseUint(group.Gid, 10, 32)
+	return uint32(id), err == nil
+}
+
+// procps has three shapes of command-line failure, and scripts see all three:
+// a missing selection prints the diagnostic and the "Try ..." line, a bad
+// option value prints the diagnostic alone, and an unusable option prints the
+// diagnostic and then the whole usage text. All three exit 2.
+func procMatchUsage(prog, format string, a ...interface{}) int {
+	fatalf(prog, format, a...)
+	fmt.Fprintf(os.Stderr, "Try `%s --help' for more information.\n", prog)
+	return 2
+}
+
+func procMatchError(prog, format string, a ...interface{}) int {
+	fatalf(prog, format, a...)
+	return 2
+}
+
+func procMatchOptionError(prog, format string, a ...interface{}) int {
+	if format != "" {
+		fatalf(prog, format, a...)
+	}
+	fmt.Fprintln(os.Stderr)
+	if err := writeAppletHelp(os.Stderr, prog); err != nil {
 		fatalf(prog, "%v", err)
-		return 2
+	}
+	return 2
+}
+
+// procMatchSignalArgument pulls pkill's "-SIGNAL" out of the command line
+// before the options are parsed, the way procps' own signal_option does: the
+// first argument whose body names a signal is consumed, so that "-o" and the
+// other option letters keep their meaning.
+func procMatchSignalArgument(args []string) ([]string, syscall.Signal, bool) {
+	for i, arg := range args {
+		if len(arg) < 2 || arg[0] != '-' || arg[1] == '-' {
+			continue
+		}
+		body := arg[1:]
+		if _, err := strconv.Atoi(body); err != nil && signalNames[strings.TrimPrefix(strings.ToUpper(body), "SIG")] == 0 {
+			continue
+		}
+		signal, err := parseSignal(body)
+		if err != nil {
+			continue
+		}
+		return append(append([]string{}, args[:i]...), args[i+1:]...), signal, true
+	}
+	return args, 0, false
+}
+
+// procMatchAncestors is the chain of parents above our own process, which -A
+// removes from the result.
+func procMatchAncestors(processes []processInfo) map[int]bool {
+	parent := map[int]int{}
+	for _, p := range processes {
+		parent[p.pid] = p.ppid
+	}
+	ancestors := map[int]bool{}
+	for pid := os.Getpid(); pid > 0; {
+		next, ok := parent[pid]
+		if !ok || ancestors[next] {
+			break
+		}
+		ancestors[next] = true
+		pid = next
+	}
+	return ancestors
+}
+
+// procMatchCatches reports whether the process has a handler installed for the
+// signal, which pkill -H requires before it will send one.
+func procMatchCatches(pid int, signal syscall.Signal) bool {
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "status"))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		value, found := strings.CutPrefix(line, "SigCgt:")
+		if !found {
+			continue
+		}
+		mask, err := strconv.ParseUint(strings.TrimSpace(value), 16, 64)
+		if err != nil || signal < 1 || signal > 64 {
+			return false
+		}
+		return mask&(1<<uint(signal-1)) != 0
+	}
+	return false
+}
+
+// procMatchThreads lists a process's task ids, which -w reports in place of the
+// single process id.
+func procMatchThreads(pid int) []int {
+	entries, err := os.ReadDir(filepath.Join("/proc", strconv.Itoa(pid), "task"))
+	if err != nil {
+		return []int{pid}
+	}
+	var tids []int
+	for _, entry := range entries {
+		if tid, err := strconv.Atoi(entry.Name()); err == nil {
+			tids = append(tids, tid)
+		}
+	}
+	if len(tids) == 0 {
+		return []int{pid}
+	}
+	sort.Ints(tids)
+	return tids
+}
+
+//nolint:gocyclo // one option table and one filter chain; splitting them apart would only scatter the command line.
+func processMatchCommand(prog string, args []string, send bool) int {
+	options := procMatch{
+		delimiter: "\n",
+		signal:    syscall.SIGTERM,
+		pids:      map[int]bool{}, ppids: map[int]bool{},
+		pgroups: map[int]bool{}, sessions: map[int]bool{},
+		euids: map[uint32]bool{}, uids: map[uint32]bool{}, gids: map[uint32]bool{},
+		terminals: map[string]bool{},
+	}
+	if send {
+		if rest, signal, found := procMatchSignalArgument(args); found {
+			args, options.signal = rest, signal
+		}
+	}
+	var pattern string
+	havePattern := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			for _, operand := range args[i+1:] {
+				if havePattern {
+					return procMatchUsage(prog, "only one pattern can be provided")
+				}
+				pattern, havePattern = operand, true
+			}
+			break
+		}
+		if !strings.HasPrefix(arg, "-") || arg == "-" {
+			if havePattern {
+				return procMatchUsage(prog, "only one pattern can be provided")
+			}
+			pattern, havePattern = arg, true
+			continue
+		}
+		// Long options first; the short ones cluster, and the last letter of a
+		// cluster may carry its argument attached or as the next operand.
+		if strings.HasPrefix(arg, "--") {
+			name, value, hasValue := arg[2:], "", false
+			if eq := strings.IndexByte(name, '='); eq >= 0 {
+				name, value, hasValue = name[:eq], name[eq+1:], true
+			}
+			letters := map[string]string{
+				"delimiter": "d", "list-name": "l", "list-full": "a", "inverse": "v",
+				"lightweight": "w", "count": "c", "full": "f", "pgroup": "g", "group": "G",
+				"ignore-case": "i", "newest": "n", "oldest": "o", "older": "O", "pid": "p",
+				"parent": "P", "session": "s", "terminal": "t", "euid": "u", "uid": "U",
+				"exact": "x", "pidfile": "F", "logpidfile": "L", "runstates": "r",
+				"ignore-ancestors": "A", "echo": "e", "require-handler": "H",
+			}
+			switch name {
+			case "quiet":
+				options.quiet = true
+				continue
+			case "signal":
+				if !hasValue {
+					i++
+					if i >= len(args) {
+						return procMatchOptionError(prog, "option '--signal' requires an argument")
+					}
+					value = args[i]
+				}
+				signal, err := parseSignal(value)
+				if err != nil {
+					return procMatchError(prog, "%v", err)
+				}
+				options.signal = signal
+				continue
+			}
+			letter, ok := letters[name]
+			if !ok {
+				return procMatchOptionError(prog, "unrecognized option '--%s'", name)
+			}
+			arg = "-" + letter
+			if hasValue {
+				arg += value
+			}
+		}
+		cluster := arg[1:]
+		for len(cluster) > 0 {
+			letter := cluster[0]
+			cluster = cluster[1:]
+			// takeValue returns the option's argument: the rest of the cluster
+			// when there is one, otherwise the following operand.
+			takeValue := func() (string, bool) {
+				if cluster != "" {
+					value := cluster
+					cluster = ""
+					return value, true
+				}
+				i++
+				if i >= len(args) {
+					return "", false
+				}
+				return args[i], true
+			}
+			var err error
+			switch letter {
+			case 'f':
+				options.full = true
+			case 'x':
+				options.exact = true
+			case 'v':
+				options.invert = true
+			case 'i':
+				options.ignoreCase = true
+			case 'c':
+				options.count = true
+			case 'l':
+				options.listName = true
+			case 'a':
+				options.listFull = true
+			case 'w':
+				options.threads = true
+			case 'n':
+				options.newest, options.criteria = true, true
+			case 'o':
+				options.oldest, options.criteria = true, true
+			case 'A':
+				options.ignoreAncestors = true
+			case 'e':
+				options.echo = true
+			case 'H':
+				options.requireHandler = true
+			case 'L':
+				// Only meaningful beside -F, whose lock this build does not check.
+			case 'd', 'g', 'G', 'O', 'p', 'P', 's', 't', 'u', 'U', 'F', 'r':
+				value, ok := takeValue()
+				if !ok {
+					return procMatchOptionError(prog, "option requires an argument -- '%c'", letter)
+				}
+				switch letter {
+				case 'd':
+					options.delimiter = value
+				case 'g':
+					err, options.criteria = procMatchIDs(value, options.pgroups), true
+				case 'p':
+					err, options.criteria = procMatchIDs(value, options.pids), true
+				case 'P':
+					err, options.criteria = procMatchIDs(value, options.ppids), true
+				case 's':
+					err, options.criteria = procMatchIDs(value, options.sessions), true
+				case 'u':
+					if err = procMatchNames(value, options.euids, procMatchLookupUser); err != nil {
+						return procMatchError(prog, "invalid user name: %v", err)
+					}
+					options.criteria = true
+				case 'U':
+					if err = procMatchNames(value, options.uids, procMatchLookupUser); err != nil {
+						return procMatchError(prog, "invalid user name: %v", err)
+					}
+					options.criteria = true
+				case 'G':
+					if err = procMatchNames(value, options.gids, procMatchLookupGroup); err != nil {
+						return procMatchError(prog, "invalid group name: %v", err)
+					}
+					options.criteria = true
+				case 't':
+					for _, name := range strings.Split(value, ",") {
+						options.terminals[strings.TrimPrefix(strings.TrimSpace(name), "/dev/")] = true
+					}
+					options.criteria = true
+				case 'r':
+					options.states, options.criteria = value, true
+				case 'O':
+					seconds, convErr := strconv.ParseUint(value, 10, 64)
+					if convErr != nil {
+						return procMatchError(prog, "not a number: %s", value)
+					}
+					options.older, options.haveOlder, options.criteria = seconds, true, true
+				case 'F':
+					data, readErr := os.ReadFile(value)
+					if readErr != nil {
+						fatalf(prog, "cannot open pidfile %s: %s", value, errText(readErr))
+						return 2
+					}
+					field := strings.Fields(string(data))
+					if len(field) == 0 {
+						fatalf(prog, "pidfile not valid")
+						return 2
+					}
+					err, options.criteria = procMatchIDs(field[0], options.pids), true
+				}
+			default:
+				return procMatchOptionError(prog, "invalid option -- '%c'", letter)
+			}
+			if err != nil {
+				return procMatchError(prog, "%v", err)
+			}
+		}
+	}
+	if options.newest && options.oldest {
+		// procps prints its usage here with no diagnostic at all.
+		return procMatchOptionError(prog, "")
+	}
+	if !havePattern && !options.criteria {
+		return procMatchUsage(prog, "no matching criteria specified")
+	}
+	// procps reads a 0 in a session or process-group list as "my own", so that
+	// a script can ask for its own session without looking the number up.
+	if options.sessions[0] {
+		delete(options.sessions, 0)
+		if sid, _, errno := syscall.Syscall(syscall.SYS_GETSID, 0, 0, 0); errno == 0 {
+			options.sessions[int(sid)] = true
+		}
+	}
+	if options.pgroups[0] {
+		delete(options.pgroups, 0)
+		options.pgroups[syscall.Getpgrp()] = true
+	}
+	var re *regexp.Regexp
+	if havePattern {
+		// procps anchors the pattern itself under -x rather than comparing the
+		// whole match, so an alternation is anchored as a whole.
+		expression := pattern
+		if options.exact {
+			expression = "^(" + expression + ")$"
+		}
+		if options.ignoreCase {
+			expression = "(?i)" + expression
+		}
+		compiled, err := regexp.Compile(expression)
+		if err != nil {
+			return procMatchError(prog, "%v", err)
+		}
+		re = compiled
+		// A name in /proc/PID/stat is truncated to 15 characters, so a longer
+		// pattern can never match one; procps warns and carries on.
+		if !options.full && len(pattern) > 15 {
+			fatalf(prog, "pattern that searches for process name longer than 15 characters will result in zero matches")
+			fmt.Fprintf(os.Stderr, "Try `%s -f' option to match against the complete command line.\n", prog)
+		}
 	}
 	processes, err := readProcesses(nil)
 	if err != nil {
 		return 2
 	}
-	matched := false
+	ancestors := map[int]bool{}
+	if options.ignoreAncestors {
+		ancestors = procMatchAncestors(processes)
+	}
+	runtime := newPSRuntime()
+	var matches []processInfo
 	for _, p := range processes {
-		target := p.comm
-		if full {
-			target = p.args
-		}
-		ok := re.MatchString(target)
-		if exact {
-			ok = ok && re.FindString(target) == target
-		}
-		if invert {
-			ok = !ok
-		}
-		if !ok || p.pid == os.Getpid() {
+		if p.pid == os.Getpid() || ancestors[p.pid] {
 			continue
 		}
-		matched = true
-		if send {
-			if err := syscall.Kill(p.pid, signal); err != nil {
-				fatalf(prog, "%d: %v", p.pid, err)
+		if !procMatchSelects(&options, runtime, p, re) {
+			continue
+		}
+		if send && options.requireHandler && !procMatchCatches(p.pid, options.signal) {
+			continue
+		}
+		matches = append(matches, p)
+	}
+	// -n and -o narrow the result to one process once every other filter has
+	// had its say.
+	if (options.newest || options.oldest) && len(matches) > 0 {
+		best := matches[0]
+		for _, p := range matches[1:] {
+			if options.newest && p.startTicks >= best.startTicks || options.oldest && p.startTicks < best.startTicks {
+				best = p
 			}
-		} else {
-			fmt.Println(p.pid)
+		}
+		matches = []processInfo{best}
+	}
+	return procMatchReport(prog, &options, send, matches)
+}
+
+// procMatchSelects applies every filter to one process. procps combines them
+// all — the pattern and the id, terminal, state and age restrictions — into one
+// verdict and lets -v invert that verdict as a whole, so "pgrep -v -u root"
+// really does list the processes root does not own.
+func procMatchSelects(options *procMatch, runtime psRuntime, p processInfo, re *regexp.Regexp) bool {
+	match := true
+	if re != nil {
+		target := p.comm
+		if options.full {
+			target = p.args
+		}
+		match = re.MatchString(target)
+	}
+	switch {
+	case len(options.pids) > 0 && !options.pids[p.pid]:
+		match = false
+	case len(options.ppids) > 0 && !options.ppids[p.ppid]:
+		match = false
+	case len(options.pgroups) > 0 && !options.pgroups[p.pgrp]:
+		match = false
+	case len(options.sessions) > 0 && !options.sessions[p.session]:
+		match = false
+	case len(options.euids) > 0 && !options.euids[p.uid]:
+		match = false
+	case len(options.uids) > 0 && !options.uids[p.realUID]:
+		match = false
+	case len(options.gids) > 0 && !options.gids[p.realGID]:
+		match = false
+	case len(options.terminals) > 0 && !options.terminals[ttyName(p.tty)]:
+		match = false
+	case options.states != "" && !strings.Contains(options.states, p.state):
+		match = false
+	case options.haveOlder && runtime.elapsedSeconds(p) < options.older:
+		match = false
+	}
+	return match != options.invert
+}
+
+// procMatchReport prints or signals the matches and returns pgrep's status: 0
+// when something matched, 1 when nothing did.
+func procMatchReport(prog string, options *procMatch, send bool, matches []processInfo) int {
+	out := bufio.NewWriter(os.Stdout)
+	defer out.Flush() //nolint:errcheck // a sticky write error is reported by the final Flush.
+	status := 1
+	if len(matches) > 0 {
+		status = 0
+	}
+	if send {
+		for _, p := range matches {
+			if err := syscall.Kill(p.pid, options.signal); err != nil {
+				fatalf(prog, "killing pid %d failed: %s", p.pid, errText(err))
+				status = 1
+				continue
+			}
+			if options.echo && !options.quiet {
+				fmt.Fprintf(out, "%s killed (pid %d)\n", p.comm, p.pid)
+			}
 		}
 	}
-	if matched {
-		return 0
+	if options.quiet {
+		return status
 	}
-	return 1
+	if options.count {
+		fmt.Fprintf(out, "%d\n", len(matches))
+		return status
+	}
+	if send {
+		return status
+	}
+	written := false
+	for _, p := range matches {
+		for _, pid := range procMatchPIDs(options, p) {
+			if written {
+				io.WriteString(out, options.delimiter) //nolint:errcheck // buffered writer; the error surfaces at Flush.
+			}
+			written = true
+			switch {
+			case options.listFull:
+				text := p.args
+				if text == "" {
+					text = "[" + p.comm + "]"
+				}
+				fmt.Fprintf(out, "%d %s", pid, text)
+			case options.listName:
+				fmt.Fprintf(out, "%d %s", pid, p.comm)
+			default:
+				fmt.Fprintf(out, "%d", pid)
+			}
+		}
+	}
+	if written {
+		io.WriteString(out, "\n") //nolint:errcheck // buffered writer; the error surfaces at Flush.
+	}
+	return status
+}
+
+// procMatchPIDs is what one match contributes to the output: its thread ids
+// under -w, and otherwise the process id alone.
+func procMatchPIDs(options *procMatch, p processInfo) []int {
+	if options.threads {
+		return procMatchThreads(p.pid)
+	}
+	return []int{p.pid}
 }
 
 func cmdMount(args []string) int {

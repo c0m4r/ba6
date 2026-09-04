@@ -4,7 +4,9 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"debug/elf"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -13,6 +15,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"unicode"
 	"unicode/utf8"
 )
@@ -605,55 +608,343 @@ func cmdBase64(args []string) int {
 	return 0
 }
 
+// stringsConfig is one strings(1) command line: the scan geometry (how long a
+// run has to be and how wide a character is) plus how each run is printed.
+type stringsConfig struct {
+	minimum   int
+	radix     byte   // 0, or 'o'/'d'/'x' for the -t address column
+	printName bool   // -f
+	dataOnly  bool   // -d, scan only the loaded non-code sections of an object
+	allWhite  bool   // -w
+	eightBit  bool   // -e S: bytes above 127 count as printable
+	separator string // -s; printed after each run in place of the newline
+	width     int    // bytes per character: 1, 2 or 4
+	bigEndian bool   // for the 2- and 4-byte encodings
+}
+
+// stringsPrintable follows binutils' STRING_ISGRAPHIC: printable ASCII and tab
+// always, every whitespace character under -w, and the whole upper half under
+// the 8-bit encoding.
+func (c *stringsConfig) printable(b byte) bool {
+	switch {
+	case b == '\t':
+		return true
+	case b >= 32 && b < 127:
+		return true
+	case c.allWhite && (b == '\n' || b == '\v' || b == '\f' || b == '\r'):
+		return true
+	case c.eightBit && b > 127:
+		return true
+	}
+	return false
+}
+
+// setEncoding maps -e's letter onto a character width and byte order. 's' is
+// binutils' default single-byte scan, 'S' the same width with the high half
+// treated as printable, and b/l/B/L the 16- and 32-bit forms.
+func (c *stringsConfig) setEncoding(name string) bool {
+	if len(name) != 1 {
+		return false
+	}
+	c.width, c.bigEndian, c.eightBit = 1, false, false
+	switch name[0] {
+	case 's':
+	case 'S':
+		c.eightBit = true
+	case 'b':
+		c.width, c.bigEndian = 2, true
+	case 'l':
+		c.width = 2
+	case 'B':
+		c.width, c.bigEndian = 4, true
+	case 'L':
+		c.width = 4
+	default:
+		return false
+	}
+	return true
+}
+
 func cmdStrings(args []string) int {
-	minimum := 4
+	cfg := stringsConfig{minimum: 4, separator: "\n", width: 1}
 	names := []string{}
+	// Argument of a short option: the rest of the cluster if there is one,
+	// otherwise the next operand, as getopt hands it over.
+	takeValue := func(rest string, i *int) (string, bool) {
+		if rest != "" {
+			return rest, true
+		}
+		*i++
+		if *i >= len(args) {
+			return "", false
+		}
+		return args[*i], true
+	}
 	for i := 0; i < len(args); i++ {
-		if args[i] == "-n" {
-			i++
-			if i >= len(args) {
+		arg := args[i]
+		switch {
+		case strings.HasPrefix(arg, "--"):
+			name, value, hasValue := arg[2:], "", false
+			if eq := strings.IndexByte(name, '='); eq >= 0 {
+				name, value, hasValue = name[:eq], name[eq+1:], true
+			}
+			needValue := func() (string, bool) {
+				if hasValue {
+					return value, true
+				}
+				i++
+				if i >= len(args) {
+					return "", false
+				}
+				return args[i], true
+			}
+			switch name {
+			case "all":
+				cfg.dataOnly = false
+			case "data":
+				cfg.dataOnly = true
+			case "print-file-name":
+				cfg.printName = true
+			case "include-all-whitespace":
+				cfg.allWhite = true
+			case "bytes":
+				v, ok := needValue()
+				if !ok {
+					return stringsUsage()
+				}
+				n, err := strconv.Atoi(v)
+				if err != nil {
+					fatalf("strings", "invalid integer argument %s", v)
+					return 1
+				}
+				cfg.minimum = n
+			case "radix":
+				v, ok := needValue()
+				if !ok || len(v) != 1 || strings.IndexByte("odx", v[0]) < 0 {
+					return stringsUsage()
+				}
+				cfg.radix = v[0]
+			case "output-separator":
+				v, ok := needValue()
+				if !ok {
+					return stringsUsage()
+				}
+				cfg.separator = v
+			case "encoding":
+				v, ok := needValue()
+				if !ok || !cfg.setEncoding(v) {
+					return stringsUsage()
+				}
+			case "target":
+				if _, ok := needValue(); !ok {
+					return stringsUsage()
+				}
+			case "help":
+				return stringsHelp(os.Stdout, 0)
+			default:
+				fatalf("strings", "unsupported option %q", arg)
 				return 1
 			}
-			minimum, _ = strconv.Atoi(args[i])
-		} else if strings.HasPrefix(args[i], "-") && len(args[i]) > 1 {
-			if n, e := strconv.Atoi(args[i][1:]); e == nil {
-				minimum = n
-			} else {
-				return 1
+		case len(arg) > 1 && arg[0] == '-':
+			cluster := arg[1:]
+			for len(cluster) > 0 {
+				letter := cluster[0]
+				cluster = cluster[1:]
+				switch letter {
+				case 'a':
+					cfg.dataOnly = false
+				case 'd':
+					cfg.dataOnly = true
+				case 'f':
+					cfg.printName = true
+				case 'w':
+					cfg.allWhite = true
+				case 'o':
+					cfg.radix = 'o'
+				case 'n':
+					v, ok := takeValue(cluster, &i)
+					if !ok {
+						return stringsUsage()
+					}
+					n, err := strconv.Atoi(v)
+					if err != nil {
+						fatalf("strings", "invalid integer argument %s", v)
+						return 1
+					}
+					cfg.minimum, cluster = n, ""
+				case 't':
+					v, ok := takeValue(cluster, &i)
+					if !ok || len(v) != 1 || strings.IndexByte("odx", v[0]) < 0 {
+						return stringsUsage()
+					}
+					cfg.radix, cluster = v[0], ""
+				case 's':
+					v, ok := takeValue(cluster, &i)
+					if !ok {
+						return stringsUsage()
+					}
+					cfg.separator, cluster = v, ""
+				case 'e':
+					v, ok := takeValue(cluster, &i)
+					if !ok || !cfg.setEncoding(v) {
+						return stringsUsage()
+					}
+					cluster = ""
+				case 'T':
+					if _, ok := takeValue(cluster, &i); !ok {
+						return stringsUsage()
+					}
+					cluster = ""
+				case 'h':
+					return stringsHelp(os.Stdout, 0)
+				default:
+					// A bare digit count, as in the historic "strings -8".
+					if n, err := strconv.Atoi(arg[1:]); err == nil {
+						cfg.minimum, cluster = n, ""
+						continue
+					}
+					fatalf("strings", "unsupported option %q", arg)
+					return 1
+				}
 			}
-		} else {
-			names = append(names, args[i])
+		default:
+			names = append(names, arg)
 		}
 	}
+	if cfg.minimum < 1 {
+		fatalf("strings", "minimum string length is too small: %d", cfg.minimum)
+		return 0
+	}
+	out := bufio.NewWriter(os.Stdout)
+	defer out.Flush() //nolint:errcheck // a sticky write error is reported by the final Flush.
 	if len(names) == 0 {
-		names = []string{"-"}
+		data, err := readInputBytes("-")
+		if err != nil {
+			fatalf("strings", "%v", err)
+			return 1
+		}
+		stringsScanAll(out, &cfg, "{standard input}", data)
+		return 0
 	}
 	status := 0
 	for _, name := range names {
-		data, err := readInputBytes(name)
+		data, err := os.ReadFile(name)
 		if err != nil {
-			fatalf("strings", "%s: %v", name, err)
+			out.Flush() //nolint:errcheck // ordering the diagnostic after pending output; errors surface at the deferred Flush.
 			status = 1
+			// binutils reports a missing file and a directory through BFD,
+			// with its wording, and everything else through errno.
+			switch {
+			case errors.Is(err, os.ErrNotExist):
+				fatalf("strings", "'%s': No such file", name)
+			case errors.Is(err, syscall.EISDIR):
+				fatalf("strings", "Warning: '%s' is a directory", name)
+			default:
+				fatalf("strings", "%s: %s", name, errText(err))
+			}
 			continue
 		}
-		start := -1
-		for i, b := range data {
-			printable := b >= 32 && b < 127 || b == '\t'
-			if printable && start < 0 {
-				start = i
-			}
-			if !printable && start >= 0 {
-				if i-start >= minimum {
-					fmt.Println(string(data[start:i]))
-				}
-				start = -1
-			}
-		}
-		if start >= 0 && len(data)-start >= minimum {
-			fmt.Println(string(data[start:]))
-		}
+		stringsScanAll(out, &cfg, name, data)
 	}
 	return status
+}
+
+// stringsUsage reports a malformed command line the way binutils' strings
+// does: the usage text, and a failing status.
+func stringsUsage() int {
+	return stringsHelp(os.Stderr, 1)
+}
+
+func stringsHelp(w io.Writer, status int) int {
+	if err := writeAppletHelp(w, "strings"); err != nil {
+		fatalf("strings", "%v", err)
+		return 1
+	}
+	return status
+}
+
+// stringsScanAll scans one file: the whole image, or — under -d and only when
+// the file really is an ELF object — the sections BFD calls loaded data, which
+// is every allocated section that carries bytes. That includes .text: -d drops
+// the sections a loader never maps (symbol tables, comments, debug info), not
+// the code. A -d scan of anything else falls back to the whole file, as BFD's
+// binary target does.
+func stringsScanAll(out io.Writer, cfg *stringsConfig, name string, data []byte) {
+	if cfg.dataOnly {
+		if file, err := elf.NewFile(bytes.NewReader(data)); err == nil {
+			for _, section := range file.Sections {
+				if section.Flags&elf.SHF_ALLOC == 0 || section.Type == elf.SHT_NOBITS {
+					continue
+				}
+				end := section.Offset + section.Size
+				if section.Offset > uint64(len(data)) || end > uint64(len(data)) {
+					continue
+				}
+				stringsScan(out, cfg, name, data[section.Offset:end], int64(section.Offset)) //nolint:gosec // section bounds were checked against the file length.
+			}
+			return
+		}
+	}
+	stringsScan(out, cfg, name, data, 0)
+}
+
+// stringsScan walks one region looking for runs of printable characters, where
+// a character is one, two or four bytes wide. base is the region's offset in
+// the file, so -t reports file offsets even for a per-section scan.
+//
+// Multi-byte encodings are not scanned on character boundaries: binutils pushes
+// back all but the first byte of a character that turns out not to be printable
+// and retries one byte later, so a UTF-16 string that begins at an odd offset is
+// still found. The scan therefore restarts at the byte after the character that
+// ended a run, which for the single-byte encodings is the usual "resume after
+// the terminator".
+func stringsScan(out io.Writer, cfg *stringsConfig, name string, data []byte, base int64) {
+	width := cfg.width
+	// charAt decodes the character starting at byte i, reporting whether it
+	// fits in a byte and is printable under the current encoding.
+	charAt := func(i int) (byte, bool) {
+		var value uint32
+		for j := 0; j < width; j++ {
+			if cfg.bigEndian {
+				value = value<<8 | uint32(data[i+j])
+			} else {
+				value |= uint32(data[i+j]) << (8 * uint(j)) //nolint:gosec // j is bounded by the 4-byte character width.
+			}
+		}
+		return byte(value), value <= 0xff && cfg.printable(byte(value))
+	}
+	for i := 0; i+width <= len(data); {
+		b, ok := charAt(i)
+		if !ok {
+			i++
+			continue
+		}
+		run := []byte{b}
+		j := i + width
+		for ; j+width <= len(data); j += width {
+			b, ok := charAt(j)
+			if !ok {
+				break
+			}
+			run = append(run, b)
+		}
+		if len(run) >= cfg.minimum {
+			if cfg.printName {
+				fmt.Fprintf(out, "%s: ", name)
+			}
+			switch cfg.radix {
+			case 'o':
+				fmt.Fprintf(out, "%7o ", base+int64(i))
+			case 'd':
+				fmt.Fprintf(out, "%7d ", base+int64(i))
+			case 'x':
+				fmt.Fprintf(out, "%7x ", base+int64(i))
+			}
+			out.Write(run) //nolint:errcheck // buffered writer; the error surfaces at Flush.
+			io.WriteString(out, cfg.separator)
+		}
+		i = j + 1
+	}
 }
 
 // dumpWord reads size bytes little-endian starting at off, zero-extending

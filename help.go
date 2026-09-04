@@ -439,8 +439,39 @@ Copy data over a TCP or UDP connection.`,
 Resolve a host name using DNS.`,
 	"od": `Usage: od [-c] [FILE]
 Display input in hexadecimal and ASCII.`,
-	"pgrep": `Usage: pgrep [-fxv] PATTERN
-Print PIDs whose process names match a regular expression.`,
+	"pgrep": `Usage: pgrep [OPTION]... [PATTERN]
+Print the process ids whose name matches an extended regular expression. The
+pattern may be left out when some other selection option is given. A name in
+/proc is truncated to 15 characters, so a longer pattern only matches under -f.
+Exit status is 0 when something matched, 1 when nothing did and 2 for a bad
+command line.
+
+Options:
+  -f, --full             match against the whole command line, not the name
+  -x, --exact            the pattern must match the whole name
+  -i, --ignore-case      match case insensitively
+  -v, --inverse          select the processes that do not match
+  -c, --count            print how many matched instead of the matches
+  -n, --newest           keep only the most recently started match
+  -o, --oldest           keep only the earliest started match
+  -O, --older SECONDS    keep matches at least SECONDS old
+  -p, --pid PID,...      match these process ids
+  -P, --parent PPID,...  match children of these processes
+  -g, --pgroup PGID,...  match these process groups (0 means our own)
+  -s, --session SID,...  match these sessions (0 means our own)
+  -u, --euid ID,...      match by effective user, by name or number
+  -U, --uid ID,...       match by real user
+  -G, --group ID,...     match by real group
+  -t, --terminal TTY,... match by controlling terminal, as pts/0 or tty1
+  -r, --runstates STATES match these process states, as in D, S or Z
+  -A, --ignore-ancestors drop our own ancestors from the result
+  -F, --pidfile FILE     take the process id to match from FILE
+  --ns, --nslist, --cgroup and --env are not implemented.
+  -l, --list-name        print the process name beside each id
+  -a, --list-full        print the whole command line beside each id
+  -w, --lightweight      print every thread id, not just the process id
+  -d, --delimiter STR    separate ids with STR instead of a newline
+  --quiet                print nothing; report the result in the exit status`,
 	"pidof": `Usage: pidof [-s] [-x] [-q] [-o PID,...] [-S SEP] NAME...
 Print process IDs for program names, newest first.
 
@@ -453,8 +484,38 @@ Options:
 	"ping": `Usage: ping [-46] [-c COUNT] [-W SECONDS] [-i SECONDS] HOST
 Send IPv4 or IPv6 ICMP echo requests. The address family is selected from the
 resolved address unless -4 or -6 is specified.`,
-	"pkill": `Usage: pkill [-SIGNAL] [-fxv] PATTERN
-Signal processes whose names match a regular expression.`,
+	"pkill": `Usage: pkill [-SIGNAL] [OPTION]... [PATTERN]
+Signal the processes whose name matches an extended regular expression. The
+selection options are pgrep's; SIGTERM is sent unless -SIGNAL or --signal names
+another. The pattern may be left out when some other selection option is given.
+
+Options:
+  -SIGNAL, --signal SIG  send this signal instead of SIGTERM
+  -e, --echo             print each process as it is signalled
+  -H, --require-handler  signal only processes that handle the signal
+  -f, --full             match against the whole command line, not the name
+  -x, --exact            the pattern must match the whole name
+  -i, --ignore-case      match case insensitively
+  -v, --inverse          select the processes that do not match
+  -c, --count            print how many matched instead of the matches
+  -n, --newest           keep only the most recently started match
+  -o, --oldest           keep only the earliest started match
+  -O, --older SECONDS    keep matches at least SECONDS old
+  -p, --pid PID,...      match these process ids
+  -P, --parent PPID,...  match children of these processes
+  -g, --pgroup PGID,...  match these process groups (0 means our own)
+  -s, --session SID,...  match these sessions (0 means our own)
+  -u, --euid ID,...      match by effective user, by name or number
+  -U, --uid ID,...       match by real user
+  -G, --group ID,...     match by real group
+  -t, --terminal TTY,... match by controlling terminal, as pts/0 or tty1
+  -r, --runstates STATES match these process states, as in D, S or Z
+  -A, --ignore-ancestors drop our own ancestors from the result
+  -F, --pidfile FILE     take the process id to match from FILE
+  --ns, --nslist, --cgroup and --env are not implemented.
+  -c, --count            print how many were signalled
+  --quiet                print nothing; report the result in the exit status
+  -q/--queue and -m/--mrelease are not implemented.`,
 	"poweroff": `Usage: poweroff [-nf]
 Ask PID 1 to power off. -f uses the reboot syscall directly and requires
 CAP_SYS_BOOT; -n skips the pre-syscall sync in forced mode.`,
@@ -556,8 +617,28 @@ Options:
   --si                use powers of 1000 instead of 1024
   -r, -q, -0/-1/-2    accepted for compatibility
   --help              show this help`,
-	"strings": `Usage: strings [-n LENGTH] [FILE]...
-Print runs of printable bytes.`,
+	"strings": `Usage: strings [OPTION]... [FILE]...
+Print runs of printable characters at least LENGTH long. With no file, or when
+a scan finds nothing, nothing is printed. Standard input is read when no file
+is named.
+
+Options:
+  -a, --all                 scan the whole file (the default)
+  -d, --data                scan only an ELF object's loaded, non-code sections
+  -f, --print-file-name     prefix each run with the file it came from
+  -n LENGTH, --bytes=LENGTH minimum run length (default 4); -LENGTH also works
+  -t, --radix=o|d|x         print each run's file offset in that base
+  -o                        alias for -t o
+  -w, --include-all-whitespace
+                            count newline, return, vertical tab and form feed
+                            as printable, not just tab and space
+  -e, --encoding=s|S|b|l|B|L
+                            character width and byte order: s 7-bit (default),
+                            S 8-bit, b/l 16-bit big/little, B/L 32-bit
+  -s, --output-separator=STR
+                            print STR after each run instead of a newline
+  -T, --target=NAME         accepted and ignored; only the native format is read
+  --help                    show this help`,
 	"sync": `Usage: sync
 Flush filesystem buffers.`,
 	"umount": `Usage: umount [-aflr] [TARGET]...

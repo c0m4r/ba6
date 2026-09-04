@@ -786,3 +786,91 @@ func TestUnrestrictedAppletClassification(t *testing.T) {
 		}
 	}
 }
+
+// TestStringsOptions pins the option surface added on top of -n: the address
+// column, the file-name prefix, the output separator, the whitespace rule and
+// the wide encodings — including binutils' byte-sliding retry, which finds a
+// 16-bit string that does not start on a character boundary.
+func TestStringsOptions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "data")
+	// "hello", a tab-bearing run, then a run split by a newline: with -w the
+	// newline joins the two halves into one string, without it they are two.
+	body := []byte("hello\x00wor\tld\x00\x01\x02abcdefgh\nnextline\x00pad")
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{path}, "hello\nwor\tld\nabcdefgh\nnextline\n"},
+		{[]string{"-t", "x", path}, "      0 hello\n      6 wor\tld\n      f abcdefgh\n     18 nextline\n"},
+		{[]string{"-t", "d", path}, "      0 hello\n      6 wor\tld\n     15 abcdefgh\n     24 nextline\n"},
+		{[]string{"-o", path}, "      0 hello\n      6 wor\tld\n     17 abcdefgh\n     30 nextline\n"},
+		{[]string{"-w", "-t", "d", path}, "      0 hello\n      6 wor\tld\n     15 abcdefgh\nnextline\n"},
+		{[]string{"-s", "|", path}, "hello|wor\tld|abcdefgh|nextline|"},
+		{[]string{"-n", "8", path}, "abcdefgh\nnextline\n"},
+		{[]string{"-8", path}, "abcdefgh\nnextline\n"},
+		// A clustered form with the count attached, as getopt accepts it.
+		{[]string{"-n8", "-tx", path}, "      f abcdefgh\n     18 nextline\n"},
+	} {
+		status, out, _ := captureApplet(t, cmdStrings, c.args, "")
+		if status != 0 || out != c.want {
+			t.Fatalf("strings %v = (%d, %q), want %q", c.args, status, out, c.want)
+		}
+	}
+	if _, out, _ := captureApplet(t, cmdStrings, []string{"-f", path}, ""); !strings.HasPrefix(out, path+": hello\n") {
+		t.Fatalf("strings -f = %q", out)
+	}
+
+	// A UTF-16LE string preceded by one byte: the first 16-bit character read
+	// at offset 0 is not printable, and binutils retries one byte later rather
+	// than at the next character boundary, so the string is still found.
+	wide := filepath.Join(dir, "wide")
+	if err := os.WriteFile(wide, []byte("h\x00e\x00l\x00l\x00o\x00\x00\x00"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, out, _ := captureApplet(t, cmdStrings, []string{"-e", "l", wide}, ""); out != "hello\n" {
+		t.Fatalf("strings -e l = %q", out)
+	}
+	if _, out, _ := captureApplet(t, cmdStrings, []string{"-e", "b", wide}, ""); out != "ello\n" {
+		t.Fatalf("strings -e b = %q", out)
+	}
+
+	// -e S treats the upper half as printable where the default scan breaks on it.
+	high := filepath.Join(dir, "high")
+	if err := os.WriteFile(high, []byte("caf\xe9xyz\x00"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, out, _ := captureApplet(t, cmdStrings, []string{high}, ""); out != "" {
+		t.Fatalf("strings on high bytes = %q, want nothing", out)
+	}
+	if _, out, _ := captureApplet(t, cmdStrings, []string{"-e", "S", high}, ""); out != "caf\xe9xyz\n" {
+		t.Fatalf("strings -e S = %q", out)
+	}
+
+	// -d keeps the allocated sections of an ELF — code included, since BFD's
+	// "loaded data" is everything the loader maps — and drops the rest, so the
+	// scan is a strict subset of the default one.
+	self, err := os.Executable()
+	if err != nil {
+		t.Skip("no executable path")
+	}
+	_, all, _ := captureApplet(t, cmdStrings, []string{self}, "")
+	_, data, _ := captureApplet(t, cmdStrings, []string{"-d", self}, "")
+	if data == "" || len(data) >= len(all) {
+		t.Fatalf("strings -d produced %d bytes against %d for the whole file", len(data), len(all))
+	}
+	for _, line := range strings.Split(strings.TrimRight(data, "\n"), "\n") {
+		if !strings.Contains(all, line+"\n") {
+			t.Fatalf("strings -d line %q is missing from the full scan", line)
+		}
+	}
+
+	// A missing file is reported with BFD's wording and does not stop the run.
+	status, out, errOut := captureApplet(t, cmdStrings, []string{filepath.Join(dir, "absent"), path}, "")
+	if status != 1 || !strings.Contains(errOut, "No such file") || !strings.HasPrefix(out, "hello\n") {
+		t.Fatalf("strings on a missing file = (%d, %q, %q)", status, out, errOut)
+	}
+}
