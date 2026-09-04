@@ -321,7 +321,7 @@ func TestNcduExportImportRoundTrip(t *testing.T) {
 }
 
 func TestPsBSDOptionsAndColumns(t *testing.T) {
-	options := psOptions{selected: map[int]bool{}}
+	options := psOptions{selection: newPSSelection()}
 	if err := options.parseBSD("axu"); err != nil {
 		t.Fatalf("parseBSD(axu): %v", err)
 	}
@@ -329,14 +329,18 @@ func TestPsBSDOptionsAndColumns(t *testing.T) {
 		t.Fatalf("parseBSD(axu) = %+v", options)
 	}
 	options.applyDefaultColumns()
-	if strings.Join(options.columns, ",") != "user,pid,pcpu,pmem,vsz,rss,tty,stat,start,time,args" {
-		t.Fatalf("aux columns = %q", options.columns)
+	names := make([]string, len(options.columns))
+	for i, column := range options.columns {
+		names[i] = column.name
 	}
-	pidOptions := psOptions{selected: map[int]bool{}}
-	if err := pidOptions.parseBSD("1,2"); err != nil || !pidOptions.selected[1] || !pidOptions.selected[2] {
-		t.Fatalf("parseBSD(1,2) = %+v err=%v", pidOptions.selected, err)
+	if strings.Join(names, ",") != "user,pid,pcpu,pmem,vsz,rss,tname,stat,start_time,bsdtime,args" {
+		t.Fatalf("aux columns = %q", names)
 	}
-	if err := (&psOptions{selected: map[int]bool{}}).parseBSD("zz"); err == nil {
+	pidOptions := psOptions{selection: newPSSelection()}
+	if err := pidOptions.parseBSD("1,2"); err != nil || !pidOptions.selection.pids[1] || !pidOptions.selection.pids[2] {
+		t.Fatalf("parseBSD(1,2) = %+v err=%v", pidOptions.selection.pids, err)
+	}
+	if err := (&psOptions{selection: newPSSelection()}).parseBSD("zz"); err == nil {
 		t.Fatal("an unknown BSD option was accepted")
 	}
 
@@ -348,15 +352,15 @@ func TestPsBSDOptionsAndColumns(t *testing.T) {
 		{pid: 2, uid: mine, tty: 0},
 		{pid: 3, uid: 0, tty: 0x8801},
 	}
-	terminal := (&psOptions{bsdTerminal: true, selected: map[int]bool{}}).filter(processes)
+	terminal := (&psOptions{bsdTerminal: true, selection: newPSSelection()}).filter(processes)
 	if len(terminal) != 1 || terminal[0].pid != 3 {
 		t.Errorf("ps a selected %+v", terminal)
 	}
-	own := (&psOptions{bsdOwn: true, selected: map[int]bool{}}).filter(processes)
+	own := (&psOptions{bsdOwn: true, selection: newPSSelection()}).filter(processes)
 	if len(own) != 1 || own[0].pid != 2 {
 		t.Errorf("ps x selected %+v", own)
 	}
-	both := (&psOptions{bsdTerminal: true, bsdOwn: true, selected: map[int]bool{}}).filter(processes)
+	both := (&psOptions{bsdTerminal: true, bsdOwn: true, selection: newPSSelection()}).filter(processes)
 	if len(both) != 3 {
 		t.Errorf("ps ax selected %+v", both)
 	}
@@ -368,11 +372,15 @@ func TestPsColumnValues(t *testing.T) {
 	if got := psState(process); got != "<sl+" {
 		t.Errorf("psState = %q, want %q", got, "<sl+")
 	}
-	if got := psCPUTime(process); got != "1:01" {
+	if got := psCPUTime(process, false); got != "1:01" {
 		t.Errorf("psCPUTime = %q", got)
 	}
-	if got := psCPUTime(processInfo{utime: 100 * 3661}); got != "1:01:01" {
+	// The BSD TIME field has no hours: an hour of CPU reads as 61 minutes.
+	if got := psCPUTime(processInfo{utime: 100 * 3661}, false); got != "61:01" {
 		t.Errorf("psCPUTime over an hour = %q", got)
+	}
+	if got := psCPUTimeLong(processInfo{utime: 100 * 3661}); got != "01:01:01" {
+		t.Errorf("psCPUTimeLong = %q", got)
 	}
 	if got := ttyName(0); got != "?" {
 		t.Errorf("ttyName(0) = %q", got)

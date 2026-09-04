@@ -42,6 +42,12 @@ type processInfo struct {
 	utime, stime     uint64 // clock ticks of user and system time
 	cutime, cstime   uint64 // clock ticks used by waited-for children
 	startTicks       uint64 // clock ticks between boot and process start
+	flags            uint64 // the kernel task flags ps reports as F
+	minflt, majflt   uint64
+	policy           int // the scheduling class ps reports as CLS
+	processor        int // the CPU the process last ran on
+	gid              uint32
+	realGID          uint32
 	comm             string
 	args             string
 }
@@ -49,49 +55,124 @@ type processInfo struct {
 // psOptions holds one command line. Selection follows ps(1): the BSD options
 // "a" and "x" together lift every restriction, "a" alone keeps the processes
 // that hold a terminal, and "x" alone keeps the caller's own.
+// psSpec is one output column: the name -o gave and the heading to print,
+// which "name=HEADING" replaces.
+type psSpec struct {
+	name    string
+	heading string
+	custom  bool
+}
+
+// psSelection is everything the selection options ask for. Any list that is
+// non-empty restricts the output, and the lists are additive, as in ps(1).
+type psSelection struct {
+	pids     map[int]bool
+	ppids    map[int]bool
+	euids    map[uint32]bool
+	ruids    map[uint32]bool
+	egids    map[uint32]bool
+	rgids    map[uint32]bool
+	commands map[string]bool
+	ttys     map[string]bool
+	sessions map[int]bool
+	groups   map[int]bool // process groups, from -g
+	any      bool
+	deselect bool
+}
+
 type psOptions struct {
 	full                bool
+	extraFull           bool
+	noFlags             bool // -y: the long format shows RSS in place of ADDR
+	cumulative          bool
+	forceHeaders        bool
+	longFormat          bool
+	jobsFormat          bool
 	userFormat          bool
+	noHeaders           bool
 	bsdTerminal, bsdOwn bool
-	selected            map[int]bool
-	columns             []string
+	selection           psSelection
+	sortKeys            []psSortKey
+	columns             []psSpec
+}
+
+// psSortKey is one --sort entry: a column name and whether it was negated.
+type psSortKey struct {
+	name       string
+	descending bool
 }
 
 func cmdPs(args []string) int {
-	options := psOptions{selected: map[int]bool{}}
+	options := psOptions{selection: newPSSelection()}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		switch {
-		case arg == "-p" || arg == "--pid":
-			i++
-			if i >= len(args) || parsePIDList(args[i], options.selected) != nil {
-				fatalf("ps", "invalid PID list")
-				return 1
-			}
-		case strings.HasPrefix(arg, "--pid="):
-			if parsePIDList(strings.TrimPrefix(arg, "--pid="), options.selected) != nil {
-				fatalf("ps", "invalid PID list")
-				return 1
-			}
-		case arg == "-o" || arg == "--format":
+		value := func(name string) (string, bool) {
 			i++
 			if i >= len(args) {
-				fatalf("ps", "-o requires an argument")
+				fatalf("ps", "option %s requires an argument", name)
+				return "", false
+			}
+			return args[i], true
+		}
+		// A long option may carry its argument after "=".
+		name, argument, hasArgument := arg, "", false
+		if strings.HasPrefix(arg, "--") {
+			if eq := strings.IndexByte(arg, '='); eq >= 0 {
+				name, argument, hasArgument = arg[:eq], arg[eq+1:], true
+			}
+		}
+		longValue := func() (string, bool) {
+			if hasArgument {
+				return argument, true
+			}
+			return value(name)
+		}
+		switch {
+		case name == "--no-headers" || name == "--no-heading" || name == "--noheadings":
+			options.noHeaders = true
+		case name == "--headers":
+			options.forceHeaders = true
+		case name == "--cumulative":
+			options.cumulative = true
+		case name == "--forest":
+			// The listing is not drawn as a tree; the order is unchanged.
+		case name == "--cols" || name == "--columns" || name == "--width" ||
+			name == "--lines" || name == "--rows":
+			if _, ok := longValue(); !ok {
 				return 1
 			}
-			options.columns = splitPSColumns(args[i])
-		case strings.HasPrefix(arg, "--format="):
-			options.columns = splitPSColumns(strings.TrimPrefix(arg, "--format="))
+			// Output is never truncated here, so a screen size changes nothing.
+		case name == "--quick-pid":
+			v, ok := longValue()
+			if !ok || !options.selection.add('p', v) {
+				return 1
+			}
+		case name == "--deselect":
+			options.selection.deselect = true
+		case name == "--sort" || name == "--Sort":
+			v, ok := longValue()
+			if !ok || !options.addSortKeys(v) {
+				return 1
+			}
+		case name == "--format":
+			v, ok := longValue()
+			if !ok {
+				return 1
+			}
+			options.columns = append(options.columns, splitPSColumns(v)...)
+		case name == "--pid" || name == "--ppid" || name == "--user" || name == "--User" ||
+			name == "--group" || name == "--Group" || name == "--sid" || name == "--tty" ||
+			name == "--command":
+			v, ok := longValue()
+			if !ok || !options.selection.add(psSelectionKind(name), v) {
+				return 1
+			}
+		case strings.HasPrefix(arg, "--"):
+			fatalf("ps", "unsupported option %q", arg)
+			return 1
 		case len(arg) > 1 && arg[0] == '-':
-			for _, flag := range arg[1:] {
-				switch flag {
-				case 'e', 'A':
-				case 'f':
-					options.full = true
-				default:
-					fatalf("ps", "invalid option -- '%c'", flag)
-					return 1
-				}
+			if !options.parseShort(arg, args, &i) {
+				return 1
 			}
 		default:
 			// BSD options carry no dash, so "ps axu" is a single operand
@@ -104,25 +185,284 @@ func cmdPs(args []string) int {
 	}
 	options.applyDefaultColumns()
 	for _, column := range options.columns {
-		if _, ok := psColumns[psColumnName(column)]; !ok {
-			fatalf("ps", "unknown output column %q", column)
+		if _, ok := psColumns[psColumnName(column.name)]; !ok {
+			fmt.Fprintf(os.Stderr, "error: unknown user-defined format specifier %q\n", column.name)
 			return 1
 		}
 	}
-	processes, err := readProcesses(options.selected)
+	for _, key := range options.sortKeys {
+		if _, ok := psColumns[psColumnName(key.name)]; !ok {
+			fmt.Fprintf(os.Stderr, "error: unknown user-defined sorting specifier %q\n", key.name)
+			return 1
+		}
+	}
+	processes, err := readProcesses(options.selection.candidatePIDs())
 	if err != nil {
 		fatalf("ps", "%v", err)
 		return 1
 	}
-	writePS(options.filter(processes), options.columns, newPSRuntime())
+
+	runtime := newPSRuntime()
+	runtime.cumulative = options.cumulative
+	selected := options.filter(processes)
+	options.sort(selected, runtime)
+	writePS(selected, options.columns, runtime, options.noHeaders && !options.forceHeaders)
+	// A selection that named nothing is an error, as in the original.
+	if options.selection.any && len(selected) == 0 {
+		return 1
+	}
 	return 0
+}
+
+func newPSSelection() psSelection {
+	return psSelection{
+		pids: map[int]bool{}, ppids: map[int]bool{},
+		euids: map[uint32]bool{}, ruids: map[uint32]bool{},
+		egids: map[uint32]bool{}, rgids: map[uint32]bool{},
+		commands: map[string]bool{}, ttys: map[string]bool{},
+		sessions: map[int]bool{}, groups: map[int]bool{},
+	}
+}
+
+// psSelectionKind maps a long option to the selection list it fills.
+func psSelectionKind(name string) byte {
+	switch name {
+	case "--pid":
+		return 'p'
+	case "--ppid":
+		return 'P'
+	case "--user":
+		return 'u'
+	case "--User":
+		return 'U'
+	case "--group":
+		return 'g'
+	case "--Group":
+		return 'G'
+	case "--sid":
+		return 's'
+	case "--tty":
+		return 't'
+	case "--command":
+		return 'C'
+	}
+	return 0
+}
+
+// parseShort handles one dashed option word, which may bundle several letters
+// and end with one that takes a value.
+func (o *psOptions) parseShort(arg string, args []string, i *int) bool {
+	for j := 1; j < len(arg); j++ {
+		flag := arg[j]
+		switch flag {
+		case 'e', 'A':
+			// Every process; this is the default here already.
+		case 'f':
+			o.full = true
+		case 'F':
+			o.full, o.extraFull = true, true
+		case 'y':
+			o.noFlags = true
+		case 'c':
+			// Scheduling-class output is not a separate format here.
+		case 'l':
+			o.longFormat = true
+		case 'j':
+			o.jobsFormat = true
+		case 'N':
+			o.selection.deselect = true
+		case 'w':
+			// Wide output. Command lines are never truncated here.
+		case 'H':
+			// Hierarchy indentation is not drawn; the listing is unchanged.
+		case 'p', 'q', 'P', 'u', 'U', 'g', 'G', 's', 't', 'C', 'o', 'O':
+			v := arg[j+1:]
+			if v == "" {
+				*i++
+				if *i >= len(args) {
+					fatalf("ps", "option requires an argument -- '%c'", flag)
+					return false
+				}
+				v = args[*i]
+			}
+			switch flag {
+			case 'o':
+				o.columns = append(o.columns, splitPSColumns(v)...)
+			case 'O':
+				if !o.addSortKeys(v) {
+					return false
+				}
+			case 'q':
+				if !o.selection.add('p', v) {
+					return false
+				}
+			default:
+				if !o.selection.add(flag, v) {
+					return false
+				}
+			}
+			return true
+		default:
+			fatalf("ps", "invalid option -- '%c'", flag)
+			return false
+		}
+	}
+	return true
+}
+
+// add records one selection list. Numeric and named forms are both accepted
+// wherever ps accepts them.
+func (s *psSelection) add(kind byte, value string) bool {
+	for _, item := range strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == ' ' }) {
+		s.any = true
+		switch kind {
+		case 'p':
+			number, err := strconv.Atoi(item)
+			if err != nil || number < 1 {
+				fmt.Fprintln(os.Stderr, "error: process ID list syntax error")
+				return false
+			}
+			s.pids[number] = true
+		case 'P':
+			number, err := strconv.Atoi(item)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "error: process ID list syntax error")
+				return false
+			}
+			s.ppids[number] = true
+		case 'u', 'U':
+			id, ok := psLookupUser(item)
+			if !ok {
+				fmt.Fprintln(os.Stderr, "error: user name does not exist")
+				return false
+			}
+			if kind == 'u' {
+				s.euids[id] = true
+			} else {
+				s.ruids[id] = true
+			}
+		case 'g':
+			// -g takes a session id when it is a number and an effective
+			// group name otherwise, as in the original.
+			if number, err := strconv.Atoi(item); err == nil {
+				s.sessions[number] = true
+				continue
+			}
+			id, ok := psLookupGroup(item)
+			if !ok {
+				fmt.Fprintln(os.Stderr, "error: group name does not exist")
+				return false
+			}
+			s.egids[id] = true
+		case 'G':
+			id, ok := psLookupGroup(item)
+			if !ok {
+				fmt.Fprintln(os.Stderr, "error: group name does not exist")
+				return false
+			}
+			s.rgids[id] = true
+		case 's':
+			number, err := strconv.Atoi(item)
+			if err != nil {
+				fatalf("ps", "invalid session id")
+				return false
+			}
+			s.sessions[number] = true
+		case 't':
+			s.ttys[strings.TrimPrefix(strings.TrimPrefix(item, "/dev/"), "tty")] = true
+			s.ttys[strings.TrimPrefix(item, "/dev/")] = true
+		case 'C':
+			s.commands[item] = true
+		}
+	}
+	return true
+}
+
+func psLookupUser(item string) (uint32, bool) {
+	if id, err := strconv.ParseUint(item, 10, 32); err == nil {
+		return uint32(id), true //nolint:gosec // parsed with a 32-bit limit.
+	}
+	account, err := user.Lookup(item)
+	if err != nil {
+		return 0, false
+	}
+	id, err := strconv.ParseUint(account.Uid, 10, 32)
+	return uint32(id), err == nil //nolint:gosec // parsed with a 32-bit limit.
+}
+
+func psLookupGroup(item string) (uint32, bool) {
+	if id, err := strconv.ParseUint(item, 10, 32); err == nil {
+		return uint32(id), true //nolint:gosec // parsed with a 32-bit limit.
+	}
+	group, err := user.LookupGroup(item)
+	if err != nil {
+		return 0, false
+	}
+	id, err := strconv.ParseUint(group.Gid, 10, 32)
+	return uint32(id), err == nil //nolint:gosec // parsed with a 32-bit limit.
+}
+
+// addSortKeys parses --sort's [+|-]key[,...] list.
+func (o *psOptions) addSortKeys(value string) bool {
+	for _, item := range strings.Split(value, ",") {
+		key := psSortKey{name: item}
+		if strings.HasPrefix(item, "-") {
+			key = psSortKey{name: item[1:], descending: true}
+		} else if strings.HasPrefix(item, "+") {
+			key = psSortKey{name: item[1:]}
+		}
+		if key.name == "" {
+			fatalf("ps", "empty sort key")
+			return false
+		}
+		o.sortKeys = append(o.sortKeys, key)
+	}
+	return true
+}
+
+// sort applies --sort. Keys are compared numerically where the column holds a
+// number, so that PIDs and sizes order the way ps orders them.
+func (o *psOptions) sort(processes []processInfo, runtime psRuntime) {
+	if len(o.sortKeys) == 0 {
+		return
+	}
+	sort.SliceStable(processes, func(a, b int) bool {
+		for _, key := range o.sortKeys {
+			spec := psColumns[psColumnName(key.name)]
+			left, right := spec.value(runtime, processes[a]), spec.value(runtime, processes[b])
+			cmp := comparePSValues(left, right)
+			if cmp == 0 {
+				continue
+			}
+			if key.descending {
+				return cmp > 0
+			}
+			return cmp < 0
+		}
+		return false
+	})
+}
+
+func comparePSValues(left, right string) int {
+	leftNumber, leftErr := strconv.ParseFloat(strings.TrimSpace(left), 64)
+	rightNumber, rightErr := strconv.ParseFloat(strings.TrimSpace(right), 64)
+	if leftErr == nil && rightErr == nil {
+		switch {
+		case leftNumber < rightNumber:
+			return -1
+		case leftNumber > rightNumber:
+			return 1
+		}
+		return 0
+	}
+	return strings.Compare(left, right)
 }
 
 // parseBSD reads one dashless operand: either a PID list, as in "ps 1 2", or a
 // group of BSD option letters, as in "ps axu".
 func (o *psOptions) parseBSD(arg string) error {
 	if arg != "" && strings.IndexFunc(arg, func(r rune) bool { return r != ',' && (r < '0' || r > '9') }) < 0 {
-		if parsePIDList(arg, o.selected) != nil {
+		if !o.selection.add('p', arg) {
 			return fmt.Errorf("invalid PID list")
 		}
 		return nil
@@ -155,20 +495,47 @@ func (o *psOptions) applyDefaultColumns() {
 	}
 	switch {
 	case o.userFormat:
-		o.columns = []string{"user", "pid", "pcpu", "pmem", "vsz", "rss", "tty", "stat", "start", "time", "args"}
+		o.columns = psFormat("user", "pid", "pcpu", "pmem", "vsz", "rss", "tname", "stat", "start_time", "bsdtime", "args")
+	case o.longFormat:
+		// The long format, with the UID as a number and PRI on the kernel's
+		// own scale, as in the original. -y drops the flags column and shows
+		// the resident size where the address would be.
+		if o.noFlags {
+			o.columns = psFormat("s", "uid", "pid", "ppid", "c", "opri", "ni", "rss", "sz", "wchan", "tname", "cputime", "ucmd")
+			return
+		}
+		o.columns = psFormat("f", "s", "uid", "pid", "ppid", "c", "opri", "ni", "addr_1", "sz", "wchan", "tname", "cputime", "ucmd")
+	case o.jobsFormat:
+		o.columns = psFormat("pid", "pgid", "sid", "tname", "cputime", "ucmd")
 	case o.full:
-		o.columns = []string{"user", "pid", "ppid", "vsz", "rss", "stat", "args"}
+		o.columns = []psSpec{{name: "user", heading: "UID", custom: true}}
+		if o.extraFull {
+			o.columns = append(o.columns, psFormat("pid", "ppid", "c", "sz", "rss", "psr", "stime", "tname", "cputime", "cmd")...)
+			return
+		}
+		o.columns = append(o.columns, psFormat("pid", "ppid", "c", "stime", "tname", "cputime", "cmd")...)
 	case o.bsdTerminal || o.bsdOwn:
-		o.columns = []string{"pid", "tty", "stat", "time", "args"}
+		o.columns = psFormat("pid", "tname", "stat", "bsdtime", "args")
 	default:
-		o.columns = []string{"pid", "stat", "args"}
+		o.columns = psFormat("pid", "stat", "args")
 	}
 }
 
-// filter applies BSD selection. Without -p and without a or x, every process is
-// listed, which is what a rescue shell wants and what ba6 has always done.
+// filter applies the selection options. The lists are additive: a process is
+// kept when it matches any of them, and -N/--deselect keeps the rest instead.
+// Without any list, and without a or x, every process is listed, which is what
+// a rescue shell wants and what ba6 has always done.
 func (o *psOptions) filter(processes []processInfo) []processInfo {
-	if len(o.selected) > 0 || o.bsdTerminal && o.bsdOwn || !o.bsdTerminal && !o.bsdOwn {
+	if o.selection.any {
+		kept := make([]processInfo, 0, len(processes))
+		for _, process := range processes {
+			if o.selection.matches(process) != o.selection.deselect {
+				kept = append(kept, process)
+			}
+		}
+		return kept
+	}
+	if o.bsdTerminal && o.bsdOwn || !o.bsdTerminal && !o.bsdOwn {
 		return processes
 	}
 	//nolint:gosec // G115: a Linux user ID is a 32-bit unsigned value.
@@ -182,6 +549,20 @@ func (o *psOptions) filter(processes []processInfo) []processInfo {
 	return kept
 }
 
+// matches reports whether one process is named by any selection list.
+func (s *psSelection) matches(p processInfo) bool {
+	switch {
+	case s.pids[p.pid], s.ppids[p.ppid], s.euids[p.uid], s.ruids[p.realUID],
+		s.egids[p.gid], s.rgids[p.realGID], s.sessions[p.session], s.groups[p.pgrp],
+		s.commands[p.comm]:
+		return true
+	}
+	if len(s.ttys) > 0 && s.ttys[ttyName(p.tty)] {
+		return true
+	}
+	return false
+}
+
 func parsePIDList(value string, result map[int]bool) error {
 	for _, part := range strings.Split(value, ",") {
 		pid, err := strconv.Atoi(part)
@@ -193,20 +574,42 @@ func parsePIDList(value string, result map[int]bool) error {
 	return nil
 }
 
-func splitPSColumns(value string) []string {
-	return strings.FieldsFunc(strings.ToLower(value), func(r rune) bool { return r == ',' || r == ' ' })
+// splitPSColumns parses one -o argument: a comma or space separated list of
+// column names, each optionally carrying its own heading after "=".
+func splitPSColumns(value string) []psSpec {
+	items := strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == ' ' })
+	specs := make([]psSpec, 0, len(items))
+	for _, item := range items {
+		spec := psSpec{name: strings.ToLower(item)}
+		if eq := strings.IndexByte(item, '='); eq >= 0 {
+			spec = psSpec{name: strings.ToLower(item[:eq]), heading: item[eq+1:], custom: true}
+		}
+		specs = append(specs, spec)
+	}
+	return specs
+}
+
+// psFormat turns a list of column names into specs with their default
+// headings, for the built-in formats.
+func psFormat(names ...string) []psSpec {
+	specs := make([]psSpec, len(names))
+	for i, name := range names {
+		specs[i] = psSpec{name: name}
+	}
+	return specs
 }
 
 // psFit says what ps(1) does with a value wider than its column: it widens the
 // PID and command columns to fit, cuts a user name short and marks it with a
-// trailing "+", and lets everything else overflow, shifting the rest of that
-// row.
+// trailing "+", cuts a kernel symbol short without a marker, and lets
+// everything else overflow, shifting the rest of that row.
 type psFit int
 
 const (
 	psOverflow psFit = iota
 	psGrow
 	psClip
+	psTruncate
 )
 
 // psColumn describes one output column: its heading, whether values are
@@ -230,11 +633,64 @@ var psColumns = map[string]psColumn{
 	"rss":   {"RSS", true, 5, psOverflow, func(_ psRuntime, p processInfo) string { return strconv.FormatUint((p.rss+1023)/1024, 10) }},
 	"pcpu":  {"%CPU", true, 4, psOverflow, func(r psRuntime, p processInfo) string { return r.cpuPercent(p) }},
 	"pmem":  {"%MEM", true, 4, psOverflow, func(r psRuntime, p processInfo) string { return r.memoryPercent(p) }},
-	"tty":   {"TTY", false, 8, psOverflow, func(_ psRuntime, p processInfo) string { return ttyName(p.tty) }},
-	"start": {"START", true, 5, psOverflow, func(r psRuntime, p processInfo) string { return r.startTime(p) }},
-	"time":  {"TIME", true, 6, psOverflow, func(_ psRuntime, p processInfo) string { return psCPUTime(p) }},
-	"comm":  {"COMMAND", false, 0, psGrow, func(_ psRuntime, p processInfo) string { return p.comm }},
-	"args":  {"COMMAND", false, 0, psGrow, func(_ psRuntime, p processInfo) string { return p.args }},
+	"tty":   {"TT", false, 8, psOverflow, func(_ psRuntime, p processInfo) string { return ttyName(p.tty) }},
+	"tname": {"TTY", false, 8, psOverflow, func(_ psRuntime, p processInfo) string { return ttyName(p.tty) }},
+	// Three spellings of a start time: the BSD "START" column, the seconds
+	// -o start prints, and the shorter -o bsdstart.
+	"start_time": {"START", true, 5, psOverflow, func(r psRuntime, p processInfo) string { return r.startTime(p) }},
+	"start":      {"STARTED", true, 8, psOverflow, func(r psRuntime, p processInfo) string { return r.startedLong(p) }},
+	"bsdstart":   {"START", true, 6, psOverflow, func(r psRuntime, p processInfo) string { return r.startedShort(p) }},
+	"comm":       {"COMMAND", false, 15, psGrow, func(_ psRuntime, p processInfo) string { return p.comm }},
+	"ucmd":       {"CMD", false, 15, psGrow, func(_ psRuntime, p processInfo) string { return p.comm }},
+	"args":       {"COMMAND", false, 27, psGrow, func(_ psRuntime, p processInfo) string { return p.args }},
+	"cmd":        {"CMD", false, 27, psGrow, func(_ psRuntime, p processInfo) string { return p.args }},
+
+	// The columns the long and jobs formats add, plus the rest of the set
+	// that -o accepts.
+	"f":    {"F", true, 1, psOverflow, func(_ psRuntime, p processInfo) string { return strconv.FormatUint(p.flags>>6&7, 8) }},
+	"s":    {"S", false, 1, psOverflow, func(_ psRuntime, p processInfo) string { return p.state }},
+	"c":    {"C", true, 2, psOverflow, func(r psRuntime, p processInfo) string { return strconv.FormatUint(r.cpuTenths(p)/10, 10) }},
+	"pri":  {"PRI", true, 3, psOverflow, func(_ psRuntime, p processInfo) string { return strconv.Itoa(39 - p.priority) }},
+	"opri": {"PRI", true, 3, psOverflow, func(_ psRuntime, p processInfo) string { return strconv.Itoa(60 + p.priority) }},
+	"ni": {"NI", true, 3, psOverflow, func(_ psRuntime, p processInfo) string {
+		// A process on a real-time policy has no nice value to show, and the
+		// original prints a dash for it.
+		if p.policy != 0 {
+			return "-"
+		}
+		return strconv.Itoa(p.nice)
+	}},
+	"addr":   {"ADDR", true, 4, psOverflow, func(_ psRuntime, _ processInfo) string { return "-" }},
+	"addr_1": {"ADDR", false, 1, psOverflow, func(_ psRuntime, _ processInfo) string { return "-" }},
+	"sz": {"SZ", true, 5, psOverflow, func(_ psRuntime, p processInfo) string {
+		return strconv.FormatUint(p.vsz/uint64(os.Getpagesize()), 10) //nolint:gosec // the page size is positive.
+	}},
+	"wchan":   {"WCHAN", false, 6, psTruncate, func(_ psRuntime, p processInfo) string { return psWchan(p) }},
+	"pgid":    {"PGID", true, 0, psGrow, func(_ psRuntime, p processInfo) string { return strconv.Itoa(p.pgrp) }},
+	"sid":     {"SID", true, 0, psGrow, func(_ psRuntime, p processInfo) string { return strconv.Itoa(p.session) }},
+	"sess":    {"SESS", true, 0, psGrow, func(_ psRuntime, p processInfo) string { return strconv.Itoa(p.session) }},
+	"psr":     {"PSR", true, 3, psOverflow, func(_ psRuntime, p processInfo) string { return strconv.Itoa(p.processor) }},
+	"nlwp":    {"NLWP", true, 4, psOverflow, func(_ psRuntime, p processInfo) string { return strconv.Itoa(p.threads) }},
+	"thcount": {"THCNT", true, 5, psOverflow, func(_ psRuntime, p processInfo) string { return strconv.Itoa(p.threads) }},
+	"etime":   {"ELAPSED", true, 11, psOverflow, func(r psRuntime, p processInfo) string { return psElapsed(r.elapsedSeconds(p)) }},
+	"etimes": {"ELAPSED", true, 7, psOverflow, func(r psRuntime, p processInfo) string {
+		return strconv.FormatUint(r.elapsedSeconds(p), 10)
+	}},
+	"ruser":   {"RUSER", false, 8, psClip, func(_ psRuntime, p processInfo) string { return psUserName(p.realUID) }},
+	"group":   {"GROUP", false, 8, psClip, func(_ psRuntime, p processInfo) string { return psGroupName(p.gid) }},
+	"rgroup":  {"RGROUP", false, 8, psClip, func(_ psRuntime, p processInfo) string { return psGroupName(p.realGID) }},
+	"euid":    {"EUID", true, 5, psGrow, func(_ psRuntime, p processInfo) string { return strconv.FormatUint(uint64(p.uid), 10) }},
+	"ruid":    {"RUID", true, 5, psGrow, func(_ psRuntime, p processInfo) string { return strconv.FormatUint(uint64(p.realUID), 10) }},
+	"gid":     {"GID", true, 5, psGrow, func(_ psRuntime, p processInfo) string { return strconv.FormatUint(uint64(p.gid), 10) }},
+	"egid":    {"EGID", true, 5, psGrow, func(_ psRuntime, p processInfo) string { return strconv.FormatUint(uint64(p.gid), 10) }},
+	"rgid":    {"RGID", true, 5, psGrow, func(_ psRuntime, p processInfo) string { return strconv.FormatUint(uint64(p.realGID), 10) }},
+	"cls":     {"CLS", true, 3, psOverflow, func(_ psRuntime, p processInfo) string { return psSchedClass(p.policy) }},
+	"cputime": {"TIME", true, 8, psOverflow, func(_ psRuntime, p processInfo) string { return psCPUTimeLong(p) }},
+	"bsdtime": {"TIME", true, 6, psOverflow, func(r psRuntime, p processInfo) string { return psCPUTime(p, r.cumulative) }},
+	"lstart":  {"STARTED", true, 24, psOverflow, func(r psRuntime, p processInfo) string { return r.startedAt(p).Format("Mon Jan _2 15:04:05 2006") }},
+	"stime":   {"STIME", true, 5, psOverflow, func(r psRuntime, p processInfo) string { return r.startTime(p) }},
+	"minflt":  {"MINFLT", true, 6, psOverflow, func(_ psRuntime, p processInfo) string { return strconv.FormatUint(p.minflt, 10) }},
+	"majflt":  {"MAJFLT", true, 6, psOverflow, func(_ psRuntime, p processInfo) string { return strconv.FormatUint(p.majflt, 10) }},
 }
 
 // psColumnName resolves the spellings ps(1) accepts for the same column.
@@ -244,14 +700,37 @@ func psColumnName(column string) string {
 		return "pcpu"
 	case "%mem", "pmem":
 		return "pmem"
-	case "cmd", "command", "args":
+	case "command", "args":
 		return "args"
+	case "ucomm":
+		return "comm"
 	case "tt", "tty":
 		return "tty"
-	case "cputime", "time":
-		return "time"
-	case "s", "state", "stat":
+	case "time", "cputime":
+		return "cputime"
+	case "s", "state":
+		return "s"
+	case "stat":
 		return "stat"
+	case "nice":
+		return "ni"
+	case "flag", "flags":
+		return "f"
+	case "pgrp", "pgid":
+		return "pgid"
+	case "session":
+		return "sid"
+	case "class", "policy":
+		return "cls"
+	case "uid":
+		return "uid"
+
+	case "egroup":
+		return "group"
+	case "min_flt":
+		return "minflt"
+	case "maj_flt":
+		return "majflt"
 	}
 	return column
 }
@@ -282,11 +761,73 @@ func psState(p processInfo) string {
 	return state
 }
 
-func psCPUTime(p processInfo) string {
+// psCPUTimeLong is the [DD-]HH:MM:SS form -o time and the -f and -l formats
+// use, where the BSD formats use the shorter psCPUTime.
+func psCPUTimeLong(p processInfo) string {
 	seconds := (p.utime + p.stime) / clockTicks
-	if hours := seconds / 3600; hours > 0 {
-		return fmt.Sprintf("%d:%02d:%02d", hours, seconds/60%60, seconds%60)
+	if days := seconds / 86400; days > 0 {
+		return fmt.Sprintf("%d-%02d:%02d:%02d", days, seconds/3600%24, seconds/60%60, seconds%60)
 	}
+	return fmt.Sprintf("%02d:%02d:%02d", seconds/3600, seconds/60%60, seconds%60)
+}
+
+// psElapsed renders a process's wall-clock age the way ELAPSED does:
+// [[DD-]HH:]MM:SS.
+func psElapsed(seconds uint64) string {
+	minutes, secs := seconds/60%60, seconds%60
+	switch {
+	case seconds >= 86400:
+		return fmt.Sprintf("%d-%02d:%02d:%02d", seconds/86400, seconds/3600%24, minutes, secs)
+	case seconds >= 3600:
+		return fmt.Sprintf("%02d:%02d:%02d", seconds/3600, minutes, secs)
+	}
+	return fmt.Sprintf("%02d:%02d", minutes, secs)
+}
+
+// psSchedClass names a scheduling policy the way ps abbreviates it.
+func psSchedClass(policy int) string {
+	switch policy {
+	case 0:
+		return "TS"
+	case 1:
+		return "FF"
+	case 2:
+		return "RR"
+	case 3:
+		return "B"
+	case 4:
+		return "ISO"
+	case 5:
+		return "IDL"
+	case 6:
+		return "DLN"
+	}
+	return "?"
+}
+
+// psWchan reports the kernel function a process is sleeping in. A running or
+// unreadable process has none, which ps prints as a dash.
+func psWchan(p processInfo) string {
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(p.pid), "wchan"))
+	if err != nil {
+		return "-"
+	}
+	name := strings.TrimSpace(string(data))
+	if name == "" || name == "0" {
+		return "-"
+	}
+	return name
+}
+
+// psCPUTime is the BSD TIME field: whole minutes and seconds, with no hours
+// field, so an hour of CPU reads 60:00 rather than 1:00:00.
+func psCPUTime(p processInfo, cumulative bool) string {
+	ticks := p.utime + p.stime
+	if cumulative {
+		// --cumulative adds what this process's reaped children used.
+		ticks += p.cutime + p.cstime
+	}
+	seconds := ticks / clockTicks
 	return fmt.Sprintf("%d:%02d", seconds/60, seconds%60)
 }
 
@@ -298,6 +839,9 @@ type psRuntime struct {
 	boot     time.Time
 	now      time.Time
 	pidWidth int
+	// cumulative is --cumulative, which the original applies to the BSD TIME
+	// column alone.
+	cumulative bool
 }
 
 func newPSRuntime() psRuntime {
@@ -336,12 +880,30 @@ func newPSRuntime() psRuntime {
 // figures are computed in tenths of a percent and truncated rather than
 // rounded, so two seconds of CPU spent over an hour of life reads 0.0.
 func (r psRuntime) cpuPercent(p processInfo) string {
-	elapsed := uint64(r.uptime) //nolint:gosec // G115: /proc/uptime is a nonnegative number of seconds.
-	started := p.startTicks / clockTicks
-	if elapsed <= started {
-		return "0.0"
+	return psTenths(r.cpuTenths(p))
+}
+
+// cpuTenths is the shared arithmetic behind %CPU and the integer C column.
+func (r psRuntime) cpuTenths(p processInfo) uint64 {
+	elapsed := r.elapsedSeconds(p)
+	if elapsed == 0 {
+		return 0
 	}
-	return psTenths((p.utime + p.stime) * 1000 / clockTicks / (elapsed - started))
+	return (p.utime + p.stime) * 1000 / clockTicks / elapsed
+}
+
+// elapsedSeconds is how long the process has been alive.
+func (r psRuntime) elapsedSeconds(p processInfo) uint64 {
+	uptime := uint64(r.uptime) //nolint:gosec // G115: /proc/uptime is a nonnegative number of seconds.
+	started := p.startTicks / clockTicks
+	if uptime <= started {
+		return 0
+	}
+	return uptime - started
+}
+
+func (r psRuntime) startedAt(p processInfo) time.Time {
+	return r.boot.Add(time.Duration(p.startTicks/clockTicks) * time.Second) //nolint:gosec // G115: a tick count is nonnegative and well inside int64 seconds.
 }
 
 func (r psRuntime) memoryPercent(p processInfo) string {
@@ -364,7 +926,7 @@ func psTenths(tenths uint64) string {
 // of day for processes started today, the date within this year, and otherwise
 // the year alone.
 func (r psRuntime) startTime(p processInfo) string {
-	start := r.boot.Add(time.Duration(p.startTicks/clockTicks) * time.Second) //nolint:gosec // G115: a tick count is nonnegative and well inside int64 seconds.
+	start := r.startedAt(p)
 	switch {
 	case start.Year() == r.now.Year() && start.YearDay() == r.now.YearDay():
 		return start.Format("15:04")
@@ -372,6 +934,25 @@ func (r psRuntime) startTime(p processInfo) string {
 		return start.Format("Jan02")
 	}
 	return start.Format("2006")
+}
+
+// startedLong and startedShort are the two other spellings of a start time:
+// -o start prints the clock to the second for a process started today and the
+// month and day otherwise, and -o bsdstart drops the seconds.
+func (r psRuntime) startedLong(p processInfo) string {
+	start := r.startedAt(p)
+	if start.Year() == r.now.Year() && start.YearDay() == r.now.YearDay() {
+		return start.Format("15:04:05")
+	}
+	return start.Format("Jan _2")
+}
+
+func (r psRuntime) startedShort(p processInfo) string {
+	start := r.startedAt(p)
+	if start.Year() == r.now.Year() && start.YearDay() == r.now.YearDay() {
+		return start.Format("15:04")
+	}
+	return start.Format("Jan _2")
 }
 
 // ttyDevices maps a terminal's device number to its name under /dev. It is
@@ -463,6 +1044,13 @@ func readProcess(pid int) (processInfo, error) {
 	}
 	process.state = fields[0]
 	process.ppid, _ = strconv.Atoi(fields[1])
+	process.flags, _ = strconv.ParseUint(fields[6], 10, 64)
+	process.minflt, _ = strconv.ParseUint(fields[7], 10, 64)
+	process.majflt, _ = strconv.ParseUint(fields[9], 10, 64)
+	if len(fields) > 38 {
+		process.processor, _ = strconv.Atoi(fields[36])
+		process.policy, _ = strconv.Atoi(fields[38])
+	}
 	process.pgrp, _ = strconv.Atoi(fields[2])
 	process.session, _ = strconv.Atoi(fields[3])
 	process.tty, _ = strconv.Atoi(fields[4])
@@ -513,37 +1101,131 @@ func readProcess(pid int) (processInfo, error) {
 					*target = uint32(value) //nolint:gosec // parsed with a 32-bit limit.
 				}
 			}
+		case "Gid:":
+			// Gid: lists the real, effective, saved and filesystem groups.
+			ids := []*uint32{&process.realGID, &process.gid}
+			for index, target := range ids {
+				if index+1 >= len(parts) {
+					break
+				}
+				value, convErr := strconv.ParseUint(parts[index+1], 10, 32)
+				if convErr == nil {
+					*target = uint32(value) //nolint:gosec // parsed with a 32-bit limit.
+				}
+			}
 		case "VmLck:":
 			// Locked pages are what ps marks with "L" in the STAT column.
 			locked, _ := strconv.ParseUint(parts[1], 10, 64)
 			process.locked = locked > 0
 		}
 	}
-	process.user = strconv.FormatUint(uint64(process.uid), 10)
-	if account, lookupErr := user.LookupId(process.user); lookupErr == nil {
-		process.user = account.Username
-	}
+	process.user = psUserName(process.uid)
 	cmdline, _ := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
-	process.args = strings.TrimSpace(strings.ReplaceAll(string(cmdline), "\x00", " "))
+	process.args = strings.TrimSpace(psEscapeArgs(string(cmdline)))
 	if process.args == "" {
 		process.args = "[" + process.comm + "]"
 	}
 	return process, nil
 }
 
+// candidatePIDs narrows the /proc scan to a PID list when that is the only
+// selection given; every other list needs the process read before it can be
+// judged.
+func (s *psSelection) candidatePIDs() map[int]bool {
+	if len(s.pids) > 0 && !s.deselect && len(s.ppids) == 0 && len(s.euids) == 0 &&
+		len(s.ruids) == 0 && len(s.egids) == 0 && len(s.rgids) == 0 &&
+		len(s.commands) == 0 && len(s.ttys) == 0 && len(s.sessions) == 0 && len(s.groups) == 0 {
+		return s.pids
+	}
+	return nil
+}
+
+// psEscapeArgs renders a raw command line the way ps does: the NUL between
+// arguments and any newline inside one become a space, and every other control
+// byte becomes a question mark, so one process never spills onto two lines.
+// Bytes above ASCII are left alone, which is what the original does in a UTF-8
+// terminal.
+func psEscapeArgs(raw string) string {
+	var b strings.Builder
+	b.Grow(len(raw))
+	for i := 0; i < len(raw); i++ {
+		switch c := raw[i]; {
+		case c == 0 || c == '\n':
+			b.WriteByte(' ')
+		case c < 0x20 || c == 0x7f:
+			b.WriteByte('?')
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+// psUserName and psGroupName resolve an id to a name, falling back to the
+// number the way ps does when no account or group claims it.
+// The pure-Go account lookups re-read /etc/passwd and /etc/group on every
+// call, so a listing of a few hundred processes remembers what it has already
+// resolved.
+var psNames = struct {
+	users  map[uint32]string
+	groups map[uint32]string
+}{users: map[uint32]string{}, groups: map[uint32]string{}}
+
+func psUserName(id uint32) string {
+	if name, cached := psNames.users[id]; cached {
+		return name
+	}
+	name := strconv.FormatUint(uint64(id), 10)
+	if account, err := user.LookupId(name); err == nil {
+		name = account.Username
+	}
+	psNames.users[id] = name
+	return name
+}
+
+func psGroupName(id uint32) string {
+	if name, cached := psNames.groups[id]; cached {
+		return name
+	}
+	name := strconv.FormatUint(uint64(id), 10)
+	if group, err := user.LookupGroupId(name); err == nil {
+		name = group.Name
+	}
+	psNames.groups[id] = name
+	return name
+}
+
 // writePS lays the table out the way ps does: every column is as wide as its
 // heading, its reserved width, and its widest value, values are right-aligned
 // for the numeric columns, and the last column is never padded.
-func writePS(processes []processInfo, columns []string, runtime psRuntime) {
+func writePS(processes []processInfo, columns []psSpec, runtime psRuntime, noHeaders bool) {
 	specs := make([]psColumn, len(columns))
 	widths := make([]int, len(columns))
+	allEmpty := true
 	for i, column := range columns {
-		name := psColumnName(column)
+		name := psColumnName(column.name)
 		specs[i] = psColumns[name]
-		if name == "pid" || name == "ppid" {
+		if name == "pid" || name == "ppid" || name == "pgid" || name == "sid" || name == "sess" {
 			specs[i].width = runtime.pidWidth
 		}
-		widths[i] = maxInt(specs[i].width, len(specs[i].heading))
+		if column.custom {
+			specs[i].heading = column.heading
+		}
+		if specs[i].heading != "" {
+			allEmpty = false
+		}
+		// A column keeps the width its spec declares even when its heading is
+		// longer: the heading then overflows exactly as an oversized value
+		// does, which is how the original lays out -l's one-character ADDR.
+		widths[i] = specs[i].width
+		if widths[i] == 0 {
+			widths[i] = len(specs[i].heading)
+		}
+	}
+	// A format whose every heading was blanked with "name=" prints no header
+	// line at all, as in the original.
+	if allEmpty {
+		noHeaders = true
 	}
 	rows := make([][]string, 0, len(processes))
 	for _, process := range processes {
@@ -551,17 +1233,25 @@ func writePS(processes []processInfo, columns []string, runtime psRuntime) {
 		for i, spec := range specs {
 			row[i] = spec.value(runtime, process)
 			switch {
-			case spec.fit == psGrow:
+			case spec.fit == psGrow && i == len(specs)-1:
+				// The last column runs as long as it likes.
 				widths[i] = maxInt(widths[i], len(row[i]))
+			case spec.fit == psGrow && len(row[i]) > widths[i]:
+				// One that is followed by another is cut to its width.
+				row[i] = row[i][:widths[i]]
 			case spec.fit == psClip && len(row[i]) > widths[i]:
 				row[i] = row[i][:widths[i]-1] + "+"
+			case spec.fit == psTruncate && len(row[i]) > widths[i]:
+				row[i] = row[i][:widths[i]]
 			}
 		}
 		rows = append(rows, row)
 	}
-	writePSRow(specs, widths, psHeadings(specs))
+	if !noHeaders {
+		writePSRow(specs, widths, psHeadings(specs), true)
+	}
 	for _, row := range rows {
-		writePSRow(specs, widths, row)
+		writePSRow(specs, widths, row, false)
 	}
 }
 
@@ -577,19 +1267,33 @@ func psHeadings(specs []psColumn) []string {
 // fixed position: a value wider than its column pushes the next ones right,
 // and the first left-aligned column with padding to spare absorbs the overrun
 // so the grid recovers.
-func writePSRow(specs []psColumn, widths []int, fields []string) {
+func writePSRow(specs []psColumn, widths []int, fields []string, header bool) {
 	var line strings.Builder
 	target := 0
+	// shifted records that a left-aligned value ran past its column, which
+	// changes how the right-aligned columns after it are padded.
+	shifted := false
 	for i, field := range fields {
 		if i > 0 {
 			target++ // the single space between columns
 		}
 		target += widths[i]
-		// A numeric column is right-aligned on the grid: when an earlier value
-		// overflowed, its padding shrinks to the single separating space and
-		// the row starts catching up.
+		// A right-aligned column normally catches up to its place on the
+		// grid, keeping at least the separating space, which is how a row
+		// recovers after an oversized number. After a *left*-aligned value
+		// overflowed, though, the original keeps the following right-aligned
+		// columns at their full width instead, so the whole row stays shifted
+		// until a left-aligned column absorbs it. The heading line always
+		// catches up, which is how -l's one-character ADDR column ends up
+		// with its four-character heading followed by a single space.
 		if specs[i].right {
 			padding := target - line.Len() - len(field)
+			if shifted && !header {
+				padding = widths[i] - len(field)
+				if i > 0 {
+					padding++ // the separating space
+				}
+			}
 			if i > 0 && padding < 1 {
 				padding = 1
 			}
@@ -600,6 +1304,11 @@ func writePSRow(specs []psColumn, widths []int, fields []string) {
 			line.WriteByte(' ')
 		}
 		line.WriteString(field)
+		if line.Len() > target {
+			shifted = true
+		} else {
+			shifted = false
+		}
 		if i < len(fields)-1 {
 			line.WriteString(strings.Repeat(" ", maxInt(0, target-line.Len())))
 		}

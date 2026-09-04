@@ -772,10 +772,32 @@ Display processes by reading /proc. All processes are shown by default.
 Options:
   -e/-A     show all processes (default)
   -f        full output
+  -l        long output
+  -j        jobs output
   -p LIST   restrict output to comma-separated PIDs
-  -o LIST   columns: pid,ppid,uid,user,stat,tty,vsz,rss,%cpu,%mem,
-            start,time,comm,args
+  -P LIST   restrict output by parent PID (--ppid)
+  -u LIST   by effective user; -U by real user
+  -g LIST   by session id, or by effective group name
+  -G LIST   by real group
+  -s LIST   by session id
+  -t LIST   by terminal
+  -C LIST   by command name
+  -N        list everything the other selections left out
+  -o LIST   columns, each optionally as NAME=HEADING
+  -O LIST   sort keys (--sort), each optionally signed
+  --sort LIST
+            order the listing by those columns; a leading - reverses one
+  --no-headers
+            leave out the heading line
+  -w        wide output; command lines are never truncated here
   --help    show this help
+
+Selections are additive: a process is listed when any of them names it.
+
+Columns: pid ppid pgid sid sess uid euid ruid gid egid rgid user ruser
+group rgroup comm ucmd cmd args stat s f c pri opri ni cls addr sz vsz
+rss %cpu %mem tty tname wchan nlwp thcount minflt majflt etime etimes
+time cputime bsdtime start bsdstart stime start_time lstart
 
 BSD options are written without a dash and may be bundled:
   a         processes that have a controlling terminal
