@@ -399,114 +399,365 @@ func applyChmodClause(bits uint64, isDir bool, c chmodClauseOp, umask uint64) ui
 	return bits
 }
 
+// ownerChange is one chown or chgrp command line: which ids to set, which
+// files to touch, and how much to say about it.
+type ownerOptions struct {
+	prog         string
+	recursive    bool
+	changes      bool // -c
+	quiet        bool // -f
+	verbose      bool // -v
+	noDeref      bool // -h
+	deref        derefMode
+	preserveRoot bool
+	// fromUID and fromGID hold --from's condition, or -1 when it was not given.
+	fromUID, fromGID int
+	uid, gid         int
+	// showGroup is set when chown was given a group, which is what makes its
+	// messages name owner and group together.
+	showGroup bool
+	status    int
+}
+
 func cmdChown(args []string) int {
-	recursive, noDereference, operands, ok := parseOwnerOptions("chown", args)
+	options, operands, ok := parseOwnerOptions("chown", args)
 	if !ok {
 		return 1
 	}
-	if len(operands) < 2 {
-		fatalf("chown", "missing owner or file operand")
-		return 1
-	}
-	uid, gid, err := parseOwnerSpec(operands[0])
-	if err != nil {
-		fatalf("chown", "%v", err)
-		return 1
-	}
-	return changePaths("chown", operands[1:], recursive, func(path string, info os.FileInfo) error {
-		if noDereference || info.Mode()&os.ModeSymlink != 0 && recursive {
-			return os.Lchown(path, uid, gid)
+	// --reference supplies both ids, so it takes the place of the owner operand.
+	if options.uid == -2 {
+		if len(operands) == 0 {
+			return ownerUsage("chown", "missing operand")
 		}
-		return os.Chown(path, uid, gid)
-	})
+		if len(operands) == 1 {
+			return ownerUsage("chown", "missing operand after '%s'", operands[0])
+		}
+		uid, gid, err := parseOwnerSpec(operands[0])
+		if err != nil {
+			// The original quotes the whole operand, whichever half was bad.
+			what := "user"
+			if strings.Contains(err.Error(), "group") {
+				what = "group"
+			}
+			fatalf("chown", "invalid %s: '%s'", what, operands[0])
+			return 1
+		}
+		options.uid, options.gid, options.showGroup = uid, gid, gid >= 0
+		operands = operands[1:]
+	}
+	if len(operands) == 0 {
+		return ownerUsage("chown", "missing operand")
+	}
+	return options.apply(operands)
 }
 
 func cmdChgrp(args []string) int {
-	recursive, noDereference, operands, ok := parseOwnerOptions("chgrp", args)
+	options, operands, ok := parseOwnerOptions("chgrp", args)
 	if !ok {
 		return 1
 	}
-	if len(operands) < 2 {
-		fatalf("chgrp", "missing group or file operand")
-		return 1
-	}
-	gid, err := resolveGroup(operands[0])
-	if err != nil {
-		fatalf("chgrp", "%v", err)
-		return 1
-	}
-	return changePaths("chgrp", operands[1:], recursive, func(path string, info os.FileInfo) error {
-		if noDereference || info.Mode()&os.ModeSymlink != 0 && recursive {
-			return os.Lchown(path, -1, gid)
+	if options.uid == -2 {
+		if len(operands) == 0 {
+			return ownerUsage("chgrp", "missing operand")
 		}
-		return os.Chown(path, -1, gid)
-	})
+		if len(operands) == 1 {
+			return ownerUsage("chgrp", "missing operand after '%s'", operands[0])
+		}
+		gid, err := resolveGroup(operands[0])
+		if err != nil {
+			fatalf("chgrp", "invalid group: '%s'", operands[0])
+			return 1
+		}
+		options.uid, options.gid = -1, gid
+		operands = operands[1:]
+	}
+	options.uid = -1
+	if len(operands) == 0 {
+		return ownerUsage("chgrp", "missing operand")
+	}
+	return options.apply(operands)
 }
 
-func parseOwnerOptions(prog string, args []string) (bool, bool, []string, bool) {
-	var recursive, noDereference bool
+func ownerUsage(prog, format string, a ...interface{}) int {
+	fatalf(prog, format, a...)
+	fmt.Fprintf(os.Stderr, "Try '%s --help' for more information.\n", prog)
+	return 1
+}
+
+// parseOwnerOptions reads the options both tools share. The returned uid is
+// -2 when neither --reference nor an owner operand has supplied one yet, which
+// is how the caller knows to take the next operand as the owner.
+//
+//nolint:gocyclo // one option table; splitting it would only scatter the command line.
+func parseOwnerOptions(prog string, args []string) (ownerOptions, []string, bool) {
+	options := ownerOptions{prog: prog, fromUID: -1, fromGID: -1, uid: -2, gid: -1}
 	var operands []string
 	parsing := true
-	for _, arg := range args {
-		switch {
-		case parsing && arg == "--":
-			parsing = false
-		case parsing && (arg == "-R" || arg == "--recursive"):
-			recursive = true
-		case parsing && (arg == "-h" || arg == "--no-dereference"):
-			noDereference = true
-		case parsing && len(arg) > 1 && arg[0] == '-':
-			fatalf(prog, "invalid option %q", arg)
-			return false, false, nil, false
-		default:
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !parsing || arg == "-" || !strings.HasPrefix(arg, "-") {
 			operands = append(operands, arg)
+			continue
 		}
-	}
-	return recursive, noDereference, operands, true
-}
-
-func changePaths(prog string, paths []string, recursive bool, change func(string, os.FileInfo) error) int {
-	status := 0
-	for _, root := range paths {
-		if !recursive {
-			info, err := os.Lstat(root)
-			if err == nil {
-				err = change(root, info)
+		if arg == "--" {
+			parsing = false
+			continue
+		}
+		if strings.HasPrefix(arg, "--") {
+			name, value, hasValue := arg, "", false
+			if eq := strings.IndexByte(arg, '='); eq >= 0 {
+				name, value, hasValue = arg[:eq], arg[eq+1:], true
 			}
-			if err != nil {
-				fatalf(prog, "cannot change '%s': %v", root, err)
-				status = 1
+			needValue := func() (string, bool) {
+				if hasValue {
+					return value, true
+				}
+				i++
+				if i >= len(args) {
+					ownerUsage(prog, "option '%s' requires an argument", name)
+					return "", false
+				}
+				return args[i], true
+			}
+			switch name {
+			case "--recursive":
+				options.recursive = true
+			case "--changes":
+				options.changes = true
+			case "--silent", "--quiet":
+				options.quiet = true
+			case "--verbose":
+				options.verbose = true
+			case "--no-dereference":
+				options.noDeref = true
+			case "--dereference":
+				options.noDeref = false
+			case "--preserve-root":
+				options.preserveRoot = true
+			case "--no-preserve-root":
+				options.preserveRoot = false
+			case "--from":
+				text, ok := needValue()
+				if !ok {
+					return options, nil, false
+				}
+				// --from names the ownership a file must already have; either
+				// half may be left out to mean "anything".
+				uid, gid, err := parseOwnerCondition(text)
+				if err != nil {
+					fatalf(prog, "%v", err)
+					return options, nil, false
+				}
+				options.fromUID, options.fromGID = uid, gid
+			case "--reference":
+				text, ok := needValue()
+				if !ok {
+					return options, nil, false
+				}
+				info, err := os.Stat(text)
+				if err != nil {
+					fatalf(prog, "failed to get attributes of '%s': %s", text, errText(err))
+					return options, nil, false
+				}
+				status, ok := info.Sys().(*syscall.Stat_t)
+				if !ok {
+					fatalf(prog, "failed to get attributes of '%s'", text)
+					return options, nil, false
+				}
+				options.uid, options.gid = int(status.Uid), int(status.Gid)
+				options.showGroup = true
+				if prog == "chgrp" {
+					options.uid = -1
+				}
+			default:
+				ownerUsage(prog, "unrecognized option '%s'", arg)
+				return options, nil, false
 			}
 			continue
 		}
-		type entry struct {
-			path string
-			info os.FileInfo
-		}
-		var entries []entry
-		err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
-			if walkErr != nil {
-				fatalf(prog, "cannot access '%s': %v", path, walkErr)
-				status = 1
-				return nil
-			}
-			entries = append(entries, entry{path: path, info: info})
-			return nil
-		})
-		if err != nil {
-			fatalf(prog, "cannot access '%s': %v", root, err)
-			status = 1
-		}
-		// Apply children before parents so changing a directory's ownership or
-		// search permission cannot make an already-discovered child unreachable.
-		for i := len(entries) - 1; i >= 0; i-- {
-			if err := change(entries[i].path, entries[i].info); err != nil {
-				fatalf(prog, "cannot change '%s': %v", entries[i].path, err)
-				status = 1
+		for _, flag := range arg[1:] {
+			switch flag {
+			case 'R':
+				options.recursive = true
+			case 'c':
+				options.changes = true
+			case 'f':
+				options.quiet = true
+			case 'v':
+				options.verbose = true
+			case 'h':
+				options.noDeref = true
+			case 'H':
+				options.deref = derefCommandLine
+			case 'L':
+				options.deref = derefAlways
+			case 'P':
+				options.deref = derefNever
+			default:
+				ownerUsage(prog, "invalid option -- '%c'", flag)
+				return options, nil, false
 			}
 		}
 	}
-	return status
+	return options, operands, true
+}
+
+// parseOwnerCondition reads --from's "USER:GROUP", where either half may be
+// empty to match anything.
+func parseOwnerCondition(spec string) (int, int, error) {
+	owner, group, hasGroup := strings.Cut(spec, ":")
+	uid, gid := -1, -1
+	var err error
+	if owner != "" {
+		if uid, err = resolveUser(owner); err != nil {
+			return -1, -1, err
+		}
+	}
+	if hasGroup && group != "" {
+		if gid, err = resolveGroup(group); err != nil {
+			return -1, -1, err
+		}
+	}
+	return uid, gid, nil
+}
+
+func (o *ownerOptions) apply(paths []string) int {
+	for _, path := range paths {
+		if o.preserveRoot && o.recursive && filepath.Clean(path) == "/" {
+			fatalf(o.prog, "it is dangerous to operate recursively on '/'")
+			fmt.Fprintf(os.Stderr, "%s: use --no-preserve-root to override this failsafe\n", o.prog)
+			o.status = 1
+			continue
+		}
+		o.walk(path, true)
+	}
+	return o.status
+}
+
+// walk visits one operand, applying the change to children before their parent
+// so that a directory whose ownership has just changed cannot hide entries that
+// were already found. commandLine says whether this path was named on the
+// command line, which is what -H keys off.
+func (o *ownerOptions) walk(path string, commandLine bool) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		o.report("cannot access '%s': %s", path, errText(err))
+		return
+	}
+	follow := o.follows(info, commandLine)
+	if follow {
+		if followed, followErr := os.Stat(path); followErr == nil {
+			info = followed
+		} else {
+			o.report("cannot dereference '%s': %s", path, errText(followErr))
+			return
+		}
+	}
+	if info.IsDir() && o.recursive {
+		// The entries are visited in the order the kernel returns them, which
+		// is the order the originals' walk reports them in.
+		names, readErr := readDirRaw(path)
+		if readErr != nil {
+			o.report("cannot read directory '%s': %s", path, errText(readErr))
+		}
+		for _, name := range names {
+			o.walk(filepath.Join(path, name), false)
+		}
+	}
+	o.change(path, info, follow)
+}
+
+// follows says whether this path's symbolic link should be resolved: a plain
+// invocation follows every link, while a recursive one follows only what -H or
+// -L asked for, and -h never follows at all.
+func (o *ownerOptions) follows(info os.FileInfo, commandLine bool) bool {
+	if info.Mode()&os.ModeSymlink == 0 || o.noDeref {
+		return false
+	}
+	if !o.recursive {
+		return true
+	}
+	return o.deref == derefAlways || (o.deref == derefCommandLine && commandLine)
+}
+
+func (o *ownerOptions) report(format string, a ...interface{}) {
+	if !o.quiet {
+		fatalf(o.prog, format, a...)
+	}
+	o.status = 1
+}
+
+// change applies the new ids to one file and prints whatever -v or -c asked for.
+func (o *ownerOptions) change(path string, info os.FileInfo, follow bool) {
+	status, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return
+	}
+	oldUID, oldGID := int(status.Uid), int(status.Gid)
+	// --from restricts the change to files that already carry those ids.
+	if (o.fromUID >= 0 && oldUID != o.fromUID) || (o.fromGID >= 0 && oldGID != o.fromGID) {
+		o.announce(path, oldUID, oldGID, oldUID, oldGID)
+		return
+	}
+	newUID, newGID := oldUID, oldGID
+	if o.uid >= 0 {
+		newUID = o.uid
+	}
+	if o.gid >= 0 {
+		newGID = o.gid
+	}
+	if newUID != oldUID || newGID != oldGID {
+		var err error
+		if follow {
+			err = os.Chown(path, o.uid, o.gid)
+		} else {
+			err = os.Lchown(path, o.uid, o.gid)
+		}
+		if err != nil {
+			what := "ownership"
+			if o.prog == "chgrp" {
+				what = "group"
+			}
+			o.report("changing %s of '%s': %s", what, path, errText(err))
+			return
+		}
+	}
+	o.announce(path, oldUID, oldGID, newUID, newGID)
+}
+
+// announce prints the -v and -c lines in the originals' wording: chgrp names
+// the group alone, and chown names the group beside the owner only when one
+// was asked for.
+func (o *ownerOptions) announce(path string, oldUID, oldGID, newUID, newGID int) {
+	changed := oldUID != newUID || oldGID != newGID
+	if !o.verbose && (!o.changes || !changed) {
+		return
+	}
+	// The "from" side names what the file carried; the "to" side names only
+	// what was asked for, so "chown :group" shows an empty owner there.
+	name := func(uid, gid int, requested bool) string {
+		if o.prog == "chgrp" {
+			return groupName(uint32(gid)) //nolint:gosec // G115: an id read from the kernel is nonnegative.
+		}
+		owner := ""
+		if !requested || o.uid >= 0 {
+			owner = userName(uint32(uid)) //nolint:gosec // G115: same.
+		}
+		if o.showGroup {
+			return owner + ":" + groupName(uint32(gid)) //nolint:gosec // G115: same.
+		}
+		return owner
+	}
+	what := "ownership"
+	if o.prog == "chgrp" {
+		what = "group"
+	}
+	if changed {
+		fmt.Fprintf(os.Stdout, "changed %s of '%s' from %s to %s\n", what, path,
+			name(oldUID, oldGID, false), name(newUID, newGID, true))
+		return
+	}
+	fmt.Fprintf(os.Stdout, "%s of '%s' retained as %s\n", what, path, name(oldUID, oldGID, false))
 }
 
 func parseOwnerSpec(spec string) (int, int, error) {

@@ -530,3 +530,108 @@ func TestHostnameModes(t *testing.T) {
 		t.Fatalf("hostname -F missing = (%d, %q)", status, stderr)
 	}
 }
+
+// TestChownOptions covers the options chown and chgrp grew past -R/-h. The ids
+// used are the caller's own, so the test needs no privilege: what is checked is
+// the reporting, the selection rules and the diagnostics, all of which the
+// originals produce identically for a no-op change.
+func TestChownOptions(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "file")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	user := strconv.Itoa(os.Getuid())
+	group := strconv.Itoa(os.Getgid())
+	userLabel := userName(uint32(os.Getuid()))   //nolint:gosec // G115: a real uid is nonnegative and fits.
+	groupLabel := groupName(uint32(os.Getgid())) //nolint:gosec // G115: same for a gid.
+
+	// -v reports a file whose ownership did not change; -c says nothing.
+	status, out, errOut := captureApplet(t, cmdChown, []string{"-v", user, file}, "")
+	if status != 0 || out != "ownership of '"+file+"' retained as "+userLabel+"\n" {
+		t.Fatalf("chown -v = (%d, %q, %q)", status, out, errOut)
+	}
+	if status, out, _ = captureApplet(t, cmdChown, []string{"-c", user, file}, ""); status != 0 || out != "" {
+		t.Fatalf("chown -c = (%d, %q)", status, out)
+	}
+	// A group in the spec makes the message name both ids.
+	if _, out, _ = captureApplet(t, cmdChown, []string{"-v", user + ":" + group, file}, ""); out !=
+		"ownership of '"+file+"' retained as "+userLabel+":"+groupLabel+"\n" {
+		t.Fatalf("chown -v with a group = %q", out)
+	}
+	if _, out, _ = captureApplet(t, cmdChgrp, []string{"-v", group, file}, ""); out !=
+		"group of '"+file+"' retained as "+groupLabel+"\n" {
+		t.Fatalf("chgrp -v = %q", out)
+	}
+
+	// --reference takes both ids from another file.
+	other := filepath.Join(dir, "other")
+	if err := os.WriteFile(other, []byte("y"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if status, _, errOut = captureApplet(t, cmdChown, []string{"--reference=" + other, file}, ""); status != 0 {
+		t.Fatalf("chown --reference = (%d, %q)", status, errOut)
+	}
+	status, _, errOut = captureApplet(t, cmdChown, []string{"--reference=" + filepath.Join(dir, "absent"), file}, "")
+	if status != 1 || !strings.Contains(errOut, "failed to get attributes of") {
+		t.Fatalf("chown --reference on a missing file = (%d, %q)", status, errOut)
+	}
+
+	// --from only touches files that already carry those ids, and reports the
+	// others as unchanged under -v.
+	if _, out, _ = captureApplet(t, cmdChown, []string{"-v", "--from=" + user, user, file}, ""); !strings.Contains(out, "retained as") {
+		t.Fatalf("chown --from on a matching file = %q", out)
+	}
+
+	// -f suppresses the message but not the failing status.
+	missing := filepath.Join(dir, "absent")
+	status, _, errOut = captureApplet(t, cmdChgrp, []string{group, missing}, "")
+	if status != 1 || !strings.Contains(errOut, "cannot access '"+missing+"'") {
+		t.Fatalf("chgrp on a missing file = (%d, %q)", status, errOut)
+	}
+	if status, _, errOut = captureApplet(t, cmdChgrp, []string{"-f", group, missing}, ""); status != 1 || errOut != "" {
+		t.Fatalf("chgrp -f on a missing file = (%d, %q)", status, errOut)
+	}
+
+	// --preserve-root refuses a recursive run on /, with the original's two
+	// lines, and is off by default.
+	status, _, errOut = captureApplet(t, cmdChgrp, []string{"-R", "--preserve-root", group, "/"}, "")
+	if status != 1 || !strings.Contains(errOut, "it is dangerous to operate recursively on '/'") ||
+		!strings.Contains(errOut, "use --no-preserve-root to override this failsafe") {
+		t.Fatalf("chgrp --preserve-root / = (%d, %q)", status, errOut)
+	}
+
+	// The command-line diagnostics match the originals', Try line included.
+	for _, c := range []struct {
+		applet applet
+		args   []string
+		want   string
+	}{
+		{cmdChgrp, nil, "missing operand"},
+		{cmdChgrp, []string{"x"}, "missing operand after 'x'"},
+		{cmdChgrp, []string{"definitely-no-such-group", file}, "invalid group: 'definitely-no-such-group'"},
+		{cmdChown, []string{"definitely-no-such-user:x", file}, "invalid user: 'definitely-no-such-user:x'"},
+		{cmdChown, []string{":definitely-no-such-group", file}, "invalid group: ':definitely-no-such-group'"},
+		{cmdChown, []string{"-Q", user, file}, "invalid option -- 'Q'"},
+	} {
+		status, out, errOut := captureApplet(t, c.applet, c.args, "")
+		if status != 1 || out != "" || !strings.Contains(errOut, c.want) {
+			t.Fatalf("%v = (%d, %q, %q), want %q", c.args, status, out, errOut, c.want)
+		}
+	}
+
+	// -R walks children before their parents, so a directory's own line comes
+	// last, and every entry is reported under -v.
+	tree := filepath.Join(dir, "tree")
+	if err := os.MkdirAll(filepath.Join(tree, "sub"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tree, "sub", "deep"), []byte("z"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, out, _ = captureApplet(t, cmdChgrp, []string{"-Rv", group, tree}, "")
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 3 || !strings.Contains(lines[2], "'"+tree+"'") {
+		t.Fatalf("chgrp -Rv printed %q", out)
+	}
+}

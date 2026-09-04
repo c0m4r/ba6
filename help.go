@@ -987,12 +987,24 @@ Options:
   -z        separate results with NUL bytes, not newlines
   --help    show this help`,
 	"chgrp": `Usage: chgrp [OPTION]... GROUP FILE...
+       chgrp [OPTION]... --reference=RFILE FILE...
 Set the owning group of each FILE. GROUP may be a name or numeric ID.
 
 Options:
-  -R        operate recursively
-  -h        act on symlinks themselves, not on what they point to
-  --help    show this help`,
+  -R, --recursive        operate recursively
+  -c, --changes          report only the files that actually change
+  -f, --silent, --quiet  suppress the error messages
+  -v, --verbose          report every file, changed or not
+  -h, --no-dereference   act on a symbolic link itself, not on its target
+  --dereference          act on what a symbolic link points to (the default)
+  -H                     with -R, follow a symbolic link named on the command
+                         line
+  -L                     with -R, follow every symbolic link
+  -P                     with -R, follow none of them (the default)
+  --reference=RFILE      take the ids from RFILE instead of an operand
+  --preserve-root        refuse to recurse on /
+  --no-preserve-root     do not (the default)
+  --help                 show this help`,
 	"chmod": `Usage: chmod [OPTION]... OCTAL_MODE FILE...
 Change file permissions using an octal mode from 0000 through 7777.
 
@@ -1000,12 +1012,27 @@ Options:
   -R        operate recursively
   --help    show this help`,
 	"chown": `Usage: chown [OPTION]... OWNER[:GROUP] FILE...
-Set file ownership. OWNER and GROUP accept names or numeric IDs.
+       chown [OPTION]... --reference=RFILE FILE...
+Set file ownership. OWNER and GROUP accept names or numeric IDs; an empty half
+("user:" or ":group") leaves that id alone, and "user:" takes the user's own
+login group.
 
 Options:
-  -R        operate recursively
-  -h        act on symlinks themselves, not on what they point to
-  --help    show this help`,
+  --from=OWNER[:GROUP]   change only the files that already carry these ids
+  -R, --recursive        operate recursively
+  -c, --changes          report only the files that actually change
+  -f, --silent, --quiet  suppress the error messages
+  -v, --verbose          report every file, changed or not
+  -h, --no-dereference   act on a symbolic link itself, not on its target
+  --dereference          act on what a symbolic link points to (the default)
+  -H                     with -R, follow a symbolic link named on the command
+                         line
+  -L                     with -R, follow every symbolic link
+  -P                     with -R, follow none of them (the default)
+  --reference=RFILE      take the ids from RFILE instead of an operand
+  --preserve-root        refuse to recurse on /
+  --no-preserve-root     do not (the default)
+  --help                 show this help`,
 	"date": `Usage: date [OPTION]... [+FORMAT]
 Display a time, or set the system clock with -s.
 
