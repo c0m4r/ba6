@@ -5,6 +5,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,7 +51,7 @@ func TestCopyRejectsDestinationInsideSource(t *testing.T) {
 	}
 	dst := filepath.Join(src, "sub")
 	c := &copier{recursive: true}
-	if err := c.copyPath(src, dst); err == nil {
+	if err := c.copyPath(src, dst, true); err == nil {
 		t.Fatal("copying a directory into itself was accepted")
 	}
 	if _, err := os.Stat(dst); !os.IsNotExist(err) {
@@ -72,9 +73,11 @@ func TestCopyInteractiveDeclinePreservesDestination(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A declined prompt leaves the destination alone and, as in coreutils,
+	// counts as a failure rather than a silent skip.
 	c := &copier{interactive: true, input: bufio.NewReader(strings.NewReader("n\n"))}
-	if err := c.copyFile(src, dst, info); err != nil {
-		t.Fatal(err)
+	if err := c.copyFile(src, dst, info); !errors.Is(err, errCopyDeclined) {
+		t.Fatalf("declined copy returned %v", err)
 	}
 	got, err := os.ReadFile(dst)
 	if err != nil {
@@ -463,6 +466,168 @@ func TestMvOptions(t *testing.T) {
 		status, out, errOut := captureApplet(t, cmdMv, c.args, "")
 		if status != 1 || out != "" || !strings.Contains(errOut, c.want) {
 			t.Fatalf("mv %v = (%d, %q, %q), want %q", c.args, status, out, errOut, c.want)
+		}
+	}
+}
+
+// TestCpOptions covers the options cp grew past -r/-p/-f/-i/-v: the link
+// modes, the symlink-following rules, --parents, -x and the backup machinery.
+func TestCpOptions(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "src")
+	if err := os.MkdirAll(filepath.Join(source, "inner"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "f"), []byte("hi\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "inner", "g"), []byte("two\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("f", filepath.Join(source, "link")); err != nil {
+		t.Fatal(err)
+	}
+	run := func(t *testing.T, args ...string) (int, string) {
+		t.Helper()
+		status, out, errOut := captureApplet(t, cmdCp, args, "")
+		if status != 0 {
+			t.Fatalf("cp %v = (%d, %q)", args, status, errOut)
+		}
+		return status, out
+	}
+
+	// A recursive copy keeps symbolic links as links; -L follows them.
+	kept := filepath.Join(dir, "kept")
+	run(t, "-r", source, kept)
+	if info, err := os.Lstat(filepath.Join(kept, "link")); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("cp -r did not keep the symlink: %v", err)
+	}
+	followed := filepath.Join(dir, "followed")
+	run(t, "-rL", source, followed)
+	if info, err := os.Lstat(filepath.Join(followed, "link")); err != nil || info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("cp -rL did not follow the symlink: %v", err)
+	}
+	// A plain copy follows them, since the no-dereference default only comes
+	// with -r.
+	plain := filepath.Join(dir, "plain")
+	run(t, filepath.Join(source, "link"), plain)
+	if info, err := os.Lstat(plain); err != nil || info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("a plain cp did not follow the symlink: %v", err)
+	}
+
+	// -v announces a directory before its contents, in inode order.
+	_, out := run(t, "-rv", source, filepath.Join(dir, "verbose"))
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 5 || !strings.HasPrefix(lines[0], "'"+source+"' -> ") {
+		t.Fatalf("cp -rv printed %q", out)
+	}
+
+	// -l hard-links, and follows a symbolic source because -r's
+	// no-dereference default does not apply to a linking copy.
+	linked := filepath.Join(dir, "linked")
+	run(t, "-rl", source, linked)
+	original, err := os.Stat(filepath.Join(source, "f"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	copied, err := os.Stat(filepath.Join(linked, "f"))
+	if err != nil || !os.SameFile(original, copied) {
+		t.Fatalf("cp -rl did not hard-link: %v", err)
+	}
+	if info, err := os.Lstat(filepath.Join(linked, "link")); err != nil || info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("cp -rl kept the symlink as a link: %v", err)
+	}
+
+	// --parents rebuilds the source's own path under the destination.
+	parents := filepath.Join(dir, "parents")
+	if err := os.Mkdir(parents, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	relative := filepath.Join("sub", "deep")
+	if err := os.MkdirAll(filepath.Join(dir, relative), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, relative, "file"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The operand is relative to the working directory, so run it from there.
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Chdir(previous); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	run(t, "--parents", filepath.Join(relative, "file"), "parents")
+	if _, err := os.Stat(filepath.Join(parents, relative, "file")); err != nil {
+		t.Fatalf("cp --parents did not rebuild the path: %v", err)
+	}
+
+	// -s refuses a relative source when the link would land in another
+	// directory, since the link body would then point at nothing.
+	status, _, errOut := captureApplet(t, cmdCp, []string{"-rs", "src", "symlinked"}, "")
+	if status != 1 || !strings.Contains(errOut, "can make relative symbolic links only in current directory") {
+		t.Fatalf("cp -rs with a relative source = (%d, %q)", status, errOut)
+	}
+	// An absolute source is fine wherever the link lands.
+	run(t, "-s", filepath.Join(source, "f"), filepath.Join("parents", "sym"))
+	if body, err := os.Readlink(filepath.Join(parents, "sym")); err != nil || body != filepath.Join(source, "f") {
+		t.Fatalf("cp -s wrote %q (%v)", body, err)
+	}
+
+	// -b keeps the destination under its backup name and -v says so.
+	target := filepath.Join(dir, "target")
+	if err := os.WriteFile(target, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, out = run(t, "-vb", filepath.Join(source, "f"), target)
+	if !strings.Contains(out, "(backup: '"+target+"~')") {
+		t.Fatalf("cp -vb printed %q", out)
+	}
+	if body, err := os.ReadFile(target + "~"); err != nil || string(body) != "old" {
+		t.Fatalf("backup = (%q, %v)", body, err)
+	}
+
+	// -n keeps the destination and succeeds; -u keeps a newer one.
+	if _, out = run(t, "-n", filepath.Join(source, "f"), target); out != "" {
+		t.Fatalf("cp -n printed %q", out)
+	}
+	if body, err := os.ReadFile(target); err != nil || string(body) != "hi\n" {
+		t.Fatalf("cp -n overwrote the destination: %q %v", body, err)
+	}
+
+	// --preserve rejects an unknown attribute with the original's list.
+	status, out, errOut = captureApplet(t, cmdCp, []string{"--preserve=nope", filepath.Join(source, "f"), target}, "")
+	if status != 1 || out != "" || !strings.Contains(errOut, "Valid arguments are:") ||
+		!strings.Contains(errOut, "'timestamps'") {
+		t.Fatalf("cp --preserve=nope = (%d, %q, %q)", status, out, errOut)
+	}
+	// So do --sparse and --reflink.
+	for _, option := range []string{"--sparse=bogus", "--reflink=bogus"} {
+		if status, _, errOut = captureApplet(t, cmdCp, []string{option, filepath.Join(source, "f"), target}, ""); status != 1 ||
+			!strings.Contains(errOut, "Valid arguments are:") {
+			t.Fatalf("cp %s = (%d, %q)", option, status, errOut)
+		}
+	}
+
+	// The operand diagnostics carry the Try line.
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{nil, "missing file operand"},
+		{[]string{"x"}, "missing destination file operand after 'x'"},
+		{[]string{"-W", "a", "b"}, "invalid option -- 'W'"},
+		{[]string{source, target}, "-r not specified; omitting directory"},
+	} {
+		status, _, errOut := captureApplet(t, cmdCp, c.args, "")
+		if status != 1 || !strings.Contains(errOut, c.want) {
+			t.Fatalf("cp %v = (%d, %q), want %q", c.args, status, errOut, c.want)
 		}
 	}
 }

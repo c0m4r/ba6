@@ -1240,18 +1240,53 @@ Options:
   -F        append file-type indicators
   --help    show this help`,
 	"cp": `Usage: cp [OPTION]... SOURCE... DEST
-Copy files or directories.
+       cp [OPTION]... -t DIRECTORY SOURCE...
+Copy files, directories and symbolic links.
 
 Options:
-  -r/-R     copy directories recursively
-  -a        recursive copy preserving modes and timestamps
-  -f        remove an unopenable destination and retry
-  -i        prompt before overwriting
-  -p        preserve modes and timestamps
-  -v        explain what is copied
-  --remove-destination
-            unlink a destination before copying a replacement
-  --help    show this help`,
+  -r, -R, --recursive    copy directories and their contents
+  -a, --archive          same as -dR --preserve=all
+  -d                     same as --no-dereference --preserve=links
+  -L, --dereference      follow every symbolic link in SOURCE
+  -P, --no-dereference   copy symbolic links as links (the default under -r)
+  -H                     follow only the symbolic links named on the command
+                         line
+  -f, --force            remove a destination that cannot be opened
+  -i, --interactive      prompt before overwriting
+  -n, --no-clobber       do not overwrite an existing destination
+  -u, --update           copy only when SOURCE is newer than the destination
+  -l, --link             hard-link the files instead of copying them
+  -s, --symbolic-link    make symbolic links instead of copying
+  -p                     same as --preserve=mode,ownership,timestamps
+  --preserve[=ATTRS]     preserve mode, timestamps, ownership, links (or all);
+                         context and xattr are accepted and do nothing
+  --no-preserve=ATTRS    stop preserving these
+  -x, --one-file-system  do not cross into another filesystem
+  --parents              rebuild each source's own path under DEST
+  --remove-destination   unlink the destination before opening a replacement
+  --attributes-only      create the destination without copying its contents
+  --reflink[=WHEN]       ask the filesystem to share extents (auto, always,
+                         never)
+  --sparse=WHEN          accepted for compatibility; holes are neither
+                         detected nor created
+  --strip-trailing-slashes
+                         drop any trailing slash from each source
+  -t, --target-directory=DIR
+                         copy everything into DIR
+  -T, --no-target-directory
+                         always treat the last operand as a file name
+  -b                     back the destination up before replacing it
+  --backup[=CONTROL]     as -b, choosing the naming scheme: none/off,
+                         simple/never, existing/nil, numbered/t
+  -S, --suffix=SUFFIX    the suffix a simple backup gets (default ~)
+  -Z, -c, --context      accepted for compatibility; no SELinux labelling
+  -v, --verbose          print each copy as it is made
+  --help                 show this help
+
+The environment variables VERSION_CONTROL and SIMPLE_BACKUP_SUFFIX select the
+default backup scheme and suffix. Extended attributes are not copied, and a
+directory the destination already contains is refused up front rather than
+part-way through the walk.`,
 	"mv": `Usage: mv [OPTION]... SOURCE... DEST
        mv [OPTION]... -t DIRECTORY SOURCE...
 Move or rename files and directories. A rename that would cross a filesystem

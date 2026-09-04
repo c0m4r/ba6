@@ -7,6 +7,7 @@ package main
 
 import (
 	"bytes"
+	"debug/elf"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -850,22 +851,21 @@ func TestStringsOptions(t *testing.T) {
 		t.Fatalf("strings -e S = %q", out)
 	}
 
-	// -d keeps the allocated sections of an ELF — code included, since BFD's
-	// "loaded data" is everything the loader maps — and drops the rest, so the
-	// scan is a strict subset of the default one.
-	self, err := os.Executable()
-	if err != nil {
-		t.Skip("no executable path")
+	// -d keeps an ELF's allocated sections and drops the rest. The object is
+	// built here rather than borrowed so the two markers are unambiguous: one
+	// sits in an allocated section, the other in the section-name table, which
+	// no loader maps.
+	object := filepath.Join(dir, "object.elf")
+	if err := os.WriteFile(object, minimalELF(t), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	_, all, _ := captureApplet(t, cmdStrings, []string{self}, "")
-	_, data, _ := captureApplet(t, cmdStrings, []string{"-d", self}, "")
-	if data == "" || len(data) >= len(all) {
-		t.Fatalf("strings -d produced %d bytes against %d for the whole file", len(data), len(all))
+	_, all, _ := captureApplet(t, cmdStrings, []string{object}, "")
+	_, allocated, _ := captureApplet(t, cmdStrings, []string{"-d", object}, "")
+	if !strings.Contains(all, "ALLOCATED_MARKER") || !strings.Contains(all, "UNALLOCATED_MARKER") {
+		t.Fatalf("the whole-file scan found %q", all)
 	}
-	for _, line := range strings.Split(strings.TrimRight(data, "\n"), "\n") {
-		if !strings.Contains(all, line+"\n") {
-			t.Fatalf("strings -d line %q is missing from the full scan", line)
-		}
+	if !strings.Contains(allocated, "ALLOCATED_MARKER") || strings.Contains(allocated, "UNALLOCATED_MARKER") {
+		t.Fatalf("strings -d found %q", allocated)
 	}
 
 	// A missing file is reported with BFD's wording and does not stop the run.
@@ -873,4 +873,49 @@ func TestStringsOptions(t *testing.T) {
 	if status != 1 || !strings.Contains(errOut, "No such file") || !strings.HasPrefix(out, "hello\n") {
 		t.Fatalf("strings on a missing file = (%d, %q, %q)", status, out, errOut)
 	}
+}
+
+// minimalELF builds the smallest ELF64 object debug/elf will parse: a header, a
+// section-name table carrying UNALLOCATED_MARKER, and one allocated .rodata
+// section carrying ALLOCATED_MARKER. It exists so that a test of strings -d can
+// say exactly which bytes each mode should find.
+func minimalELF(t *testing.T) []byte {
+	t.Helper()
+	const (
+		headerSize  = 64
+		sectionSize = 64
+		sections    = 3
+	)
+	names := "\x00.shstrtab\x00.rodata\x00UNALLOCATED_MARKER\x00"
+	body := "ALLOCATED_MARKER\x00"
+	namesOffset := headerSize
+	bodyOffset := namesOffset + len(names)
+	tableOffset := bodyOffset + len(body)
+
+	out := make([]byte, tableOffset+sections*sectionSize)
+	copy(out, []byte{0x7f, 'E', 'L', 'F', 2, 1, 1, 0})
+	binary.LittleEndian.PutUint16(out[16:], 2)  // ET_EXEC
+	binary.LittleEndian.PutUint16(out[18:], 62) // EM_X86_64
+	binary.LittleEndian.PutUint32(out[20:], 1)  // EV_CURRENT
+	binary.LittleEndian.PutUint64(out[40:], uint64(tableOffset))
+	binary.LittleEndian.PutUint16(out[52:], headerSize)
+	binary.LittleEndian.PutUint16(out[58:], sectionSize)
+	binary.LittleEndian.PutUint16(out[60:], sections)
+	binary.LittleEndian.PutUint16(out[62:], 1) // .shstrtab is section 1
+	copy(out[namesOffset:], names)
+	copy(out[bodyOffset:], body)
+
+	// Section 0 is the mandatory null entry; 1 is the name table, which is not
+	// allocated; 2 is the allocated one.
+	section := func(index int, nameOffset uint32, kind uint32, flags, offset, size uint64) {
+		base := tableOffset + index*sectionSize
+		binary.LittleEndian.PutUint32(out[base:], nameOffset)
+		binary.LittleEndian.PutUint32(out[base+4:], kind)
+		binary.LittleEndian.PutUint64(out[base+8:], flags)
+		binary.LittleEndian.PutUint64(out[base+24:], offset)
+		binary.LittleEndian.PutUint64(out[base+32:], size)
+	}
+	section(1, 1, 3, 0, uint64(namesOffset), uint64(len(names)))                    // .shstrtab, SHT_STRTAB
+	section(2, 11, 1, uint64(elf.SHF_ALLOC), uint64(bodyOffset), uint64(len(body))) // .rodata, SHT_PROGBITS
+	return out
 }

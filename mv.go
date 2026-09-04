@@ -338,8 +338,9 @@ func moveFile(src, dst string, replace bool) error {
 				return removeErr
 			}
 		}
-		c := &copier{recursive: true, force: true, preserve: true}
-		if cErr := c.copyPath(src, dst); cErr != nil {
+		c := &copier{recursive: true, force: true, links: map[fileKey]string{}}
+		c.setPreserveAll(true)
+		if cErr := c.copyPath(src, dst, true); cErr != nil {
 			return cErr
 		}
 		if removeErr := os.RemoveAll(src); removeErr != nil {
