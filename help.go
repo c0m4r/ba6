@@ -1044,16 +1044,34 @@ Options:
   --help    show this help`,
 	"ln": `Usage: ln [OPTION]... TARGET [LINK_NAME]
        ln [OPTION]... TARGET... DIRECTORY
+       ln [OPTION]... -t DIRECTORY TARGET...
 Create hard links, or symbolic links with -s.
 
 Options:
-  -s        make symbolic links
-  -f        remove existing non-directory destinations
-  -n, --no-dereference
-            treat a destination symlink to a directory as a link name
-  -T        always treat the last operand as a link name
-  -v        print each link as it is created
-  --help    show this help`,
+  -s, --symbolic         make symbolic links
+  -f, --force            remove existing non-directory destinations
+  -i, --interactive      prompt before removing a destination
+  -r, --relative         write a symbolic link's target relative to its own
+                         directory
+  -n, --no-dereference   treat a destination symlink to a directory as a
+                         link name
+  -L, --logical          hard-link what a symbolic TARGET points at
+  -P, --physical         hard-link a symbolic TARGET itself (the default)
+  -d, -F, --directory    allow hard links to directories (root only, and
+                         refused by most filesystems)
+  -t, --target-directory=DIR
+                         put every link in DIR
+  -T, --no-target-directory
+                         always treat the last operand as a link name
+  -b                     back the destination up before replacing it
+  --backup[=CONTROL]     as -b, choosing the naming scheme: none/off,
+                         simple/never, existing/nil, numbered/t
+  -S, --suffix=SUFFIX    the suffix a simple backup gets (default ~)
+  -v, --verbose          print each link as it is created
+  --help                 show this help
+
+The environment variables VERSION_CONTROL and SIMPLE_BACKUP_SUFFIX select the
+default backup scheme and suffix.`,
 	"readlink": `Usage: readlink [OPTION]... FILE...
 Print the value of a symbolic link, or canonicalize the path.
 
@@ -1235,14 +1253,32 @@ Options:
             unlink a destination before copying a replacement
   --help    show this help`,
 	"mv": `Usage: mv [OPTION]... SOURCE... DEST
-Move or rename files and directories.
+       mv [OPTION]... -t DIRECTORY SOURCE...
+Move or rename files and directories. A rename that would cross a filesystem
+falls back to a copy and a delete.
 
 Options:
-  -f        replace destinations when possible
-  -i        prompt before overwriting
-  -n        do not overwrite existing destinations
-  -v        explain what is moved
-  --help    show this help`,
+  -f, --force            replace destinations without asking
+  -i, --interactive      prompt before overwriting
+  -n, --no-clobber       do not overwrite existing destinations
+  -u, --update           move only when the source is newer than the
+                         destination, or the destination is missing
+  -t, --target-directory=DIR
+                         move everything into DIR
+  -T, --no-target-directory
+                         always treat the last operand as a file name
+  --strip-trailing-slashes
+                         drop any trailing slash from each source
+  -b                     back the destination up before replacing it
+  --backup[=CONTROL]     as -b, choosing the naming scheme: none/off,
+                         simple/never, existing/nil, numbered/t
+  -S, --suffix=SUFFIX    the suffix a simple backup gets (default ~)
+  -Z, --context          accepted for compatibility; no SELinux labelling
+  -v, --verbose          explain what is moved
+  --help                 show this help
+
+The environment variables VERSION_CONTROL and SIMPLE_BACKUP_SUFFIX select the
+default backup scheme and suffix.`,
 	"rm": `Usage: rm [OPTION]... FILE...
 Remove files or directories.
 

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRootProtection(t *testing.T) {
@@ -27,12 +28,11 @@ func TestMoveForceSameFileDoesNotDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	moved, err := moveOne(path, filepath.Join(dir, ".", "same"), true, false)
-	if err != nil {
-		t.Fatalf("moveOne returned an error: %v", err)
-	}
-	if moved {
-		t.Fatal("same-file move was reported as performed")
+	// mv -f onto the same file is refused by name, as in the original, and the
+	// file is left alone rather than removed on the way to a rename.
+	status, out, errOut := captureApplet(t, cmdMv, []string{"-f", path, filepath.Join(dir, ".", "same")}, "")
+	if status != 1 || out != "" || !strings.Contains(errOut, "are the same file") {
+		t.Fatalf("mv -f onto itself = (%d, %q, %q)", status, out, errOut)
 	}
 	got, err := os.ReadFile(path)
 	if err != nil {
@@ -95,8 +95,10 @@ func TestMoveInteractiveDeclinePreservesBothFiles(t *testing.T) {
 	if err := os.WriteFile(dst, []byte("destination"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// coreutils treats a declined prompt as a failure: nothing is moved and the
+	// status is 1, with no diagnostic beyond the prompt itself.
 	status, _, stderr := captureApplet(t, cmdMv, []string{"-i", src, dst}, "n\n")
-	if status != 0 || !strings.Contains(stderr, "overwrite") {
+	if status != 1 || !strings.Contains(stderr, "overwrite") {
 		t.Fatalf("status=%d stderr=%q", status, stderr)
 	}
 	for path, want := range map[string]string{src: "source", dst: "destination"} {
@@ -228,4 +230,239 @@ func captureApplet(t *testing.T, fn applet, args []string, input string) (int, s
 		t.Fatal(err)
 	}
 	return status, string(stdout), string(stderr)
+}
+
+// TestBackupNaming pins the naming scheme the coreutils tools share, since ln,
+// mv and cp all read it from the same options and environment variables.
+func TestBackupNaming(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "file")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := backupName(path, backupNone, "~"); got != "" {
+		t.Fatalf("backupNone named %q", got)
+	}
+	if got := backupName(filepath.Join(dir, "absent"), backupSimple, "~"); got != "" {
+		t.Fatalf("a missing file was given the backup name %q", got)
+	}
+	if got := backupName(path, backupSimple, ".bak"); got != path+".bak" {
+		t.Fatalf("simple backup = %q", got)
+	}
+	// "existing" is simple until a numbered backup exists, and numbered after.
+	if got := backupName(path, backupExisting, "~"); got != path+"~" {
+		t.Fatalf("existing backup with none present = %q", got)
+	}
+	if err := os.WriteFile(path+".~3~", []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := backupName(path, backupExisting, "~"); got != path+".~4~" {
+		t.Fatalf("existing backup beside .~3~ = %q", got)
+	}
+	if got := backupName(path, backupNumbered, "~"); got != path+".~4~" {
+		t.Fatalf("numbered backup = %q", got)
+	}
+	// Every control name, and the unambiguous abbreviations the originals take.
+	for name, want := range map[string]backupMethod{
+		"none": backupNone, "off": backupNone, "simple": backupSimple,
+		"never": backupSimple, "existing": backupExisting, "nil": backupExisting,
+		"numbered": backupNumbered, "t": backupNumbered, "nu": backupNumbered,
+		"si": backupSimple, "e": backupExisting,
+	} {
+		if got, ok := parseBackupControl(name); !ok || got != want {
+			t.Fatalf("parseBackupControl(%q) = (%v, %v), want %v", name, got, ok, want)
+		}
+	}
+	for _, name := range []string{"", "zzz", "n"} {
+		if _, ok := parseBackupControl(name); ok {
+			t.Fatalf("parseBackupControl(%q) was accepted", name)
+		}
+	}
+}
+
+// TestLnOptions covers the options ln grew past -s/-f/-n/-T/-v.
+func TestLnOptions(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string) string {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	source := write("source")
+
+	// -b renames the destination out of the way instead of removing it.
+	destination := write("dest")
+	if status, _, errOut := captureApplet(t, cmdLn, []string{"-b", source, destination}, ""); status != 0 {
+		t.Fatalf("ln -b = (%d, %q)", status, errOut)
+	}
+	if body, err := os.ReadFile(destination + "~"); err != nil || string(body) != "dest" {
+		t.Fatalf("backup = (%q, %v)", body, err)
+	}
+
+	// -r writes the link body as a path from the link's own directory.
+	sub := filepath.Join(dir, "sub")
+	if err := os.Mkdir(sub, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if status, _, errOut := captureApplet(t, cmdLn, []string{"-sr", source, filepath.Join(sub, "rel")}, ""); status != 0 {
+		t.Fatalf("ln -sr = (%d, %q)", status, errOut)
+	}
+	if target, err := os.Readlink(filepath.Join(sub, "rel")); err != nil || target != "../source" {
+		t.Fatalf("ln -sr wrote %q (%v)", target, err)
+	}
+
+	// -t puts every link in one directory, and -v names each as it is made.
+	status, out, errOut := captureApplet(t, cmdLn, []string{"-v", "-t", sub, source, write("second")}, "")
+	if status != 0 || !strings.Contains(out, "=>") {
+		t.Fatalf("ln -v -t = (%d, %q, %q), want the hard-link arrow", status, out, errOut)
+	}
+	for _, name := range []string{"source", "second"} {
+		if _, err := os.Lstat(filepath.Join(sub, name)); err != nil {
+			t.Fatalf("ln -t did not create %s: %v", name, err)
+		}
+	}
+	// A symbolic link is announced with the other arrow.
+	if _, out, _ = captureApplet(t, cmdLn, []string{"-sv", source, filepath.Join(dir, "sym")}, ""); !strings.Contains(out, "->") {
+		t.Fatalf("ln -sv printed %q", out)
+	}
+
+	// A hard link to a directory is refused by name, and -d asks the kernel.
+	if status, _, errOut = captureApplet(t, cmdLn, []string{sub, filepath.Join(dir, "hard")}, ""); status != 1 ||
+		!strings.Contains(errOut, "hard link not allowed for directory") {
+		t.Fatalf("ln on a directory = (%d, %q)", status, errOut)
+	}
+	// An existing destination without -f is the original's EEXIST wording, which
+	// names the destination alone.
+	other := write("other")
+	status, _, errOut = captureApplet(t, cmdLn, []string{source, other}, "")
+	if status != 1 || !strings.Contains(errOut, "failed to create hard link '"+other+"'") {
+		t.Fatalf("ln onto an existing file = (%d, %q)", status, errOut)
+	}
+	// A declined -i prompt fails, as it does in coreutils, and changes nothing.
+	status, _, errOut = captureApplet(t, cmdLn, []string{"-i", source, other}, "n\n")
+	if status != 1 || !strings.Contains(errOut, "replace") {
+		t.Fatalf("ln -i declined = (%d, %q)", status, errOut)
+	}
+}
+
+// TestMvOptions covers the options mv grew past -f/-i/-n/-v.
+func TestMvOptions(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	// -b keeps the destination under its backup name, and -v says so.
+	source, destination := write("a", "a"), write("b", "b")
+	status, out, errOut := captureApplet(t, cmdMv, []string{"-vb", source, destination}, "")
+	if status != 0 || out != "renamed '"+source+"' -> '"+destination+"' (backup: '"+destination+"~')\n" {
+		t.Fatalf("mv -vb = (%d, %q, %q)", status, out, errOut)
+	}
+
+	// --backup=numbered counts up rather than overwriting one backup.
+	for _, want := range []string{".~1~", ".~2~"} {
+		source = write("a", "a")
+		if status, _, errOut = captureApplet(t, cmdMv, []string{"--backup=numbered", source, destination}, ""); status != 0 {
+			t.Fatalf("mv --backup=numbered = (%d, %q)", status, errOut)
+		}
+		if _, err := os.Lstat(destination + want); err != nil {
+			t.Fatalf("numbered backup %s missing: %v", want, err)
+		}
+	}
+
+	// -u keeps a destination that is not older than the source.
+	older, newer := write("older", "older"), write("newer", "newer")
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(older, past, past); err != nil {
+		t.Fatal(err)
+	}
+	if status, _, _ = captureApplet(t, cmdMv, []string{"-u", older, newer}, ""); status != 0 {
+		t.Fatalf("mv -u with an older source = %d", status)
+	}
+	if body, err := os.ReadFile(newer); err != nil || string(body) != "newer" {
+		t.Fatalf("mv -u overwrote the newer file: %q %v", body, err)
+	}
+	if status, _, errOut = captureApplet(t, cmdMv, []string{"-u", newer, older}, ""); status != 0 {
+		t.Fatalf("mv -u with a newer source = (%d, %q)", status, errOut)
+	}
+	if body, err := os.ReadFile(older); err != nil || string(body) != "newer" {
+		t.Fatalf("mv -u did not move the newer file: %q %v", body, err)
+	}
+
+	// -t moves into a directory named up front; -T refuses to descend into one.
+	sub := filepath.Join(dir, "sub")
+	if err := os.Mkdir(sub, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	one, two := write("one", "one"), write("two", "two")
+	if status, _, errOut = captureApplet(t, cmdMv, []string{"-t", sub, one, two}, ""); status != 0 {
+		t.Fatalf("mv -t = (%d, %q)", status, errOut)
+	}
+	for _, name := range []string{"one", "two"} {
+		if _, err := os.Lstat(filepath.Join(sub, name)); err != nil {
+			t.Fatalf("mv -t did not move %s: %v", name, err)
+		}
+	}
+	plain := write("plain", "plain")
+	status, _, errOut = captureApplet(t, cmdMv, []string{"-T", plain, sub}, "")
+	if status != 1 || !strings.Contains(errOut, "cannot overwrite directory") {
+		t.Fatalf("mv -T over a directory = (%d, %q)", status, errOut)
+	}
+
+	// A directory replaces an empty directory, which the Go library's own
+	// rename refuses outright.
+	from, onto := filepath.Join(dir, "from"), filepath.Join(dir, "onto")
+	if err := os.Mkdir(from, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(onto, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(from, "inner"), []byte("inner"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if status, _, errOut = captureApplet(t, cmdMv, []string{"-T", from, onto}, ""); status != 0 {
+		t.Fatalf("mv -T of a directory onto an empty one = (%d, %q)", status, errOut)
+	}
+	if _, err := os.Lstat(filepath.Join(onto, "inner")); err != nil {
+		t.Fatalf("the directory was not moved: %v", err)
+	}
+	// A non-empty destination directory is reported against the destination.
+	again := filepath.Join(dir, "again")
+	if err := os.Mkdir(again, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	status, _, errOut = captureApplet(t, cmdMv, []string{"-T", again, onto}, "")
+	if status != 1 || !strings.Contains(errOut, "cannot overwrite '"+onto+"'") {
+		t.Fatalf("mv -T onto a full directory = (%d, %q)", status, errOut)
+	}
+	// Moving a directory inside itself is refused by name.
+	status, _, errOut = captureApplet(t, cmdMv, []string{again, filepath.Join(again, "inner")}, "")
+	if status != 1 || !strings.Contains(errOut, "subdirectory of itself") {
+		t.Fatalf("mv into itself = (%d, %q)", status, errOut)
+	}
+
+	// The operand diagnostics carry the Try line, as coreutils' do.
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{nil, "missing file operand"},
+		{[]string{"x"}, "missing destination file operand after 'x'"},
+		{[]string{"--backup=zzz", "a", "b"}, "invalid argument 'zzz'"},
+		{[]string{"-W", "a", "b"}, "invalid option -- 'W'"},
+	} {
+		status, out, errOut := captureApplet(t, cmdMv, c.args, "")
+		if status != 1 || out != "" || !strings.Contains(errOut, c.want) {
+			t.Fatalf("mv %v = (%d, %q, %q), want %q", c.args, status, out, errOut, c.want)
+		}
+	}
 }
