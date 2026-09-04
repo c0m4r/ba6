@@ -1254,18 +1254,66 @@ Options:
   -q/-v     suppress/force headers
   --help    show this help`,
 	"ls": `Usage: ls [OPTION]... [FILE]...
-List directory contents or FILE metadata.
+List directory contents, or FILE itself. Output is packed into columns and
+awkward names are quoted when writing to a terminal; through a pipe the entries
+go one per line, written literally.
 
-Options:
-  -a/-A     include hidden entries/include hidden entries except . and ..
-  -l/-1     long format/one entry per line
-  -h        human-readable sizes with -l
-  -r        reverse sorting
-  -t/-S     sort by modification time/size
-  -R        recurse through subdirectories
-  -d        list directories themselves
-  -F        append file-type indicators
-  --help    show this help`,
+What to list:
+  -a, --all              include hidden entries
+  -A, --almost-all       include hidden entries but not . and ..
+  -d, --directory        list a directory itself, not its contents
+  -R, --recursive        descend into every subdirectory
+  -B, --ignore-backups   skip the names ending in ~
+  -I, --ignore=PATTERN   skip the names matching PATTERN
+  --hide=PATTERN         as -I, but ignored when -a or -A is given
+  -L, --dereference      report what a symbolic link points at
+  -H                     do that only for the links named on the command line
+
+Layout:
+  -l                     long listing
+  -1                     one entry per line
+  -C                     columns, filled downwards
+  -x                     columns, filled across
+  -m                     comma-separated
+  --format=WORD          across, commas, horizontal, long, single-column,
+                         verbose or vertical
+  -w, --width=N          assume N columns (0 means no limit)
+  -T, --tabsize=N        assume tab stops every N columns (0 uses spaces)
+  -g/-o/-G, --no-group   a long listing without the owner, the group, or both
+  -n, --numeric-uid-gid  print the ids rather than looking up their names
+  -i, --inode            print each entry's inode number
+  -s, --size             print each entry's allocated size
+  -h, --human-readable   scale sizes in powers of 1024
+  --si                   scale sizes in powers of 1000
+  -k, --block-size=SIZE  the unit sizes and blocks are counted in
+  -Z, --context          print a security context column, which reads "?"
+  -F/-p/--file-type/--indicator-style=WORD
+                         append a character telling the entry's type apart
+  -Q/-b/-N/--quoting-style=WORD
+                         quote names with "", C escapes, literally, or in one
+                         of the shell styles
+  --full-time            like -l --time-style=full-iso
+  --time-style=STYLE     full-iso, long-iso, iso, locale, or +FORMAT
+  --time=WORD            show the access, status or modification time
+
+Ordering:
+  -r, --reverse          reverse whichever order is in force
+  -t                     newest first
+  -S                     largest first
+  -X                     by extension
+  -v                     by version, as filevercmp orders names
+  -U                     unsorted, in directory order
+  -f                     unsorted, and show everything
+  -c/-u                  use the status or access time, and sort by it outside
+                         the long listing
+  --sort=WORD            none, size, time, version, extension or name
+  --group-directories-first
+                         list the directories before the other entries
+  --color[=WHEN]         accepted; nothing is coloured
+  --help                 show this help
+
+Names are measured in the C locale, so a byte outside printable ASCII counts as
+no columns at all, exactly as the original counts it under LC_ALL=C.`,
 	"cp": `Usage: cp [OPTION]... SOURCE... DEST
        cp [OPTION]... -t DIRECTORY SOURCE...
 Copy files, directories and symbolic links.

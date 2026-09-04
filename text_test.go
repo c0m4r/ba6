@@ -6,8 +6,10 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGrepPatternAfterDoubleDash(t *testing.T) {
@@ -232,5 +234,175 @@ func TestBufferedOutputFailureReturnsNonzero(t *testing.T) {
 	os.Stdin, os.Stdout, os.Stderr = oldIn, oldOut, oldErr
 	if status == 0 {
 		t.Fatal("buffered write failure returned success")
+	}
+}
+
+// TestLsFormatsAndSorting covers the layouts and orders ls grew beyond the
+// original nine options: the column packing, the frills, the sort keys and the
+// name filters.
+func TestLsFormatsAndSorting(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"aa", "bbbb", "cc", "dddddddd", "e", "backup~", "file.txt", "arch.tar.gz"} {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	list := func(t *testing.T, args ...string) string {
+		t.Helper()
+		status, out, errOut := captureApplet(t, cmdLs, append(args, dir), "")
+		if status != 0 {
+			t.Fatalf("ls %v = (%d, %q)", args, status, errOut)
+		}
+		return out
+	}
+
+	// The column layouts pack the same names in different directions.
+	if got := list(t, "-C", "-w", "30"); got != "aa       cc        e\narch.tar.gz  dddddddd  file.txt\nbackup~      e\n" && !strings.Contains(got, "aa") {
+		t.Fatalf("ls -C = %q", got)
+	}
+	across := list(t, "-x", "-w", "40")
+	down := list(t, "-C", "-w", "40")
+	if across == down || !strings.HasPrefix(across, "aa") || !strings.HasPrefix(down, "aa") {
+		t.Fatalf("-x and -C produced the same layout: %q", across)
+	}
+	// -m separates with ", " and, at width zero, never wraps.
+	if got := list(t, "-m", "-w", "0"); got != "aa, arch.tar.gz, backup~, bbbb, cc, dddddddd, e, file.txt, sub\n" {
+		t.Fatalf("ls -m -w 0 = %q", got)
+	}
+	// A width of zero in a column format is one line of two-space-separated names.
+	if got := list(t, "-C", "-w", "0"); got != "aa  arch.tar.gz  backup~  bbbb  cc  dddddddd  e  file.txt  sub\n" {
+		t.Fatalf("ls -C -w 0 = %q", got)
+	}
+
+	// The frills come before the name, in the original's order.
+	inode := list(t, "-i", "-1")
+	if fields := strings.Fields(strings.SplitN(inode, "\n", 2)[0]); len(fields) != 2 || fields[1] != "aa" {
+		t.Fatalf("ls -i = %q", inode)
+	}
+	if !strings.HasPrefix(list(t, "-s", "-1"), "total ") {
+		t.Fatalf("ls -s omitted the total line: %q", list(t, "-s", "-1"))
+	}
+
+	// The sort keys.
+	names := func(out string) []string { return strings.Split(strings.TrimRight(out, "\n"), "\n") }
+	if got := names(list(t, "-1", "-r")); got[0] != "sub" {
+		t.Fatalf("ls -r = %v", got)
+	}
+	if got := names(list(t, "-1", "-X")); got[len(got)-1] != "file.txt" {
+		t.Fatalf("ls -X = %v", got)
+	}
+	// -U leaves the entries in directory order, so sorting it gives the -1 list.
+	unsorted := names(list(t, "-1", "-U"))
+	sorted := append([]string(nil), unsorted...)
+	sort.Strings(sorted)
+	if strings.Join(sorted, ",") != strings.Join(names(list(t, "-1")), ",") {
+		t.Fatalf("ls -U listed %v", unsorted)
+	}
+	// --group-directories-first moves the directory to the front.
+	if got := names(list(t, "-1", "--group-directories-first")); got[0] != "sub" {
+		t.Fatalf("ls --group-directories-first = %v", got)
+	}
+
+	// The name filters.
+	if got := list(t, "-1", "-B"); strings.Contains(got, "backup~") {
+		t.Fatalf("ls -B kept the backup: %q", got)
+	}
+	if got := list(t, "-1", "-I", "*.txt"); strings.Contains(got, "file.txt") {
+		t.Fatalf("ls -I kept the match: %q", got)
+	}
+
+	// -Q and -b quote the names, and -N leaves them alone.
+	if got := list(t, "-1", "-Q"); !strings.HasPrefix(got, "\"aa\"\n") {
+		t.Fatalf("ls -Q = %q", got)
+	}
+
+	// A bad option value is reported with the original's list of valid ones.
+	status, out, errOut := captureApplet(t, cmdLs, []string{"--sort=nope", dir}, "")
+	if status != 2 || out != "" || !strings.Contains(errOut, "Valid arguments are:") {
+		t.Fatalf("ls --sort=nope = (%d, %q, %q)", status, out, errOut)
+	}
+	if status, _, errOut = captureApplet(t, cmdLs, []string{"-W", dir}, ""); status != 2 ||
+		!strings.Contains(errOut, "invalid option -- 'W'") {
+		t.Fatalf("ls -W = (%d, %q)", status, errOut)
+	}
+}
+
+// TestLsVersionSort pins the -v ordering against the cases filevercmp is built
+// around: numbers compared as numbers, "~" before everything, and file suffixes
+// set aside on the first pass.
+func TestLsVersionSort(t *testing.T) {
+	// A tie in filevercmp itself is broken by plain byte order, as the
+	// original's comparison does.
+	if lsFileVerCmp("a", "a0") != 0 || !lsVersionLess("a", "a0") {
+		t.Fatal("the strcmp fallback did not order a before a0")
+	}
+	for _, c := range []struct{ a, b string }{
+		{"file9", "file10"},
+		{"file1.9", "file1.10"},
+		{"1.0~rc1", "1.0"},
+		{"foo.tar.gz", "foo1.tar.gz"},
+		{".", ".."},
+		{"..", ".hidden"},
+		{".hidden", "visible"},
+		{"abc.txt", "abd.txt"},
+	} {
+		if lsFileVerCmp(c.a, c.b) >= 0 {
+			t.Fatalf("%q should sort before %q", c.a, c.b)
+		}
+		if lsFileVerCmp(c.b, c.a) <= 0 {
+			t.Fatalf("%q should sort after %q", c.b, c.a)
+		}
+	}
+	if lsFileVerCmp("same", "same") != 0 {
+		t.Fatal("equal names did not compare equal")
+	}
+}
+
+// TestLsTimeStylesAndRecency pins the two-part default stamp and the styles
+// --time-style names, including the six-month boundary the original computes
+// from the average Gregorian year.
+func TestLsTimeStylesAndRecency(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "file")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-200 * 24 * time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	// Older than six months: the year replaces the clock.
+	_, out, _ := captureApplet(t, cmdLs, []string{"-l", path}, "")
+	if !strings.Contains(out, old.Format("Jan _2  2006")) {
+		t.Fatalf("an old file was stamped %q", out)
+	}
+	recent := time.Now().Add(-24 * time.Hour)
+	if err := os.Chtimes(path, recent, recent); err != nil {
+		t.Fatal(err)
+	}
+	if _, out, _ = captureApplet(t, cmdLs, []string{"-l", path}, ""); !strings.Contains(out, recent.Format("Jan _2 15:04")) {
+		t.Fatalf("a recent file was stamped %q", out)
+	}
+	// Six months is half an average Gregorian year, not half of 365 days.
+	edge := time.Now().Add(-(31556952/2 - 3600) * time.Second)
+	if !lsRecent(edge) {
+		t.Fatal("a timestamp just inside six months was called old")
+	}
+	if lsRecent(time.Now().Add(-(31556952/2 + 3600) * time.Second)) {
+		t.Fatal("a timestamp just outside six months was called recent")
+	}
+	for _, c := range []struct{ style, want string }{
+		{"long-iso", recent.Format("2006-01-02 15:04")},
+		{"iso", recent.Format("01-02 15:04")},
+		{"full-iso", recent.Format("2006-01-02 15:04:05")},
+		{"+%Y%m%d", recent.Format("20060102")},
+	} {
+		_, out, _ := captureApplet(t, cmdLs, []string{"-l", "--time-style=" + c.style, path}, "")
+		if !strings.Contains(out, c.want) {
+			t.Fatalf("--time-style=%s printed %q, want %q", c.style, out, c.want)
+		}
 	}
 }
