@@ -705,11 +705,24 @@ value may be attached to its option (-n1) or given separately (-n 1).`,
 Show filesystem space usage for FILEs, or all mounted filesystems.
 
 Options:
-  -h        human-readable sizes
-  -k        display 1K blocks (default)
-  -a        include pseudo-filesystems and duplicate mounts
-  -P        portable output layout
-  --help    show this help`,
+  -a, --all              include pseudo, duplicate and unmeasurable mounts
+  -B, --block-size=SIZE  scale sizes by SIZE (a bare unit, as -BM, is echoed
+                         after each value)
+  -h, --human-readable   human-readable sizes, in powers of 1024
+  -H, --si               human-readable sizes, in powers of 1000
+  -i, --inodes           report inode counts instead of blocks
+  -k                     like --block-size=1K (the default)
+  -l, --local            list local filesystems only
+  -P, --portability      the POSIX layout
+  -t, --type=TYPE        list only filesystems of this type
+  -T, --print-type       add the filesystem type column
+  -x, --exclude-type=TYPE
+                         skip filesystems of this type
+  --output[=FIELDS]      choose the columns: source, fstype, itotal, iused,
+                         iavail, ipcent, size, used, avail, pcent, file, target
+  --total                add a grand-total row
+  --sync, --no-sync, -v  accepted for compatibility
+  --help                 show this help`,
 	"du": `Usage: du [OPTION]... [FILE]...
 Estimate allocated disk usage recursively.
 
@@ -775,14 +788,30 @@ Actions:
   -prune                  do not descend into the directory just matched
   -quit                   stop the walk at once
   --help                  show this help`,
-	"free": `Usage: free [OPTION]
+	"free": `Usage: free [OPTION]...
 Display physical and swap memory usage from /proc/meminfo.
 
 Options:
-  -h        human-readable sizes
-  -b/-k/-m/-g
-            display bytes, KiB, MiB, or GiB
-  --help    show this help`,
+  -b, --bytes            show output in bytes
+      --kilo/--mega/--giga/--tera/--peta
+                         show output in powers of 1000
+  -k, --kibi             show output in kibibytes (the default)
+  -m, --mebi             show output in mebibytes
+  -g, --gibi             show output in gibibytes
+      --tebi/--pebi      show output in tebibytes or pebibytes
+  -h, --human            human-readable sizes, scaled per value
+      --si               use powers of 1000, not 1024
+  -l, --lohi             add the low and high memory rows
+  -L, --line             print everything on one line
+  -t, --total            add a row totalling RAM and swap
+  -v, --committed        add the commit limit and committed memory
+  -w, --wide             split buff/cache into separate columns
+  -s N, --seconds N      repeat every N seconds
+  -c N, --count N        repeat N times, then exit
+  --help                 show this help
+
+Sizes are printed in the C locale, so a fraction reads 3.1Gi where the original
+follows LC_NUMERIC.`,
 	"gunzip": `Usage: gunzip [OPTION]... [FILE]...
 Decompress gzip streams. With no FILE, read stdin and write stdout.
 Decompressed output is limited to 64 GiB per input stream.

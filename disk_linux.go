@@ -19,6 +19,27 @@ type mountInfo struct {
 	source     string
 	mountpoint string
 	fstype     string
+	// dev is the device the mount table itself reports, which differs from the
+	// device found at the mount point when a later mount shadows this one.
+	dev     uint64
+	haveDev bool
+}
+
+// mountDevice encodes a mountinfo "major:minor" field the way st_dev does.
+func mountDevice(field string) (uint64, bool) {
+	majorText, minorText, found := strings.Cut(field, ":")
+	if !found {
+		return 0, false
+	}
+	major, err := strconv.ParseUint(majorText, 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	minor, err := strconv.ParseUint(minorText, 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return (major&0xfff)<<8 | minor&0xff | (major&^uint64(0xfff))<<32 | (minor&^uint64(0xff))<<12, true
 }
 
 // dfDummyTypes are the pseudo-filesystems df leaves out unless -a is given.
@@ -31,62 +52,467 @@ var dfDummyTypes = map[string]bool{
 	"pstore": true, "rpc_pipefs": true, "securityfs": true, "sysfs": true, "tracefs": true,
 }
 
-// dfRow is one line of df output, already formatted. The rows are collected
-// before anything is printed because the column widths come from the widest
-// value in each column.
-type dfRow struct {
-	source, size, used, available, percent, target string
+// dfEntry is one filesystem's raw figures, in bytes and inodes, before any
+// unit or field selection is applied. The rows are collected first because
+// every column is sized from the widest value in it.
+type dfEntry struct {
+	source, fstype, target, file string
+	total, used, avail           uint64
+	itotal, iused, iavail        uint64
+	isTotal                      bool
+	// unavailable marks a mount df could not measure. Under -a it is still
+	// listed, with a dash in every figure rather than a row of zeroes.
+	unavailable bool
+}
+
+// dfField is one --output column. GNU df keeps a minimum width per column, so
+// short values still line up under the heading they belong to.
+type dfField struct {
+	name     string
+	minWidth int
+	left     bool
+}
+
+var dfFields = []dfField{
+	{"source", 14, true}, {"fstype", 4, true},
+	{"itotal", 5, false}, {"iused", 5, false}, {"iavail", 5, false}, {"ipcent", 4, false},
+	{"size", 5, false}, {"used", 5, false}, {"avail", 5, false}, {"pcent", 4, false},
+	{"file", 0, true}, {"target", 0, true},
+}
+
+// dfHeaderMode picks the wording of the size, avail and pcent headings, which
+// differ between the plain table, -h, -P and --output.
+type dfHeaderMode int
+
+const (
+	dfHeaderDefault dfHeaderMode = iota
+	dfHeaderHuman
+	dfHeaderPosix
+	dfHeaderOutput
+)
+
+// dfOptions is one df(1) command line.
+type dfOptions struct {
+	all        bool
+	human      uint64 // 0, or the base -h/-H scale values in
+	inodes     bool
+	printType  bool
+	local      bool
+	total      bool
+	blockSize  uint64
+	blockUnit  string // echoed after each value for a bare-unit -B
+	headerMode dfHeaderMode
+	fields     []string
+	types      []string
+	exclude    []string
+}
+
+// dfRemoteTypes are the filesystem types -l leaves out. GNU decides remoteness
+// from the device name too: a "host:/path" source, or a "//server/share" one.
+var dfRemoteTypes = map[string]bool{
+	"acfs": true, "afs": true, "auristorfs": true, "ceph": true, "cifs": true,
+	"coda": true, "davfs": true, "fhgfs": true, "ftpfs": true, "fuse.sshfs": true,
+	"gfs": true, "gfs2": true, "glusterfs": true, "gpfs": true, "ibrix": true,
+	"lustre": true, "mfs": true, "ncpfs": true, "nfs": true, "nfs4": true,
+	"ocfs2": true, "pvfs2": true, "smb3": true, "smbfs": true, "sshfs": true,
+	"vxfs": true,
+}
+
+func dfIsRemote(source, fstype string) bool {
+	switch {
+	case dfRemoteTypes[fstype]:
+		return true
+	case strings.Contains(source, ":"):
+		return true
+	case strings.HasPrefix(source, "//") && (fstype == "smbfs" || fstype == "smb3" || fstype == "cifs"):
+		return true
+	case source == "-hosts":
+		return true
+	}
+	return false
+}
+
+func dfUsage(format string, a ...interface{}) {
+	fatalf("df", format, a...)
+	fmt.Fprintln(os.Stderr, "Try 'df --help' for more information.")
+}
+
+//nolint:gocyclo // one option table; splitting it would only scatter the command line.
+func parseDfOptions(args []string) (dfOptions, []string, bool) {
+	options := dfOptions{blockSize: 1024}
+	var paths []string
+	parsing := true
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !parsing || arg == "-" || !strings.HasPrefix(arg, "-") {
+			paths = append(paths, arg)
+			continue
+		}
+		if arg == "--" {
+			parsing = false
+			continue
+		}
+		// takeValue returns a long option's "=value" or the next operand.
+		name, value, hasValue := arg, "", false
+		if strings.HasPrefix(arg, "--") {
+			if eq := strings.IndexByte(arg, '='); eq >= 0 {
+				name, value, hasValue = arg[:eq], arg[eq+1:], true
+			}
+		}
+		takeValue := func(rest string) (string, bool) {
+			switch {
+			case hasValue:
+				return value, true
+			case rest != "":
+				return rest, true
+			}
+			i++
+			if i >= len(args) {
+				return "", false
+			}
+			return args[i], true
+		}
+		if strings.HasPrefix(arg, "--") {
+			switch name {
+			case "--all":
+				options.all = true
+			case "--human-readable":
+				options.human = 1024
+			case "--si":
+				options.human = 1000
+			case "--inodes":
+				options.inodes = true
+			case "--print-type":
+				options.printType = true
+			case "--local":
+				options.local = true
+			case "--portability":
+				options.headerMode = dfHeaderPosix
+			case "--total":
+				options.total = true
+			case "--sync", "--no-sync":
+				// df syncs only on request, and never needs to here.
+			case "--block-size":
+				text, ok := takeValue("")
+				if !ok || !options.setBlockSize("--block-size", text) {
+					return options, nil, false
+				}
+			case "--type":
+				text, ok := takeValue("")
+				if !ok {
+					return options, nil, false
+				}
+				options.types = append(options.types, text)
+			case "--exclude-type":
+				text, ok := takeValue("")
+				if !ok {
+					return options, nil, false
+				}
+				options.exclude = append(options.exclude, text)
+			case "--output":
+				options.headerMode = dfHeaderOutput
+				if !hasValue {
+					options.fields = dfAllFieldNames()
+					continue
+				}
+				for _, field := range strings.Split(value, ",") {
+					if !dfKnownField(field) {
+						dfUsage("option --output: field '%s' unknown", field)
+						return options, nil, false
+					}
+					options.fields = append(options.fields, field)
+				}
+			default:
+				dfUsage("unrecognized option '%s'", arg)
+				return options, nil, false
+			}
+			continue
+		}
+		cluster := arg[1:]
+		for len(cluster) > 0 {
+			letter := cluster[0]
+			cluster = cluster[1:]
+			switch letter {
+			case 'a':
+				options.all = true
+			case 'h':
+				options.human = 1024
+			case 'H':
+				options.human = 1000
+			case 'i':
+				options.inodes = true
+			case 'T':
+				options.printType = true
+			case 'l':
+				options.local = true
+			case 'P':
+				options.headerMode = dfHeaderPosix
+			case 'k':
+				options.blockSize, options.blockUnit, options.human = 1024, "", 0
+			case 'v':
+				// Accepted and ignored, as in the original.
+			case 'B', 't', 'x':
+				rest := cluster
+				cluster = ""
+				text, ok := takeValue(rest)
+				if !ok {
+					dfUsage("option requires an argument -- '%c'", letter)
+					return options, nil, false
+				}
+				switch letter {
+				case 'B':
+					if !options.setBlockSize("-B", text) {
+						return options, nil, false
+					}
+				case 't':
+					options.types = append(options.types, text)
+				case 'x':
+					options.exclude = append(options.exclude, text)
+				}
+			default:
+				dfUsage("invalid option -- '%c'", letter)
+				return options, nil, false
+			}
+		}
+	}
+	// -h and -H scale each value themselves, and rename two of the headings;
+	// they win over -P, which only changes the wording of the plain table.
+	switch {
+	case options.human != 0:
+		options.headerMode = dfHeaderHuman
+	case options.headerMode == dfHeaderPosix:
+		options.blockSize, options.blockUnit = 1024, ""
+	}
+	if options.fields == nil {
+		options.fields = options.defaultFields()
+	}
+	return options, paths, true
+}
+
+// setBlockSize applies -B. A spec written as a bare unit ("-B M") makes the
+// printed values carry that unit; one with a leading count ("-B 1M") does not.
+func (options *dfOptions) setBlockSize(name, value string) bool {
+	size, err := parseByteSize(value)
+	if err != nil || size == 0 {
+		fatalf("df", "invalid %s argument %s", name, quoteLocaleName(value))
+		return false
+	}
+	options.blockSize, options.blockUnit, options.human = size, "", 0
+	if len(value) > 0 && !isDigitByte(value[0]) {
+		options.blockUnit = value
+		if value == "KB" {
+			options.blockUnit = "kB"
+		}
+	}
+	return true
+}
+
+func (options *dfOptions) defaultFields() []string {
+	fields := []string{"source"}
+	if options.printType {
+		fields = append(fields, "fstype")
+	}
+	if options.inodes {
+		fields = append(fields, "itotal", "iused", "iavail", "ipcent")
+	} else {
+		fields = append(fields, "size", "used", "avail", "pcent")
+	}
+	return append(fields, "target")
+}
+
+func dfAllFieldNames() []string {
+	names := make([]string, 0, len(dfFields))
+	for _, field := range dfFields {
+		names = append(names, field.name)
+	}
+	return names
+}
+
+func dfKnownField(name string) bool {
+	for _, field := range dfFields {
+		if field.name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// heading is the column title, which depends on the header mode for the three
+// columns whose wording GNU changes.
+func (options *dfOptions) heading(name string) string {
+	switch name {
+	case "source":
+		return "Filesystem"
+	case "fstype":
+		return "Type"
+	case "itotal":
+		return "Inodes"
+	case "iused":
+		return "IUsed"
+	case "iavail":
+		return "IFree"
+	case "ipcent":
+		return "IUse%"
+	case "used":
+		return "Used"
+	case "file":
+		return "File"
+	case "target":
+		return "Mounted on"
+	case "size":
+		switch options.headerMode {
+		case dfHeaderHuman:
+			return "Size"
+		case dfHeaderPosix:
+			return "1024-blocks"
+		default:
+			return dfBlockHeading(options.blockSize, options.blockUnit)
+		}
+	case "avail":
+		if options.headerMode == dfHeaderHuman || options.headerMode == dfHeaderOutput {
+			return "Avail"
+		}
+		return "Available"
+	case "pcent":
+		if options.headerMode == dfHeaderPosix {
+			return "Capacity"
+		}
+		return "Use%"
+	}
+	return name
+}
+
+// dfBlockHeading names the block size the way df does: "1K-blocks" for the
+// default, "1M-blocks" for -BM, and the raw count for a size with no unit.
+func dfBlockHeading(size uint64, unit string) string {
+	if unit != "" {
+		return "1" + unit + "-blocks"
+	}
+	for _, step := range []struct {
+		value  uint64
+		suffix string
+	}{{1 << 50, "P"}, {1 << 40, "T"}, {1 << 30, "G"}, {1 << 20, "M"}, {1 << 10, "K"}} {
+		if size >= step.value && size%step.value == 0 {
+			return strconv.FormatUint(size/step.value, 10) + step.suffix + "-blocks"
+		}
+	}
+	return strconv.FormatUint(size, 10) + "-blocks"
+}
+
+// value renders one field of one row.
+func (options *dfOptions) value(name string, entry dfEntry) string {
+	amount := func(bytes uint64) string {
+		if options.human != 0 {
+			return humanSizeBase(bytes, options.human)
+		}
+		return strconv.FormatUint((bytes+options.blockSize-1)/options.blockSize, 10) + options.blockUnit
+	}
+	count := func(n uint64) string {
+		if options.human != 0 {
+			return humanSizeBase(n, options.human)
+		}
+		return strconv.FormatUint(n, 10)
+	}
+	// A percentage is only meaningful when the filesystem reports a capacity;
+	// df prints a bare dash when it does not.
+	percent := func(used, avail uint64) string {
+		if used+avail == 0 {
+			return "-"
+		}
+		return strconv.FormatUint((used*100+used+avail-1)/(used+avail), 10) + "%"
+	}
+	if entry.unavailable {
+		switch name {
+		case "fstype", "itotal", "iused", "iavail", "ipcent", "size", "used", "avail", "pcent":
+			return "-"
+		}
+	}
+	switch name {
+	case "source":
+		return entry.source
+	case "fstype":
+		if entry.isTotal {
+			return "-"
+		}
+		return entry.fstype
+	case "itotal":
+		return count(entry.itotal)
+	case "iused":
+		return count(entry.iused)
+	case "iavail":
+		return count(entry.iavail)
+	case "ipcent":
+		return percent(entry.iused, entry.iavail)
+	case "size":
+		return amount(entry.total)
+	case "used":
+		return amount(entry.used)
+	case "avail":
+		return amount(entry.avail)
+	case "pcent":
+		return percent(entry.used, entry.avail)
+	case "file":
+		if entry.file == "" {
+			return "-"
+		}
+		return entry.file
+	case "target":
+		return entry.target
+	}
+	return ""
 }
 
 func cmdDf(args []string) int {
-	human, all := false, false
-	var paths []string
-	parsing := true
-	for _, arg := range args {
-		switch {
-		case parsing && arg == "--":
-			parsing = false
-		case parsing && (arg == "-h" || arg == "--human-readable"):
-			human = true
-		case parsing && (arg == "-a" || arg == "--all"):
-			all = true
-		case parsing && (arg == "-k" || arg == "-P"):
-		case parsing && len(arg) > 1 && arg[0] == '-':
-			fatalf("df", "invalid option %q", arg)
-			return 1
-		default:
-			paths = append(paths, arg)
-		}
+	options, paths, ok := parseDfOptions(args)
+	if !ok {
+		return 1
 	}
 	mounts, err := readMountInfo()
 	if err != nil {
 		fatalf("df", "%v", err)
 		return 1
 	}
-	var rows []dfRow
+	var entries []dfEntry
 	status := 0
 	if len(paths) == 0 {
 		seenDevice := make(map[uint64]bool)
 		for _, mount := range mounts {
-			if !all && dfDummyTypes[mount.fstype] {
+			if !options.keepsType(mount) {
 				continue
 			}
-			row, usageErr := filesystemUsage(mount.mountpoint, mount, human)
-			// A mount the caller cannot stat is skipped rather than reported:
-			// it was not asked for by name.
-			if usageErr != nil || (!all && row.size == "0") {
+			entry, usageErr := dfMeasure(mount.mountpoint, mount)
+			if usageErr != nil {
+				// A mount the caller cannot measure is skipped rather than
+				// reported: it was not asked for by name. -a still lists it,
+				// with a dash in place of every figure.
+				if !options.all {
+					continue
+				}
+				entry = dfEntry{source: mount.source, fstype: mount.fstype, target: mount.mountpoint, unavailable: true}
+			} else if !options.all && entry.total == 0 && entry.itotal == 0 {
 				continue
 			}
 			// Bind mounts repeat a filesystem that is already listed.
 			var info syscall.Stat_t
 			if syscall.Stat(mount.mountpoint, &info) == nil {
-				if !all && seenDevice[info.Dev] {
+				if !options.all && seenDevice[info.Dev] {
 					continue
 				}
 				seenDevice[info.Dev] = true
+				// A mount that another has since been stacked on top of cannot
+				// be measured through its own path: statfs answers for the
+				// filesystem on top. df lists it with dashes rather than with
+				// its neighbour's figures.
+				if mount.haveDev && info.Dev != mount.dev {
+					entry = dfEntry{source: mount.source, fstype: mount.fstype, target: mount.mountpoint, unavailable: true}
+				}
 			}
-			row.source = canonicalDevice(row.source)
-			rows = append(rows, row)
+			entry.source = canonicalDevice(entry.source)
+			entries = append(entries, entry)
+		}
+		if len(entries) == 0 && (len(options.types) > 0 || len(options.exclude) > 0) {
+			fatalf("df", "no file systems processed")
+			return 1
 		}
 	} else {
 		for _, path := range paths {
@@ -102,49 +528,131 @@ func cmdDf(args []string) int {
 				status = 1
 				continue
 			}
-			row, usageErr := filesystemUsage(path, findMount(absolute, mounts), human)
+			entry, usageErr := dfMeasure(path, findMount(absolute, mounts))
 			if usageErr != nil {
 				fatalf("df", "%s: %s", path, errText(usageErr))
 				status = 1
 				continue
 			}
-			rows = append(rows, row)
+			entry.file = path
+			entries = append(entries, entry)
 		}
 	}
-	if err := writeDfRows(os.Stdout, rows, human); err != nil {
+	if len(entries) == 0 {
+		// Every operand failed; df prints its diagnostics and no table at all.
+		return status
+	}
+	if options.total {
+		entries = append(entries, dfTotal(entries))
+	}
+	if err := options.writeTable(os.Stdout, entries); err != nil {
 		fatalf("df", "write error: %v", err)
 		return 1
 	}
 	return status
 }
 
-// writeDfRows prints the table with each column as wide as its widest entry.
-// The originals size the columns from the data, so a long device name shifts
-// that row's numbers instead of running into them.
-func writeDfRows(w io.Writer, rows []dfRow, human bool) error {
-	size, available := "1K-blocks", "Available"
-	if human {
-		size, available = "Size", "Avail"
+// keepsType applies the mount-table filters: the pseudo-filesystems df hides
+// without -a, and the -t, -x and -l restrictions.
+func (options *dfOptions) keepsType(mount mountInfo) bool {
+	if !options.all && dfDummyTypes[mount.fstype] {
+		return false
 	}
-	header := dfRow{"Filesystem", size, "Used", available, "Use%", "Mounted on"}
-	// df reserves fourteen columns for the device and five for each amount even
-	// when the values are shorter.
-	widths := []int{14, 5, 5, 5, 4, 0}
-	for _, row := range append([]dfRow{header}, rows...) {
-		for i, field := range []string{row.source, row.size, row.used, row.available, row.percent} {
-			if len(field) > widths[i] {
-				widths[i] = len(field)
+	if options.local && dfIsRemote(mount.source, mount.fstype) {
+		return false
+	}
+	for _, excluded := range options.exclude {
+		if excluded == mount.fstype {
+			return false
+		}
+	}
+	if len(options.types) > 0 {
+		for _, wanted := range options.types {
+			if wanted == mount.fstype {
+				return true
+			}
+		}
+		return false
+	}
+	return true
+}
+
+// dfTotal is the grand total row --total adds: the sums of the columns above
+// it, labelled the way df labels it.
+func dfTotal(entries []dfEntry) dfEntry {
+	total := dfEntry{source: "total", target: "-", isTotal: true}
+	for _, entry := range entries {
+		total.total += entry.total
+		total.used += entry.used
+		total.avail += entry.avail
+		total.itotal += entry.itotal
+		total.iused += entry.iused
+		total.iavail += entry.iavail
+	}
+	return total
+}
+
+// writeTable prints the selected fields with each column as wide as its widest
+// entry, and never narrower than the minimum df keeps for it. The last column
+// is not padded.
+func (options *dfOptions) writeTable(w io.Writer, entries []dfEntry) error {
+	rows := make([][]string, 0, len(entries)+1)
+	header := make([]string, 0, len(options.fields))
+	for _, name := range options.fields {
+		header = append(header, options.heading(name))
+	}
+	rows = append(rows, header)
+	for _, entry := range entries {
+		row := make([]string, 0, len(options.fields))
+		for _, name := range options.fields {
+			row = append(row, options.value(name, entry))
+		}
+		rows = append(rows, row)
+	}
+	widths := make([]int, len(options.fields))
+	lefts := make([]bool, len(options.fields))
+	for i, name := range options.fields {
+		for _, field := range dfFields {
+			if field.name == name {
+				widths[i], lefts[i] = field.minWidth, field.left
 			}
 		}
 	}
-	for _, row := range append([]dfRow{header}, rows...) {
-		if _, err := fmt.Fprintf(w, "%-*s %*s %*s %*s %*s %s\n",
-			widths[0], row.source, widths[1], row.size, widths[2], row.used,
-			widths[3], row.available, widths[4], row.percent, row.target); err != nil {
+	for _, row := range rows {
+		for i, cell := range row {
+			if len(cell) > widths[i] {
+				widths[i] = len(cell)
+			}
+		}
+	}
+	for _, row := range rows {
+		for i, cell := range row {
+			if i > 0 {
+				if _, err := io.WriteString(w, " "); err != nil {
+					return err
+				}
+			}
+			pad := widths[i]
+			if i == len(row)-1 && lefts[i] {
+				pad = 0
+			}
+			if _, err := fmt.Fprintf(w, "%*s", padWidth(pad, lefts[i]), cell); err != nil {
+				return err
+			}
+		}
+		if _, err := io.WriteString(w, "\n"); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// padWidth turns a column width into the sign fmt uses for its alignment.
+func padWidth(width int, left bool) int {
+	if left {
+		return -width
+	}
+	return width
 }
 
 func readMountInfo() ([]mountInfo, error) {
@@ -167,10 +675,13 @@ func readMountInfo() ([]mountInfo, error) {
 		if len(fields) < 6 || separator < 0 || separator+2 >= len(fields) {
 			continue
 		}
+		device, haveDevice := mountDevice(fields[2])
 		mounts = append(mounts, mountInfo{
 			source:     unescapeMountField(fields[separator+2]),
 			mountpoint: unescapeMountField(fields[4]),
 			fstype:     fields[separator+1],
+			dev:        device,
+			haveDev:    haveDevice,
 		})
 	}
 	return mounts, scanner.Err()
@@ -212,42 +723,35 @@ func canonicalDevice(source string) string {
 	return resolved
 }
 
-// filesystemUsage renders one filesystem's figures. Amounts are reported in
-// whole kibibytes rounded up, as df does, so a partly used block still counts.
-func filesystemUsage(path string, mount mountInfo, human bool) (dfRow, error) {
+// dfMeasure reads one filesystem's figures. Everything is kept in bytes and
+// inodes here; the unit options are applied when the row is rendered.
+func dfMeasure(path string, mount mountInfo) (dfEntry, error) {
 	var stat syscall.Statfs_t
 	if err := syscall.Statfs(path, &stat); err != nil {
-		return dfRow{}, err
+		return dfEntry{}, err
 	}
 	fragment := uint64(stat.Frsize) //nolint:gosec // Linux statfs fragment sizes are positive.
 	if fragment == 0 {
 		fragment = uint64(stat.Bsize) //nolint:gosec // Same.
 	}
-	total := stat.Blocks * fragment
-	available := stat.Bavail * fragment
-	used := total - stat.Bfree*fragment
-	percent := uint64(0)
-	if used+available > 0 {
-		percent = (used*100 + used + available - 1) / (used + available)
-	}
 	source := mount.source
 	if source == "" {
 		source = mount.fstype
 	}
-	amount := func(value uint64) string {
-		if human {
-			return humanSizeUint64(value)
-		}
-		return strconv.FormatUint((value+1023)/1024, 10)
+	entry := dfEntry{
+		source: source,
+		fstype: mount.fstype,
+		target: mount.mountpoint,
+		total:  stat.Blocks * fragment,
+		avail:  stat.Bavail * fragment,
+		itotal: stat.Files,
+		iavail: stat.Ffree,
 	}
-	return dfRow{
-		source:    source,
-		size:      amount(total),
-		used:      amount(used),
-		available: amount(available),
-		percent:   strconv.FormatUint(percent, 10) + "%",
-		target:    mount.mountpoint,
-	}, nil
+	entry.used = entry.total - stat.Bfree*fragment
+	if stat.Files >= stat.Ffree {
+		entry.iused = stat.Files - stat.Ffree
+	}
+	return entry, nil
 }
 
 type duIdentity struct {

@@ -436,13 +436,20 @@ func formatLsTime(t time.Time) string {
 // significant characters, always rounded up. The originals round away from zero
 // so a size never reads smaller than it is -- 3000 bytes is 3.0K, not 2.9K --
 // and a value that rounds up to a whole 1024 moves to the next unit.
-func humanSize(n int64) string {
-	const unit = 1024
-	if n < unit {
-		return strconv.FormatInt(n, 10)
+func humanSize(n int64) string { return humanSizeBase(uint64(n), 1024) } //nolint:gosec // G115: every caller passes a nonnegative size.
+
+// humanSizeBase is the same scaling in either base, since df's -H asks for
+// powers of 1000 under the same one-letter suffixes.
+func humanSizeBase(value uint64, unit uint64) string {
+	if value < unit {
+		return strconv.FormatUint(value, 10)
 	}
 	units := []string{"K", "M", "G", "T", "P", "E"}
-	value, divisor, index := uint64(n), uint64(unit), 0
+	if unit == 1000 {
+		// GNU spells the SI kilo with a small k and leaves the rest capitalised.
+		units[0] = "k"
+	}
+	divisor, index := unit, 0
 	for value/divisor >= unit && index < len(units)-1 {
 		divisor *= unit
 		index++

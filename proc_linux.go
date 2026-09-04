@@ -1422,25 +1422,129 @@ func signalName(signal syscall.Signal) string {
 	return strconv.Itoa(int(signal))
 }
 
+// freeOptions is one free(1) command line: the unit the numbers are printed
+// in, which extra rows are drawn, and how many times to repeat.
+type freeOptions struct {
+	unit      uint64
+	human     bool
+	si        bool
+	wide      bool
+	lohi      bool
+	total     bool
+	committed bool
+	line      bool
+	count     int64
+	interval  float64
+	repeat    bool
+}
+
 func cmdFree(args []string) int {
-	unit, human := uint64(1024), false
-	for _, arg := range args {
-		switch arg {
-		case "-h", "--human":
-			human = true
-		case "-b":
-			unit = 1
-		case "-k":
-			unit = 1024
-		case "-m":
-			unit = 1024 * 1024
-		case "-g":
-			unit = 1024 * 1024 * 1024
+	options := freeOptions{unit: 1024, count: 1, interval: 1}
+	// The unit options come in two families: -b/-k/-m/-g and their --kibi
+	// spellings are powers of 1024, while --kilo and its relatives are powers
+	// of 1000. Both are ignored under -h, which scales each value itself.
+	units := map[string]uint64{
+		"b": 1, "bytes": 1,
+		"k": 1 << 10, "kibi": 1 << 10, "m": 1 << 20, "mebi": 1 << 20,
+		"g": 1 << 30, "gibi": 1 << 30, "tebi": 1 << 40, "pebi": 1 << 50,
+		"kilo": 1e3, "mega": 1e6, "giga": 1e9, "tera": 1e12, "peta": 1e15,
+	}
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		name := strings.TrimLeft(arg, "-")
+		if !strings.HasPrefix(arg, "-") || arg == "-" {
+			return freeUsage("unrecognized option '%s'", arg)
+		}
+		takeValue := func() (string, bool) {
+			if eq := strings.IndexByte(arg, '='); strings.HasPrefix(arg, "--") && eq >= 0 {
+				return arg[eq+1:], true
+			}
+			i++
+			if i >= len(args) {
+				return "", false
+			}
+			return args[i], true
+		}
+		if eq := strings.IndexByte(name, '='); strings.HasPrefix(arg, "--") && eq >= 0 {
+			name = name[:eq]
+		}
+		if size, ok := units[name]; ok && (len(name) > 1 || len(arg) == 2) {
+			options.unit = size
+			continue
+		}
+		switch name {
+		case "h", "human":
+			options.human = true
+		case "si":
+			options.si = true
+		case "w", "wide":
+			options.wide = true
+		case "l", "lohi":
+			options.lohi = true
+		case "t", "total":
+			options.total = true
+		case "v", "committed":
+			options.committed = true
+		case "L", "line":
+			options.line = true
+		case "s", "seconds":
+			value, ok := takeValue()
+			if !ok {
+				return freeUsage("option requires an argument -- '%s'", name)
+			}
+			seconds, err := strconv.ParseFloat(value, 64)
+			if err != nil || seconds <= 0 {
+				fatalf("free", "seconds argument failed: '%s': Invalid argument", value)
+				return 1
+			}
+			options.interval, options.repeat = seconds, true
+		case "c", "count":
+			value, ok := takeValue()
+			if !ok {
+				return freeUsage("option requires an argument -- '%s'", name)
+			}
+			count, err := strconv.ParseInt(value, 10, 64)
+			if err != nil || count < 1 {
+				fatalf("free", "failed to parse count argument: '%s': Numerical result out of range", value)
+				return 1
+			}
+			options.count = count
 		default:
-			fatalf("free", "invalid option %q", arg)
-			return 1
+			if len(arg) == 2 {
+				return freeUsage("invalid option -- '%s'", name)
+			}
+			return freeUsage("unrecognized option '%s'", arg)
 		}
 	}
+	// -s with no -c repeats for ever; -c with no -s uses procps' one second.
+	if options.repeat && options.count == 1 {
+		options.count = -1
+	}
+	for iteration := int64(0); options.count < 0 || iteration < options.count; iteration++ {
+		if iteration > 0 {
+			fmt.Fprintln(os.Stdout)
+			time.Sleep(time.Duration(options.interval * float64(time.Second)))
+		}
+		if status := freeReport(&options); status != 0 {
+			return status
+		}
+	}
+	return 0
+}
+
+func freeUsage(format string, a ...interface{}) int {
+	fatalf("free", format, a...)
+	fmt.Fprintln(os.Stderr)
+	if err := writeAppletHelp(os.Stderr, "free"); err != nil {
+		fatalf("free", "%v", err)
+	}
+	return 1
+}
+
+// freeReport draws one block: the memory and swap rows, plus whichever of the
+// low/high, total and committed rows were asked for — or, under -L, the whole
+// thing as procps' single line.
+func freeReport(options *freeOptions) int {
 	values, err := readMeminfo()
 	if err != nil {
 		fatalf("free", "%v", err)
@@ -1460,35 +1564,95 @@ func cmdFree(args []string) int {
 		used = total - free - cache
 	}
 	swapTotal, swapFree := values["SwapTotal"], values["SwapFree"]
-	// Each column is twelve wide and the first ends at column twenty, which is
-	// what lines the header up with the numbers underneath it.
-	printMemory := func(label string, row []uint64) {
-		fmt.Fprintf(os.Stdout, "%-8s", label)
-		for _, value := range row {
-			if human {
-				fmt.Fprintf(os.Stdout, "%12s", scaleMemory(value))
-			} else {
-				fmt.Fprintf(os.Stdout, "%12d", value/unit)
-			}
+	swapUsed := swapTotal - swapFree
+	format := func(value uint64) string {
+		if options.human {
+			return scaleMemoryBase(value, options.si)
 		}
-		fmt.Fprintln(os.Stdout)
+		unit := options.unit
+		if options.si && unit == 1024 {
+			// --si without a unit of its own moves the default to powers of 1000.
+			unit = 1000
+		}
+		return strconv.FormatUint(value/unit, 10)
 	}
-	fmt.Fprintf(os.Stdout, "%-8s%12s%12s%12s%12s%12s%12s\n", "",
-		"total", "used", "free", "shared", "buff/cache", "available")
-	printMemory("Mem:", []uint64{total, used, free, values["Shmem"], cache, available})
-	printMemory("Swap:", []uint64{swapTotal, swapTotal - swapFree, swapFree})
+	out := bufio.NewWriter(os.Stdout)
+	defer out.Flush() //nolint:errcheck // a sticky write error is reported by the final Flush.
+	if options.line {
+		// The MemUse label carries a leading space of its own, which is what
+		// lines the single-line form's four fields up.
+		for _, field := range []struct {
+			label string
+			value uint64
+		}{{"SwapUse", swapUsed}, {"CachUse", cache}, {" MemUse", used}, {"MemFree", free}} {
+			fmt.Fprintf(out, "%s %11s ", field.label, format(field.value))
+		}
+		fmt.Fprintln(out)
+		return 0
+	}
+	row := func(label string, values ...uint64) {
+		fmt.Fprintf(out, "%-8s", label)
+		for _, value := range values {
+			fmt.Fprintf(out, "%12s", format(value))
+		}
+		fmt.Fprintln(out)
+	}
+	headings := []string{"total", "used", "free", "shared", "buff/cache", "available"}
+	if options.wide {
+		headings = []string{"total", "used", "free", "shared", "buffers", "cache", "available"}
+	}
+	fmt.Fprintf(out, "%-8s", "")
+	for _, heading := range headings {
+		fmt.Fprintf(out, "%12s", heading)
+	}
+	fmt.Fprintln(out)
+	if options.wide {
+		row("Mem:", total, used, free, values["Shmem"], values["Buffers"], cache-values["Buffers"], available)
+	} else {
+		row("Mem:", total, used, free, values["Shmem"], cache, available)
+	}
+	if options.lohi {
+		// Without a high-memory zone — every 64-bit kernel — the low rows are
+		// the whole of memory and the high rows are zero, as procps prints them.
+		highTotal, highFree := values["HighTotal"], values["HighFree"]
+		lowTotal, lowFree := total-highTotal, free-highFree
+		row("Low:", lowTotal, lowTotal-lowFree, lowFree)
+		row("High:", highTotal, highTotal-highFree, highFree)
+	}
+	row("Swap:", swapTotal, swapUsed, swapFree)
+	if options.total {
+		row("Total:", total+swapTotal, used+swapUsed, free+swapFree)
+	}
+	if options.committed {
+		limit, committed := values["CommitLimit"], values["Committed_AS"]
+		remaining := uint64(0)
+		if limit > committed {
+			remaining = limit - committed
+		}
+		row("Comm:", limit, committed, remaining)
+	}
 	return 0
 }
 
 // scaleMemory formats a byte count for free -h. It deliberately does not use
 // humanSize: free labels its units IEC-style (Ki, Mi, Gi) and truncates whole
 // numbers where the coreutils tools round up, so 11.7 GiB reads as 11Gi.
-func scaleMemory(value uint64) string {
+func scaleMemory(value uint64) string { return scaleMemoryBase(value, false) }
+
+// scaleMemoryBase is the same scaling in either base: --si asks for powers of
+// 1000, which free labels with the bare letter where the default IEC form uses
+// the two-letter prefix.
+func scaleMemoryBase(value uint64, si bool) string {
 	suffixes := []string{"B", "Ki", "Mi", "Gi", "Ti", "Pi", "Ei"}
+	step := uint64(1024)
+	if si {
+		suffixes = []string{"B", "K", "M", "G", "T", "P", "E"}
+		step = 1000
+	}
 	divisor := uint64(1)
 	index := 0
-	for index < len(suffixes)-1 && value/divisor >= 1024 {
-		divisor *= 1024
+	for index < len(suffixes)-1 && value/divisor >= step {
+		divisor *= step
 		index++
 	}
 	if whole := value / divisor; whole < 10 && index > 0 {

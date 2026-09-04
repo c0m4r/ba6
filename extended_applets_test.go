@@ -344,3 +344,209 @@ func TestParseNeighborRuleAndExtendedLinkSet(t *testing.T) {
 		t.Fatalf("link=%+v err=%v", link, err)
 	}
 }
+
+// TestFreeRowsAndUnits covers the rows and unit options free grew past -b/-k/-m/-g:
+// the extra rows each add one labelled line in procps' order, -w splits the
+// cache column, and the unit families divide by their own power.
+func TestFreeRowsAndUnits(t *testing.T) {
+	labels := func(t *testing.T, args []string) []string {
+		t.Helper()
+		status, out, errOut := captureApplet(t, cmdFree, args, "")
+		if status != 0 {
+			t.Fatalf("free %v = (%d, %q)", args, status, errOut)
+		}
+		lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+		names := make([]string, 0, len(lines))
+		for _, line := range lines {
+			// The header line has no label of its own; stand a dot in for it.
+			label, _, _ := strings.Cut(line, " ")
+			if label == "" {
+				label = "."
+			}
+			names = append(names, label)
+		}
+		return names
+	}
+	if got := strings.Join(labels(t, nil), " "); got != ". Mem: Swap:" {
+		t.Fatalf("free rows = %q", got)
+	}
+	// procps draws low/high above the swap row, and total then committed below it.
+	if got := strings.Join(labels(t, []string{"-l", "-t", "-v"}), " "); got != ". Mem: Low: High: Swap: Total: Comm:" {
+		t.Fatalf("free -l -t -v rows = %q", got)
+	}
+	status, out, _ := captureApplet(t, cmdFree, []string{"-w"}, "")
+	if status != 0 || !strings.Contains(out, "buffers") || !strings.Contains(out, "cache") || strings.Contains(out, "buff/cache") {
+		t.Fatalf("free -w header = %q", out)
+	}
+	// -t's row is the sum of the two above it, column by column.
+	_, out, _ = captureApplet(t, cmdFree, []string{"-t", "-b"}, "")
+	rows := map[string][]uint64{}
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n")[1:] {
+		fields := strings.Fields(line)
+		for _, field := range fields[1:] {
+			value, err := strconv.ParseUint(field, 10, 64)
+			if err != nil {
+				t.Fatalf("free -t -b printed %q", line)
+			}
+			rows[fields[0]] = append(rows[fields[0]], value)
+		}
+	}
+	for column := 0; column < 3; column++ {
+		if rows["Total:"][column] != rows["Mem:"][column]+rows["Swap:"][column] {
+			t.Fatalf("free -t column %d = %v, want the sum of %v and %v", column, rows["Total:"], rows["Mem:"], rows["Swap:"])
+		}
+	}
+	// Each unit family divides by its own power, so the same reading shrinks
+	// by 1024 from -b to -k and by 1000 from --bytes to --kilo.
+	value := func(args []string) uint64 {
+		t.Helper()
+		_, out, _ := captureApplet(t, cmdFree, args, "")
+		fields := strings.Fields(strings.Split(out, "\n")[1])
+		got, err := strconv.ParseUint(fields[1], 10, 64)
+		if err != nil {
+			t.Fatalf("free %v printed %q", args, out)
+		}
+		return got
+	}
+	bytes := value([]string{"-b"})
+	for _, c := range []struct {
+		args    []string
+		divisor uint64
+	}{
+		{[]string{"-k"}, 1 << 10}, {[]string{"-m"}, 1 << 20}, {[]string{"--kibi"}, 1 << 10},
+		{[]string{"--kilo"}, 1000}, {[]string{"--mega"}, 1e6}, {[]string{"--si"}, 1000},
+	} {
+		if got := value(c.args); got != bytes/c.divisor {
+			t.Fatalf("free %v = %d, want %d", c.args, got, bytes/c.divisor)
+		}
+	}
+	// -L is one line of four labelled fields, and -h scales rather than divides.
+	_, out, _ = captureApplet(t, cmdFree, []string{"-L"}, "")
+	if fields := strings.Fields(out); len(fields) != 8 || fields[0] != "SwapUse" || fields[6] != "MemFree" {
+		t.Fatalf("free -L = %q", out)
+	}
+	if _, out, _ = captureApplet(t, cmdFree, []string{"-h"}, ""); !strings.Contains(out, "i") && !strings.Contains(out, "B") {
+		t.Fatalf("free -h = %q", out)
+	}
+	// --si labels its powers of 1000 with the bare letter.
+	if _, out, _ = captureApplet(t, cmdFree, []string{"-h", "--si"}, ""); strings.Contains(strings.SplitN(out, "\n", 3)[1], "i") {
+		t.Fatalf("free -h --si = %q, want no IEC suffix", out)
+	}
+
+	// A bad count or interval is refused with procps' wording, and an unknown
+	// option prints the usage text.
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"-c", "0"}, "failed to parse count argument"},
+		{[]string{"-s", "x"}, "seconds argument failed"},
+		{[]string{"-q"}, "invalid option -- 'q'"},
+		{[]string{"--nosuch"}, "unrecognized option '--nosuch'"},
+	} {
+		status, out, errOut := captureApplet(t, cmdFree, c.args, "")
+		if status != 1 || out != "" || !strings.Contains(errOut, c.want) {
+			t.Fatalf("free %v = (%d, %q, %q), want %q", c.args, status, out, errOut, c.want)
+		}
+	}
+}
+
+// TestDfFieldsAndUnits covers the columns and unit options df grew past -h/-k/-a:
+// -i, -T, -P and --output pick the fields, and -B, -h and -H scale them.
+func TestDfFieldsAndUnits(t *testing.T) {
+	dir := t.TempDir()
+	header := func(t *testing.T, args []string) []string {
+		t.Helper()
+		status, out, errOut := captureApplet(t, cmdDf, args, "")
+		if status != 0 {
+			t.Fatalf("df %v = (%d, %q)", args, status, errOut)
+		}
+		return strings.Fields(strings.SplitN(out, "\n", 2)[0])
+	}
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{dir}, "Filesystem 1K-blocks Used Available Use% Mounted on"},
+		{[]string{"-h", dir}, "Filesystem Size Used Avail Use% Mounted on"},
+		{[]string{"-P", dir}, "Filesystem 1024-blocks Used Available Capacity Mounted on"},
+		{[]string{"-i", dir}, "Filesystem Inodes IUsed IFree IUse% Mounted on"},
+		{[]string{"-T", dir}, "Filesystem Type 1K-blocks Used Available Use% Mounted on"},
+		{[]string{"-BM", dir}, "Filesystem 1M-blocks Used Available Use% Mounted on"},
+		{[]string{"-B", "1M", dir}, "Filesystem 1M-blocks Used Available Use% Mounted on"},
+		// -h wins over -P, which only changes the plain table's wording.
+		{[]string{"-h", "-P", dir}, "Filesystem Size Used Avail Use% Mounted on"},
+		{[]string{"--output=target,pcent", dir}, "Mounted on Use%"},
+		{[]string{"--output", dir}, "Filesystem Type Inodes IUsed IFree IUse% 1K-blocks Used Avail Use% File Mounted on"},
+	} {
+		if got := strings.Join(header(t, c.args), " "); got != c.want {
+			t.Fatalf("df %v header = %q, want %q", c.args, got, c.want)
+		}
+	}
+	// A bare unit is echoed after every value; a size with a count is not.
+	_, out, _ := captureApplet(t, cmdDf, []string{"-B", "M", dir}, "")
+	size := strings.Fields(strings.Split(out, "\n")[1])[1]
+	if !strings.HasSuffix(size, "M") {
+		t.Fatalf("df -B M printed %q, want a unit suffix", size)
+	}
+	if _, out, _ = captureApplet(t, cmdDf, []string{"-B", "1M", dir}, ""); strings.HasSuffix(strings.Fields(strings.Split(out, "\n")[1])[1], "M") {
+		t.Fatalf("df -B 1M printed %q, want a bare count", out)
+	}
+	// The two human forms differ in base, and the SI kilo is a small k.
+	blocks := func(args []string) string {
+		t.Helper()
+		_, out, _ := captureApplet(t, cmdDf, args, "")
+		return strings.Fields(strings.Split(out, "\n")[1])[1]
+	}
+	if iec, si := blocks([]string{"-h", dir}), blocks([]string{"-H", dir}); iec == si && !strings.HasSuffix(iec, "0") {
+		t.Logf("human sizes %q and %q coincide on this filesystem", iec, si)
+	}
+	// --total adds a labelled row whose figures are the sum of the rows above.
+	_, out, _ = captureApplet(t, cmdDf, []string{"--total", "-B", "1", dir, dir}, "")
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	last := strings.Fields(lines[len(lines)-1])
+	if last[0] != "total" || last[len(last)-1] != "-" {
+		t.Fatalf("df --total last row = %q", lines[len(lines)-1])
+	}
+	first := strings.Fields(lines[1])
+	one, err := strconv.ParseUint(first[1], 10, 64)
+	if err != nil {
+		t.Fatalf("df printed %q", lines[1])
+	}
+	sum, err := strconv.ParseUint(last[1], 10, 64)
+	if err != nil || sum != 2*one {
+		t.Fatalf("df --total size = %v, want twice %d", last, one)
+	}
+	// -t selects by type, and a type nothing matches is an error.
+	_, out, _ = captureApplet(t, cmdDf, []string{"-T", dir}, "")
+	kind := strings.Fields(strings.Split(out, "\n")[1])[1]
+	if status, out, _ := captureApplet(t, cmdDf, []string{"-t", kind}, ""); status != 0 || !strings.Contains(out, kind) {
+		t.Fatalf("df -t %s = (%d, %q)", kind, status, out)
+	}
+	status, out, errOut := captureApplet(t, cmdDf, []string{"-t", "nosuchfstype"}, "")
+	if status != 1 || out != "" || !strings.Contains(errOut, "no file systems processed") {
+		t.Fatalf("df -t nosuchfstype = (%d, %q, %q)", status, out, errOut)
+	}
+
+	// Bad option values are reported with GNU's wording, and the ones that are
+	// command-line mistakes carry the Try line.
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--output=nope"}, "option --output: field 'nope' unknown"},
+		{[]string{"-B", "x"}, "invalid -B argument 'x'"},
+		{[]string{"-q"}, "invalid option -- 'q'"},
+		{[]string{"--nosuch"}, "unrecognized option '--nosuch'"},
+	} {
+		status, out, errOut := captureApplet(t, cmdDf, c.args, "")
+		if status != 1 || out != "" || !strings.Contains(errOut, c.want) {
+			t.Fatalf("df %v = (%d, %q, %q), want %q", c.args, status, out, errOut, c.want)
+		}
+	}
+	// Every operand failing leaves no table at all, only the diagnostics.
+	status, out, errOut = captureApplet(t, cmdDf, []string{filepath.Join(dir, "absent")}, "")
+	if status != 1 || out != "" || !strings.Contains(errOut, "No such file") {
+		t.Fatalf("df on a missing path = (%d, %q, %q)", status, out, errOut)
+	}
+}
