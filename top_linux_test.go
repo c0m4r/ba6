@@ -132,7 +132,7 @@ func TestTopBatchIncludesProcpsSummaryAreas(t *testing.T) {
 
 func TestTopUserCountSkipsSessionRefFifos(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(dir+"/119344", []byte("# This is private data.\nUID=0\nCLASS=user\n"), 0o644); err != nil {
+	if err := os.WriteFile(dir+"/119344", []byte("# This is private data.\nUID=0\nCLASS=user\n"), 0o600); err != nil {
 		t.Fatalf("write session: %v", err)
 	}
 	// systemd keeps a "<id>.ref" FIFO open per session; reading it blocks

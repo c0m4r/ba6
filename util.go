@@ -87,11 +87,53 @@ func shellNameByteIsSafe(b byte) bool {
 	return strings.IndexByte(shellNameBare, b) >= 0
 }
 
+// quoteLocaleName renders a value the way the originals' quote() does in the C
+// locale: always inside single quotes, with backslashes and control bytes
+// escaped. sort uses it to echo back a rejected -t argument.
+func quoteLocaleName(value string) string {
+	var b strings.Builder
+	b.WriteByte('\'')
+	for i := 0; i < len(value); i++ {
+		switch c := value[i]; c {
+		case '\\':
+			b.WriteString(`\\`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\t':
+			b.WriteString(`\t`)
+		case '\r':
+			b.WriteString(`\r`)
+		default:
+			if c < 0x20 || c == 0x7f {
+				fmt.Fprintf(&b, `\%03o`, c)
+				continue
+			}
+			b.WriteByte(c)
+		}
+	}
+	b.WriteByte('\'')
+	return b.String()
+}
+
+// quoteForceName quotes a name the way the tools that always quote do (touch's
+// "cannot touch 'x'", for one): the same rules as shellQuoteName, except that a
+// name needing no escaping still gets a plain pair of single quotes.
+func quoteForceName(name string) string {
+	if quoted := shellQuoteName(name); quoted != name {
+		return quoted
+	}
+	return "'" + name + "'"
+}
+
 // shellQuoteName renders name the way the GNU tools quote a path in a
 // diagnostic: bare when every byte is unambiguous, and otherwise quoted so the
 // result could be pasted back into a shell. Control characters need ANSI-C
 // $'..' escapes, so a single-quoted string alone is not always enough.
 func shellQuoteName(name string) string {
+	if name == "" {
+		// An empty name still needs a visible pair of quotes.
+		return "''"
+	}
 	safe, hasSingleQuote, doubleQuotable := true, false, true
 	for index := 0; index < len(name); index++ {
 		b := name[index]

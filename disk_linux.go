@@ -256,90 +256,428 @@ type duIdentity struct {
 }
 
 type duOptions struct {
-	human   bool
-	summary bool
-	all     bool
-	seen    map[duIdentity]bool
-	status  int
+	human     bool
+	summary   bool
+	all       bool
+	total     bool
+	separate  bool
+	inodes    bool
+	apparent  bool
+	oneFS     bool
+	deref     bool
+	derefArgs bool
+	null      bool
+	blockSize uint64
+	blockUnit string
+	maxDepth  int
+	threshold int64
+	excludes  []string
+	seen      map[duIdentity]bool
+	rootDev   uint64
+	grand     uint64
+	status    int
 }
 
+// duMaxDepth stands in for "no -d limit"; no directory tree comes near it.
+const duMaxDepth = 1 << 30
+
 func cmdDu(args []string) int {
-	opts := duOptions{seen: make(map[duIdentity]bool)}
+	opts := duOptions{
+		seen:      make(map[duIdentity]bool),
+		blockSize: 1024,
+		maxDepth:  duMaxDepth,
+	}
 	var paths []string
 	parsing := true
-	for _, arg := range args {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		next := func(name string) (string, bool) {
+			i++
+			if i >= len(args) {
+				fatalf("du", "option requires an argument -- '%s'", name)
+				return "", false
+			}
+			return args[i], true
+		}
+		var ok bool
 		switch {
 		case parsing && arg == "--":
 			parsing = false
-		case parsing && len(arg) > 1 && arg[0] == '-':
-			for _, flag := range arg[1:] {
-				switch flag {
-				case 'h':
-					opts.human = true
-				case 's':
-					opts.summary = true
-				case 'a':
-					opts.all = true
-				case 'k':
-				default:
-					fatalf("du", "invalid option -- '%c'", flag)
+		case parsing && strings.HasPrefix(arg, "--"):
+			name, argument, hasArgument := arg, "", false
+			if eq := strings.IndexByte(arg, '='); eq >= 0 {
+				name, argument, hasArgument = arg[:eq], arg[eq+1:], true
+			}
+			switch name {
+			case "--all":
+				opts.all = true
+			case "--summarize":
+				opts.summary = true
+			case "--human-readable":
+				opts.human = true
+			case "--total":
+				opts.total = true
+			case "--separate-dirs":
+				opts.separate = true
+			case "--inodes":
+				opts.inodes = true
+			case "--apparent-size":
+				opts.apparent = true
+			case "--one-file-system":
+				opts.oneFS = true
+			case "--dereference":
+				opts.deref = true
+			case "--dereference-args":
+				opts.derefArgs = true
+			case "--no-dereference":
+				opts.deref = false
+			case "--null":
+				opts.null = true
+			case "--bytes":
+				opts.apparent, opts.blockSize, opts.human = true, 1, false
+			case "--max-depth", "--block-size", "--threshold", "--exclude":
+				if !hasArgument {
+					if argument, ok = next(strings.TrimPrefix(name, "--")); !ok {
+						return 1
+					}
+				}
+				if !opts.setValueOption(name, argument) {
 					return 1
 				}
+			default:
+				duUsageError("unrecognized option '%s'", arg)
+				return 1
+			}
+		case parsing && len(arg) > 1 && arg[0] == '-':
+			if !opts.parseShort(arg, args, &i) {
+				return 1
 			}
 		default:
 			paths = append(paths, arg)
 		}
 	}
 	if opts.summary && opts.all {
-		fatalf("du", "options -a and -s are mutually exclusive")
+		duUsageError("cannot both summarize and show all entries")
 		return 1
+	}
+	if opts.summary {
+		opts.maxDepth = 0
 	}
 	if len(paths) == 0 {
 		paths = []string{"."}
 	}
 	for _, path := range paths {
-		bytes := opts.walk(path, true)
-		if opts.summary {
-			opts.print(bytes, path)
-		}
+		pathTotal, _ := opts.walk(path, 0, true)
+		opts.grand += pathTotal
+	}
+	if opts.total {
+		opts.print(opts.grand, "total")
 	}
 	return opts.status
 }
 
-func (d *duOptions) walk(path string, root bool) uint64 {
-	info, err := os.Lstat(path)
-	if err != nil {
-		fatalf("du", "%s: %v", path, err)
-		d.status = 1
-		return 0
+// parseShort consumes one bundled short-option word; -d, -B and -t take the
+// rest of the word or the next argument.
+func (d *duOptions) parseShort(arg string, args []string, i *int) bool {
+	for j := 1; j < len(arg); j++ {
+		flag := arg[j]
+		switch flag {
+		case 'h':
+			d.human = true
+		case 's':
+			d.summary = true
+		case 'a':
+			d.all = true
+		case 'c':
+			d.total = true
+		case 'S':
+			d.separate = true
+		case 'x':
+			d.oneFS = true
+		case 'L':
+			d.deref = true
+		case 'D', 'H':
+			d.derefArgs = true
+		case 'P':
+			d.deref = false
+		case '0':
+			d.null = true
+		case 'k':
+			d.blockSize, d.human = 1024, false
+		case 'm':
+			d.blockSize, d.human = 1024*1024, false
+		case 'b':
+			d.apparent, d.blockSize, d.human = true, 1, false
+		case 'd', 'B', 't':
+			value := arg[j+1:]
+			if value == "" {
+				*i++
+				if *i >= len(args) {
+					fatalf("du", "option requires an argument -- '%c'", flag)
+					return false
+				}
+				value = args[*i]
+			}
+			name := map[byte]string{'d': "--max-depth", 'B': "-B", 't': "-t"}[flag]
+			return d.setValueOption(name, value)
+		default:
+			duUsageError("invalid option -- '%c'", flag)
+			return false
+		}
 	}
-	bytes := allocatedBytes(info)
-	if st, ok := info.Sys().(*syscall.Stat_t); ok && st.Nlink > 1 && !info.IsDir() {
-		identity := duIdentity{dev: st.Dev, ino: st.Ino}
-		if d.seen[identity] {
+	return true
+}
+
+// setValueOption applies the options that carry a value.
+func (d *duOptions) setValueOption(name, value string) bool {
+	switch name {
+	case "--max-depth":
+		depth, err := strconv.Atoi(value)
+		if err != nil || depth < 0 {
+			duUsageError("invalid maximum depth %s", quoteLocaleName(value))
+			return false
+		}
+		d.maxDepth = depth
+	case "--block-size", "-B":
+		size, err := parseByteSize(value)
+		if err != nil || size == 0 {
+			// This one is reported without the "Try --help" line, and names
+			// the option the way it was written on the command line.
+			fatalf("du", "invalid %s argument %s", name, quoteLocaleName(value))
+			return false
+		}
+		d.blockSize, d.human = size, false
+		// A spec written as a bare unit ("-B K") makes the printed values
+		// carry that unit; one with a leading count ("-B 1K") does not.
+		d.blockUnit = ""
+		if len(value) > 0 && !isDigitByte(value[0]) {
+			d.blockUnit = value
+			if value == "KB" {
+				// SI kilo is spelled with a small k.
+				d.blockUnit = "kB"
+			}
+		}
+	case "--threshold", "-t":
+		text, sign := value, int64(1)
+		if strings.HasPrefix(text, "-") {
+			text, sign = text[1:], -1
+		}
+		size, err := parseByteSize(text)
+		if err != nil {
+			fatalf("du", "invalid %s argument %s", name, quoteLocaleName(value))
+			return false
+		}
+		d.threshold = sign * int64(size) //nolint:gosec // G115: a size this large cannot come from a real filesystem.
+	case "--exclude":
+		d.excludes = append(d.excludes, value)
+	}
+	return true
+}
+
+// duUsageError reports a bad command line the way the original does, with the
+// "Try ... --help" line after it.
+func duUsageError(format string, args ...any) {
+	fatalf("du", format, args...)
+	fmt.Fprintln(os.Stderr, "Try 'du --help' for more information.")
+}
+
+// parseByteSize parses the size arguments of -B and -t: a count with an
+// optional suffix, where a bare letter is a power of 1024 and a "B" suffix
+// (KB, MB) is a power of 1000.
+func parseByteSize(text string) (uint64, error) {
+	digits := 0
+	for digits < len(text) && isDigitByte(text[digits]) {
+		digits++
+	}
+	// A bare suffix means one of that unit, as in the original's "-t K".
+	amount := uint64(1)
+	if digits > 0 {
+		parsed, err := strconv.ParseUint(text[:digits], 10, 64)
+		if err != nil {
+			return 0, err
+		}
+		amount = parsed
+	} else if text == "" {
+		return 0, fmt.Errorf("empty size")
+	}
+	suffix := text[digits:]
+	unit := uint64(1024)
+	switch {
+	case suffix == "":
+		return amount, nil
+	case strings.HasSuffix(suffix, "B") && len(suffix) == 2:
+		unit = 1000
+		suffix = suffix[:1]
+	case strings.HasSuffix(suffix, "iB"):
+		suffix = suffix[:len(suffix)-2]
+	}
+	powers := map[string]uint{"K": 1, "k": 1, "M": 2, "G": 3, "T": 4, "P": 5, "E": 6}
+	power, ok := powers[suffix]
+	if !ok {
+		return 0, fmt.Errorf("unknown suffix %q", suffix)
+	}
+	for i := uint(0); i < power; i++ {
+		amount *= unit
+	}
+	return amount, nil
+}
+
+// excluded reports whether --exclude covers this path. The original matches the
+// pattern against the path as walked, that path without its "./" prefix, and
+// the bare name.
+func (d *duOptions) excluded(path string) bool {
+	base := filepath.Base(path)
+	trimmed := strings.TrimPrefix(path, "./")
+	for _, pattern := range d.excludes {
+		for _, candidate := range []string{path, trimmed, base} {
+			if matched, err := filepath.Match(pattern, candidate); err == nil && matched {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// countOf returns what this entry contributes: one inode for --inodes, the
+// apparent size for --apparent-size/-b, and the allocated blocks otherwise.
+func (d *duOptions) countOf(info os.FileInfo) uint64 {
+	switch {
+	case d.inodes:
+		return 1
+	case d.apparent:
+		if info.IsDir() {
+			// The original counts no apparent size for a directory itself.
 			return 0
 		}
-		d.seen[identity] = true
+		return uint64(info.Size()) //nolint:gosec // G115: file sizes are nonnegative.
 	}
-	if !info.IsDir() {
-		if d.all || root && !d.summary {
-			d.print(bytes, path)
-		}
-		return bytes
+	return allocatedBytes(info)
+}
+
+// walk sums one path, printing the entries that -a/-d/-S/-t select. It returns
+// the amount to add to the parent's total, which is not always what was
+// printed: -S prints a directory without its subdirectories but still passes
+// the full total up.
+// It returns the total to add to the parent, and how much of that came from
+// this entry itself rather than from a subdirectory, which is what -S prints.
+func (d *duOptions) walk(path string, depth int, isRoot bool) (total, outsideDirs uint64) {
+	if d.excluded(path) {
+		return 0, 0
 	}
-	entries, err := os.ReadDir(path)
+	info, err := d.statOf(path, isRoot)
 	if err != nil {
-		fatalf("du", "%s: %v", path, err)
+		fatalf("du", "cannot access %s: %s", quoteForceName(path), errText(err))
 		d.status = 1
-		return bytes
+		return 0, 0
 	}
-	for _, entry := range entries {
-		bytes += d.walk(filepath.Join(path, entry.Name()), false)
+	st, haveStat := info.Sys().(*syscall.Stat_t)
+	if haveStat {
+		if isRoot && d.oneFS {
+			d.rootDev = st.Dev
+		}
+		if d.oneFS && !isRoot && st.Dev != d.rootDev {
+			return 0, 0
+		}
+		// A hard link or a repeated operand is counted once, and the repeat is
+		// not listed at all.
+		if st.Nlink > 1 || info.IsDir() {
+			identity := duIdentity{dev: st.Dev, ino: st.Ino}
+			if d.seen[identity] {
+				return 0, 0
+			}
+			d.seen[identity] = true
+		}
 	}
-	if !d.summary {
-		d.print(bytes, path)
+	own := d.countOf(info)
+	if !info.IsDir() {
+		if d.all && depth <= d.maxDepth || isRoot {
+			d.report(own, path)
+		}
+		return own, own
 	}
-	return bytes
+
+	entries, err := readDirRaw(path)
+	if err != nil {
+		fatalf("du", "cannot read directory %s: %s", quoteForceName(path), errText(err))
+		d.status = 1
+		return own, own
+	}
+	below, direct := uint64(0), own
+	for _, name := range entries {
+		childTotal, childOutside := d.walk(duJoin(path, name), depth+1, false)
+		below += childTotal
+		direct += childOutside
+	}
+	if depth <= d.maxDepth {
+		shown := own + below
+		if d.separate {
+			shown = direct
+		}
+		d.report(shown, path)
+	}
+	return own + below, 0
+}
+
+// duJoin appends a child name to a directory path. filepath.Join would clean
+// away the "./" of the default operand, which the original keeps.
+func duJoin(dir, name string) string {
+	if strings.HasSuffix(dir, "/") {
+		return dir + name
+	}
+	return dir + "/" + name
+}
+
+// statOf follows symlinks for -L, and for -D/-H on a command-line operand.
+func (d *duOptions) statOf(path string, isRoot bool) (os.FileInfo, error) {
+	if d.deref || (isRoot && d.derefArgs) {
+		return os.Stat(path)
+	}
+	return os.Lstat(path)
+}
+
+// readDirRaw lists a directory in the order the kernel returns it, which is
+// the order the original walks and prints in.
+func readDirRaw(path string) ([]string, error) {
+	dir, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	names, err := dir.Readdirnames(-1)
+	if closeErr := dir.Close(); closeErr != nil && err == nil {
+		err = closeErr
+	}
+	return names, err
+}
+
+// report prints one entry unless -t excludes it.
+func (d *duOptions) report(amount uint64, path string) {
+	if d.threshold > 0 && amount < uint64(d.threshold) { //nolint:gosec // G115: guarded by the sign test.
+		return
+	}
+	if d.threshold < 0 && amount > uint64(-d.threshold) { //nolint:gosec // G115: guarded by the sign test.
+		return
+	}
+	d.print(amount, path)
+}
+
+func (d *duOptions) print(amount uint64, path string) {
+	value := strconv.FormatUint((amount+d.blockSize-1)/d.blockSize, 10) + d.blockUnit
+	switch {
+	case d.inodes:
+		value = strconv.FormatUint(amount, 10)
+		if d.human {
+			value = humanSizeUint64(amount)
+		}
+	case d.human:
+		value = humanSizeUint64(amount)
+	}
+	terminator := "\n"
+	if d.null {
+		terminator = "\x00"
+	}
+	if _, err := fmt.Fprintf(os.Stdout, "%s\t%s%s", value, path, terminator); err != nil {
+		d.status = 1
+	}
 }
 
 func allocatedBytes(info os.FileInfo) uint64 {
@@ -347,14 +685,4 @@ func allocatedBytes(info os.FileInfo) uint64 {
 		return uint64(st.Blocks) * 512 //nolint:gosec // st_blocks is nonnegative for filesystem objects.
 	}
 	return uint64(info.Size()) //nolint:gosec // File sizes for ordinary filesystem objects are nonnegative.
-}
-
-func (d *duOptions) print(bytes uint64, path string) {
-	value := strconv.FormatUint((bytes+1023)/1024, 10)
-	if d.human {
-		value = humanSizeUint64(bytes)
-	}
-	if _, err := fmt.Fprintf(os.Stdout, "%s\t%s\n", value, path); err != nil {
-		d.status = 1
-	}
 }

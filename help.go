@@ -635,8 +635,23 @@ Estimate allocated disk usage recursively.
 Options:
   -a        print sizes for files as well as directories
   -s        report one total per operand
+  -c        add a grand total line
+  -d N      only report entries N levels deep or less
+  -S        report a directory without its subdirectories
+  -x        stay on the filesystem the operand lives on
+  -L        measure what a symlink points at
+  -D        do that for operands only
   -h        human-readable sizes
   -k        display 1K blocks (default)
+  -m        display 1M blocks
+  -b        apparent bytes rather than allocated blocks
+  -B SIZE   display SIZE-byte blocks; a bare unit (K, MB) is echoed back
+  -t SIZE   skip entries below SIZE; a negative SIZE skips those above it
+  -0        end each line with a NUL byte
+  --apparent-size  count the bytes a file claims, not what it occupies
+  --inodes  count inodes instead of space
+  --exclude=PATTERN
+            skip names matching PATTERN
   --help    show this help`,
 	"find": `Usage: find [PATH]... [EXPRESSION]
 Walk each PATH and evaluate EXPRESSION without executing external commands.
@@ -834,15 +849,30 @@ Options:
   -h        act on symlinks themselves, not on what they point to
   --help    show this help`,
 	"date": `Usage: date [OPTION]... [+FORMAT]
-Display the current time; this applet does not set the system clock.
+Display a time, or set the system clock with -s.
 
 Options:
   -u        use UTC
   -r FILE   display FILE's modification time
+  -d STRING show the time STRING names instead of now
+  -s STRING set the clock to the time STRING names (needs privilege)
+  -f FILE   show one time per line of FILE
+  -R        write an RFC 5322 stamp
+  -I[SPEC]  write an ISO 8601 stamp; SPEC is date, hours, minutes,
+            seconds or ns
+  --rfc-3339=SPEC
+            write an RFC 3339 stamp; SPEC is date, seconds or ns
+  --resolution
+            print the clock's resolution
   --help    show this help
 
+STRING may be a calendar date, a clock time, @SECONDS, a day word
+(today, yesterday, tomorrow, a weekday name) or a relative amount such
+as "+1 hour", "3 months ago" or "next monday", and these may be
+combined.
+
 FORMAT accepts common strftime directives including %F, %T, %Y, %m, %d,
-%H, %M, %S, %s, %N, %z, and %Z.`,
+%H, %M, %S, %s, %N, %j, %U, %W, %V, %G, %z, %:z, and %Z.`,
 	"dirname": `Usage: dirname NAME...
 Print the leading path of each NAME, dropping the final component.
 
@@ -1059,7 +1089,17 @@ Options:
   -c        do not create files
   -a        change only access time
   -m        change only modification time
-  --help    show this help`,
+  -d STRING use the time STRING names instead of now
+  -t STAMP  use [[CC]YY]MMDDhhmm[.ss]
+  -r FILE   copy FILE's timestamps
+  -h        act on a symlink itself, not on what it points to
+  -f        accepted and ignored
+  --time=WORD
+            change the access time for atime/access/use, the
+            modification time for mtime/modify
+  --help    show this help
+
+STRING takes the same forms date -d accepts.`,
 	"pwd": `Usage: pwd [-LP]
 Print the current working directory.
 
@@ -1081,11 +1121,23 @@ Sort lines of text.
 
 Options:
   -n        compare numeric prefixes
+  -g        compare as floating point, exponents included
+  -h        compare numbers with a size suffix
+  -M        compare three-letter month names
   -r        reverse the result
   -u        emit one line per equal key
   -f        fold case
+  -d        weigh only blanks and alphanumerics
+  -i        drop unprintable bytes before comparing
   -b        ignore leading blanks
+  -s        keep equal lines in input order
   -c        check ordering without producing output
+  -C        check quietly, reporting only through the exit status
+  -k KEYDEF sort on a part of the line: F[.C][OPTS][,F[.C][OPTS]],
+            where OPTS are any of bdfgiMnr for that key alone
+  -t SEP    split fields on SEP instead of at the start of a blank run
+  -o FILE   write the result to FILE
+  -z        lines end with a NUL byte
   --help    show this help`,
 	"uniq": `Usage: uniq [OPTION]... [INPUT [OUTPUT]]
 Collapse adjacent equal lines.
@@ -1177,15 +1229,20 @@ Options:
             a repeating size or +N for an increment)
   --help    show this help`,
 	"cut": `Usage: cut OPTION... [FILE]...
-Select fields or character positions from each line.
+Select fields, characters or bytes from each line.
 
 Options:
   -f LIST   select fields
   -c LIST   select character positions
+  -b LIST   select byte positions
   -d CHAR   use CHAR as the field delimiter
   -s        suppress lines without delimiters
+  -n        accepted and ignored
+  -z        lines end with a NUL byte
+  --complement
+            keep what LIST does not select
   --output-delimiter=STRING
-            join selected fields with STRING
+            write STRING between the pieces that are kept
   --help    show this help`,
 	"tr": `Usage: tr [OPTION]... SET1 [SET2]
 Translate, delete, or squeeze bytes from standard input.
