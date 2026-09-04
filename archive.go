@@ -6,6 +6,7 @@ package main
 import (
 	"archive/tar"
 	"compress/gzip"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -657,71 +658,488 @@ func resolveArchiveLink(base, link string) string {
 	return current
 }
 
+// gzipUsage reports a command-line mistake the way gzip does, with its own
+// backquoted spelling of the "Try ..." line.
+func gzipUsage(format string, a ...interface{}) int {
+	fatalf("gzip", format, a...)
+	fmt.Fprintln(os.Stderr, "Try `gzip --help' for more information.")
+	return 1
+}
+
+// gzipOptions is one gzip or gunzip command line.
+type gzipOptions struct {
+	decompress bool
+	stdout     bool
+	keep       bool
+	force      bool
+	test       bool
+	list       bool
+	verbose    bool
+	quiet      bool
+	recursive  bool
+	noName     bool // -n: store no name or timestamp, and restore neither
+	useName    bool // -N: restore the stored name and timestamp
+	suffix     string
+	level      int
+	// status is the exit status: 1 for an error, 2 for a warning, as in the
+	// original.
+	status int
+	// listed marks that the -l header has already been printed.
+	listed bool
+	// totals accumulate across the operands of one -l run. The original counts
+	// only the last member's container bytes towards the totals row's ratio,
+	// because it keeps that figure in a single variable.
+	totalIn, totalOut uint64
+	lastOverhead      uint64
+	files             int
+}
+
+//nolint:gocyclo // one option table; splitting it would only scatter the command line.
 func cmdGzip(args []string) int {
-	decompress, stdout, keep, force := false, false, false, false
+	options := gzipOptions{suffix: ".gz", level: gzip.DefaultCompression}
 	var files []string
 	parsing := true
-	for _, arg := range args {
-		if parsing && arg == "--" {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !parsing || arg == "-" || !strings.HasPrefix(arg, "-") {
+			files = append(files, arg)
+			continue
+		}
+		if arg == "--" {
 			parsing = false
 			continue
 		}
-		if parsing && len(arg) > 1 && arg[0] == '-' {
-			for _, flag := range arg[1:] {
-				switch flag {
-				case 'd':
-					decompress = true
-				case 'c':
-					stdout = true
-				case 'k':
-					keep = true
-				case 'f':
-					force = true
-				default:
-					fatalf("gzip", "invalid option -- '%c'", flag)
-					return 1
+		if strings.HasPrefix(arg, "--") {
+			name, value, hasValue := arg, "", false
+			if eq := strings.IndexByte(arg, '='); eq >= 0 {
+				name, value, hasValue = arg[:eq], arg[eq+1:], true
+			}
+			switch name {
+			case "--decompress", "--uncompress":
+				options.decompress = true
+			case "--stdout", "--to-stdout":
+				options.stdout = true
+			case "--keep":
+				options.keep = true
+			case "--force":
+				options.force = true
+			case "--test":
+				options.test, options.decompress = true, true
+			case "--list":
+				options.list = true
+			case "--verbose":
+				options.verbose = true
+			case "--quiet", "--silent":
+				options.quiet = true
+			case "--recursive":
+				options.recursive = true
+			case "--no-name":
+				options.noName, options.useName = true, false
+			case "--name":
+				options.useName, options.noName = true, false
+			case "--fast":
+				options.level = gzip.BestSpeed
+			case "--best":
+				options.level = gzip.BestCompression
+			case "--suffix":
+				if !hasValue {
+					i++
+					if i >= len(args) {
+						fatalf("gzip", "option '--suffix' requires an argument")
+						return 1
+					}
+					value = args[i] //nolint:gosec // G602: the bound was just checked above.
 				}
+				options.suffix = value
+			default:
+				return gzipUsage("unrecognized option '%s'", arg)
 			}
 			continue
 		}
-		files = append(files, arg)
-	}
-	if len(files) == 0 {
-		files, stdout = []string{"-"}, true
-	}
-	status := 0
-	for _, name := range files {
-		if err := transformGzipFile(name, decompress, stdout, keep, force); err != nil {
-			fatalf("gzip", "%s: %v", name, err)
-			status = 1
+		cluster := arg[1:]
+		for len(cluster) > 0 {
+			flag := cluster[0]
+			cluster = cluster[1:]
+			switch flag {
+			case 'd':
+				options.decompress = true
+			case 'c':
+				options.stdout = true
+			case 'k':
+				options.keep = true
+			case 'f':
+				options.force = true
+			case 't':
+				options.test, options.decompress = true, true
+			case 'l':
+				options.list = true
+			case 'v':
+				options.verbose = true
+			case 'q':
+				options.quiet = true
+			case 'r':
+				options.recursive = true
+			case 'n':
+				options.noName, options.useName = true, false
+			case 'N':
+				options.useName, options.noName = true, false
+			case '1', '2', '3', '4', '5', '6', '7', '8', '9':
+				options.level = int(flag - '0')
+			case 'S':
+				value := cluster
+				cluster = ""
+				if value == "" {
+					i++
+					if i >= len(args) {
+						fatalf("gzip", "option requires an argument -- 'S'")
+						return 1
+					}
+					value = args[i] //nolint:gosec // G602: the bound was just checked above.
+				}
+				options.suffix = value
+			default:
+				return gzipUsage("invalid option -- '%c'", flag)
+			}
 		}
 	}
-	return status
+	if len(files) == 0 {
+		files, options.stdout = []string{"-"}, true
+	}
+	for _, name := range files {
+		options.handle(name)
+	}
+	if options.list && options.files > 1 {
+		options.printListRow("(totals)", options.totalOut, options.totalIn,
+			gzipHeader{overhead: options.lastOverhead})
+	}
+	return options.status
 }
 
 func cmdGunzip(args []string) int {
 	return cmdGzip(append([]string{"-d"}, args...))
 }
 
-func transformGzipFile(name string, decompress, stdout, keep, force bool) (retErr error) {
+// fail reports an error and sets the exit status the original uses for it: 1
+// for a real failure, 2 for something it calls a warning.
+func (o *gzipOptions) fail(status int, format string, a ...interface{}) {
+	if !o.quiet {
+		fatalf("gzip", format, a...)
+	}
+	if status > o.status {
+		o.status = status
+	}
+}
+
+// failFormat reports a member that is not gzip at all. The original prints this
+// one whatever -q says, and puts a blank line in front of it.
+func (o *gzipOptions) failFormat(name string) {
+	fmt.Fprintf(os.Stderr, "\ngzip: %s: not in gzip format\n", name)
+	if o.status < 1 {
+		o.status = 1
+	}
+}
+
+// handle deals with one operand, descending into it under -r.
+func (o *gzipOptions) handle(name string) {
+	if name != "-" && o.recursive {
+		if info, err := os.Lstat(name); err == nil && info.IsDir() {
+			entries, readErr := os.ReadDir(name)
+			if readErr != nil {
+				o.fail(1, "%s: %s", name, errText(readErr))
+				return
+			}
+			for _, entry := range entries {
+				o.handle(filepath.Join(name, entry.Name()))
+			}
+			return
+		}
+	}
+	switch {
+	case o.list:
+		o.listOne(name)
+	case o.test:
+		o.testOne(name)
+	default:
+		o.transform(name)
+	}
+}
+
+// gzipHeader is what the front of a member says about the file it holds.
+type gzipHeader struct {
+	name    string
+	modTime time.Time
+	method  string
+	crc     uint32
+	// overhead is the part of the member that is not deflate output, which the
+	// ratio leaves out.
+	overhead uint64
+}
+
+// readGzipInfo reads one member's header and the size the trailer records,
+// which is all -l and -t's listing need.
+func readGzipInfo(path string) (gzipHeader, uint64, uint64, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return gzipHeader{}, 0, 0, err
+	}
+	defer file.Close()
+	reader, err := gzip.NewReader(file)
+	if err != nil {
+		// gzip words this one itself rather than passing on the library's text.
+		return gzipHeader{}, 0, 0, fmt.Errorf("not in gzip format")
+	}
+	defer reader.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return gzipHeader{}, 0, 0, err
+	}
+	compressed := uint64(info.Size()) //nolint:gosec // G115: a file size is nonnegative.
+	// The last four bytes of the stream hold the uncompressed size modulo 2^32,
+	// which is what the original reports without reading the data back.
+	var trailer [8]byte
+	if compressed >= 8 {
+		if _, err := file.ReadAt(trailer[:], info.Size()-8); err != nil {
+			return gzipHeader{}, 0, 0, err
+		}
+	}
+	header := gzipHeader{
+		name:     reader.Name,
+		modTime:  reader.ModTime,
+		method:   "defla",
+		crc:      binary.LittleEndian.Uint32(trailer[0:4]),
+		overhead: gzipOverhead(path),
+	}
+	return header, compressed, uint64(binary.LittleEndian.Uint32(trailer[4:8])), nil
+}
+
+// listOne prints one -l row.
+func (o *gzipOptions) listOne(name string) {
+	header, compressed, uncompressed, err := readGzipInfo(name)
+	if err != nil {
+		if err.Error() == "not in gzip format" {
+			o.failFormat(name)
+			return
+		}
+		o.fail(1, "%s: %s", name, errText(err))
+		return
+	}
+	o.files++
+	o.totalIn += uncompressed
+	o.totalOut += compressed
+	o.lastOverhead = header.overhead
+	o.printListRow(o.listedName(name, header), compressed, uncompressed, header)
+}
+
+// listedName is the name -l reports: the file's own name with its suffix taken
+// off, which is the name it would decompress to. Only -N asks for the name the
+// member itself carries.
+func (o *gzipOptions) listedName(name string, header gzipHeader) string {
+	if o.useName && header.name != "" {
+		return header.name
+	}
+	if stripped, ok := gzipStripSuffix(name, o.suffix); ok {
+		return stripped
+	}
+	return name
+}
+
+func (o *gzipOptions) printListRow(name string, compressed, uncompressed uint64, header gzipHeader) {
+	if !o.listed {
+		o.listed = true
+		if o.verbose {
+			fmt.Print("method  crc     date  time  ")
+		}
+		fmt.Printf("%19s%20s%7s %s\n", "compressed", "uncompressed", "ratio", "uncompressed_name")
+	}
+	if o.verbose {
+		stamp := header.modTime
+		if stamp.IsZero() {
+			stamp = time.Unix(0, 0)
+		}
+		fmt.Printf("%-5s %08x %s ", header.method, header.crc, stamp.Format("Jan _2 15:04"))
+	}
+	fmt.Printf("%19d%20d%7s %s\n", compressed, uncompressed, gzipRatio(compressed, uncompressed, header.overhead), name)
+}
+
+// gzipRatio is the space saved. The original measures the deflate stream
+// alone, so the member's header and its eight-byte trailer are taken off the
+// compressed side first — which is why gzip reports a better ratio than the
+// two file sizes alone would suggest.
+func gzipRatio(compressed, uncompressed, overhead uint64) string {
+	if uncompressed == 0 {
+		return "0.0%"
+	}
+	payload := int64(0)
+	if compressed > overhead {
+		payload = int64(compressed - overhead) //nolint:gosec // G115: a file size fits an int64.
+	}
+	// The original prints this with "%5.1f%%", so the tenth is rounded, and a
+	// stream that grew rather than shrank reports a negative ratio.
+	total := int64(uncompressed) //nolint:gosec // G115: same.
+	saved := (total - payload) * 1000
+	if saved < 0 {
+		saved -= total / 2
+	} else {
+		saved += total / 2
+	}
+	tenths := saved / total
+	sign := ""
+	if tenths < 0 {
+		sign, tenths = "-", -tenths
+	}
+	return fmt.Sprintf("%s%d.%d%%", sign, tenths/10, tenths%10)
+}
+
+// gzipOverhead is how many bytes of one member are not deflate output: the
+// header, whose length depends on which optional fields it carries, and the
+// trailer.
+func gzipOverhead(path string) uint64 {
+	file, err := os.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer file.Close()
+	var fixed [10]byte
+	if _, err := io.ReadFull(file, fixed[:]); err != nil {
+		return 0
+	}
+	length, flags := uint64(10), fixed[3]
+	skipString := func() {
+		buffer := make([]byte, 1)
+		for {
+			if _, err := io.ReadFull(file, buffer); err != nil {
+				return
+			}
+			length++
+			if buffer[0] == 0 {
+				return
+			}
+		}
+	}
+	if flags&0x04 != 0 { // FEXTRA
+		var extra [2]byte
+		if _, err := io.ReadFull(file, extra[:]); err == nil {
+			size := uint64(binary.LittleEndian.Uint16(extra[:]))
+			length += 2 + size
+			if _, err := file.Seek(int64(size), io.SeekCurrent); err != nil { //nolint:gosec // G115: a 16-bit length fits an int64.
+				return length + 8
+			}
+		}
+	}
+	if flags&0x08 != 0 { // FNAME
+		skipString()
+	}
+	if flags&0x10 != 0 { // FCOMMENT
+		skipString()
+	}
+	if flags&0x02 != 0 { // FHCRC
+		length += 2
+	}
+	return length + 8
+}
+
+// testOne checks one member end to end without writing anything out.
+func (o *gzipOptions) testOne(name string) {
+	input, err := openInput(name)
+	if err != nil {
+		o.fail(1, "%s: %s", name, errText(err))
+		return
+	}
+	defer input.Close()
+	reader, err := gzip.NewReader(input)
+	if err != nil {
+		o.failFormat(name)
+		return
+	}
+	defer reader.Close()
+	// The output is discarded, so there is nothing for an oversized member to
+	// fill; -t exists precisely to read one all the way through.
+	if _, err := io.Copy(io.Discard, reader); err != nil { //nolint:gosec // G110: nothing is stored, so a large member costs only time.
+		o.fail(1, "%s: %s", name, gzipErrorText(err))
+		return
+	}
+	if o.verbose {
+		fmt.Printf("%s:\t OK\n", name)
+	}
+}
+
+// gzipErrorText words the two integrity failures the way the original does.
+func gzipErrorText(err error) string {
+	switch {
+	case errors.Is(err, gzip.ErrChecksum):
+		return "invalid compressed data--crc error"
+	case errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF):
+		return "unexpected end of file"
+	}
+	return errText(err)
+}
+
+// gzipStripSuffix takes a known compressed suffix off a name.
+func gzipStripSuffix(name, suffix string) (string, bool) {
+	if suffix != "" && strings.HasSuffix(name, suffix) {
+		return strings.TrimSuffix(name, suffix), true
+	}
+	for _, known := range []string{".gz", ".z", "-gz", "-z", "_z"} {
+		if strings.HasSuffix(name, known) {
+			return strings.TrimSuffix(name, known), true
+		}
+	}
+	for _, known := range []struct{ from, to string }{{".tgz", ".tar"}, {".taz", ".tar"}} {
+		if strings.HasSuffix(name, known.from) {
+			return strings.TrimSuffix(name, known.from) + known.to, true
+		}
+	}
+	return name, false
+}
+
+func (o *gzipOptions) transform(name string) {
+	if err := o.transformOne(name); err != nil {
+		var warning gzipWarning
+		if errors.As(err, &warning) {
+			o.fail(2, "%s", warning.text)
+			return
+		}
+		if err.Error() == "not in gzip format" {
+			o.failFormat(name)
+			return
+		}
+		o.fail(1, "%s: %s", name, gzipErrorText(err))
+	}
+}
+
+// gzipWarning is a failure the original counts as a warning, which exits 2 and
+// carries its own complete message.
+type gzipWarning struct{ text string }
+
+func (w gzipWarning) Error() string { return w.text }
+
+//nolint:gocyclo // one straight-line path per direction, with the file swap at the end.
+func (o *gzipOptions) transformOne(name string) (retErr error) {
 	input, err := openInput(name)
 	if err != nil {
 		return err
 	}
 	defer input.Close()
 	outputName := "-"
-	if !stdout && name != "-" {
-		if decompress {
-			switch {
-			case strings.HasSuffix(name, ".gz"):
-				outputName = strings.TrimSuffix(name, ".gz")
-			case strings.HasSuffix(name, ".tgz"):
-				outputName = strings.TrimSuffix(name, ".tgz") + ".tar"
-			default:
-				return fmt.Errorf("unknown suffix -- use -c")
+	if !o.stdout && name != "-" {
+		if o.decompress {
+			stripped, ok := gzipStripSuffix(name, o.suffix)
+			if !ok {
+				return gzipWarning{fmt.Sprintf("%s: unknown suffix -- ignored", name)}
+			}
+			outputName = stripped
+			// -N writes to the name the member carries, so the "already
+			// exists" check has to see that name rather than the derived one.
+			if o.useName {
+				if header, _, _, err := readGzipInfo(name); err == nil && header.name != "" {
+					outputName = filepath.Join(filepath.Dir(name), header.name)
+				}
 			}
 		} else {
-			outputName = name + ".gz"
+			if strings.HasSuffix(name, o.suffix) {
+				return gzipWarning{fmt.Sprintf("%s already has %s suffix -- unchanged", name, o.suffix)}
+			}
+			outputName = name + o.suffix
 		}
 	}
 	var output io.WriteCloser
@@ -729,8 +1147,8 @@ func transformGzipFile(name string, decompress, stdout, keep, force bool) (retEr
 	if outputName == "-" {
 		output = nopWriteCloser{os.Stdout}
 	} else {
-		if _, statErr := os.Lstat(outputName); statErr == nil && !force {
-			return fmt.Errorf("output file exists")
+		if _, statErr := os.Lstat(outputName); statErr == nil && !o.force {
+			return gzipWarning{fmt.Sprintf("%s already exists;\tnot overwritten", outputName)}
 		} else if statErr != nil && !os.IsNotExist(statErr) {
 			return statErr
 		}
@@ -747,29 +1165,43 @@ func transformGzipFile(name string, decompress, stdout, keep, force bool) (retEr
 			_ = os.Remove(temporaryName)
 		}
 	}()
-	if decompress {
+	var stored gzipHeader
+	written := uint64(0)
+	read := uint64(0)
+	if info, statErr := os.Stat(name); statErr == nil {
+		read = uint64(info.Size()) //nolint:gosec // G115: a file size is nonnegative.
+	}
+	if o.decompress {
 		reader, gzipErr := gzip.NewReader(input)
 		if gzipErr != nil {
 			output.Close()
-			return gzipErr
+			return fmt.Errorf("not in gzip format")
 		}
-		written, copyErr := io.Copy(output, io.LimitReader(reader, maxExpandedArchiveBytes+1)) //nolint:gosec // G110: output is explicitly capped at 64 GiB.
+		stored = gzipHeader{name: reader.Name, modTime: reader.ModTime}
+		count, copyErr := io.Copy(output, io.LimitReader(reader, maxExpandedArchiveBytes+1)) //nolint:gosec // G110: output is explicitly capped at 64 GiB.
 		err = copyErr
-		if err == nil && written > maxExpandedArchiveBytes {
+		written = uint64(count) //nolint:gosec // G115: io.Copy reports a nonnegative count.
+		if err == nil && count > maxExpandedArchiveBytes {
 			err = fmt.Errorf("decompressed data exceeds the 64 GiB limit")
 		}
 		if closeErr := reader.Close(); err == nil {
 			err = closeErr
 		}
 	} else {
-		writer := gzip.NewWriter(output)
-		if name != "-" {
+		writer, levelErr := gzip.NewWriterLevel(output, o.level)
+		if levelErr != nil {
+			output.Close()
+			return levelErr
+		}
+		if name != "-" && !o.noName {
 			writer.Name = filepath.Base(name)
 			if info, statErr := os.Stat(name); statErr == nil {
 				writer.ModTime = info.ModTime()
 			}
 		}
-		_, err = io.Copy(writer, input)
+		count, copyErr := io.Copy(writer, input)
+		read = uint64(count) //nolint:gosec // G115: same.
+		err = copyErr
 		if closeErr := writer.Close(); err == nil {
 			err = closeErr
 		}
@@ -781,12 +1213,39 @@ func transformGzipFile(name string, decompress, stdout, keep, force bool) (retEr
 		return err
 	}
 	if temporaryName != "" {
+		if info, statErr := os.Stat(temporaryName); statErr == nil {
+			written = uint64(info.Size()) //nolint:gosec // G115: same.
+		}
+		// -N restores the timestamp the member carried, and its name when the
+		// caller did not choose one.
+		if o.decompress && o.useName && !stored.modTime.IsZero() {
+			_ = os.Chtimes(temporaryName, stored.modTime, stored.modTime)
+		}
+		if info, statErr := os.Stat(name); statErr == nil {
+			_ = os.Chmod(temporaryName, info.Mode().Perm())
+			if !o.decompress || !o.useName {
+				_ = os.Chtimes(temporaryName, info.ModTime(), info.ModTime())
+			}
+		}
 		if err := os.Rename(temporaryName, outputName); err != nil {
 			return err
 		}
 	}
 	success = true
-	if name != "-" && outputName != "-" && !keep {
+	if o.verbose && name != "-" {
+		// The percentage is the space the compressed side saves, whichever
+		// direction the transform went in.
+		compressed, uncompressed, container := read, written, gzipOverhead(name)
+		if !o.decompress {
+			compressed, uncompressed, container = written, read, gzipOverhead(outputName)
+		}
+		if outputName == "-" {
+			fmt.Fprintf(os.Stderr, "%s:\t%7s\n", name, gzipRatio(compressed, uncompressed, container))
+		} else {
+			fmt.Fprintf(os.Stderr, "%s:\t%6s -- replaced with %s\n", name, gzipRatio(compressed, uncompressed, container), outputName)
+		}
+	}
+	if name != "-" && outputName != "-" && !o.keep {
 		if err := input.Close(); err != nil {
 			return err
 		}

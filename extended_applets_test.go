@@ -550,3 +550,138 @@ func TestDfFieldsAndUnits(t *testing.T) {
 		t.Fatalf("df on a missing path = (%d, %q, %q)", status, out, errOut)
 	}
 }
+
+// TestGzipListTestAndLevels covers what gzip grew past -c/-d/-k/-f: the listing,
+// the integrity check, the compression levels and the name and suffix options.
+func TestGzipListTestAndLevels(t *testing.T) {
+	dir := t.TempDir()
+	body := strings.Repeat("hello world ", 400)
+	source := filepath.Join(dir, "data.txt")
+	if err := os.WriteFile(source, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// A level really changes the result, and every level round-trips.
+	sizes := map[int]int64{}
+	for _, level := range []int{1, 9} {
+		copyPath := filepath.Join(dir, fmt.Sprintf("level%d.txt", level))
+		if err := os.WriteFile(copyPath, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if status := cmdGzip([]string{fmt.Sprintf("-%d", level), copyPath}); status != 0 {
+			t.Fatalf("gzip -%d = %d", level, status)
+		}
+		info, err := os.Stat(copyPath + ".gz")
+		if err != nil {
+			t.Fatal(err)
+		}
+		sizes[level] = info.Size()
+		status, out, _ := captureApplet(t, cmdGzip, []string{"-dc", copyPath + ".gz"}, "")
+		if status != 0 || out != body {
+			t.Fatalf("level %d did not round-trip: (%d, %d bytes)", level, status, len(out))
+		}
+	}
+	if sizes[9] >= sizes[1] {
+		t.Fatalf("-9 produced %d bytes against -1's %d", sizes[9], sizes[1])
+	}
+
+	// -l reports the two sizes and a ratio that leaves the member's own
+	// header and trailer out of the compressed side.
+	archive := filepath.Join(dir, "listed.txt")
+	if err := os.WriteFile(archive, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if status := cmdGzip([]string{"-k", archive}); status != 0 {
+		t.Fatalf("gzip -k = %d", status)
+	}
+	status, out, errOut := captureApplet(t, cmdGzip, []string{"-l", archive + ".gz"}, "")
+	if status != 0 {
+		t.Fatalf("gzip -l = (%d, %q)", status, errOut)
+	}
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 2 || !strings.HasSuffix(lines[0], "uncompressed_name") {
+		t.Fatalf("gzip -l printed %q", out)
+	}
+	fields := strings.Fields(lines[1])
+	if len(fields) != 4 || fields[1] != strconv.Itoa(len(body)) || fields[3] != archive {
+		t.Fatalf("gzip -l row = %v", fields)
+	}
+	compressed, err := strconv.ParseUint(fields[0], 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The ratio counts the deflate stream alone, so it beats the one the two
+	// file sizes alone would give.
+	naive := gzipRatio(compressed, uint64(len(body)), 0)
+	if fields[2] == naive {
+		t.Fatalf("gzip -l ratio %s did not discount the container", fields[2])
+	}
+
+	// -t is silent on a good member and reports a bad one; -tv says OK.
+	if status, out, errOut = captureApplet(t, cmdGzip, []string{"-t", archive + ".gz"}, ""); status != 0 || out != "" || errOut != "" {
+		t.Fatalf("gzip -t on a good member = (%d, %q, %q)", status, out, errOut)
+	}
+	if _, out, _ = captureApplet(t, cmdGzip, []string{"-tv", archive + ".gz"}, ""); out != archive+".gz:\t OK\n" {
+		t.Fatalf("gzip -tv = %q", out)
+	}
+	status, _, errOut = captureApplet(t, cmdGzip, []string{"-t", source}, "")
+	if status != 1 || !strings.Contains(errOut, "not in gzip format") {
+		t.Fatalf("gzip -t on a plain file = (%d, %q)", status, errOut)
+	}
+	// A corrupt member is reported as a checksum failure.
+	corrupt := filepath.Join(dir, "corrupt.gz")
+	good, err := os.ReadFile(archive + ".gz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	good[len(good)-6] ^= 0xff
+	if err := os.WriteFile(corrupt, good, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if status, _, errOut = captureApplet(t, cmdGzip, []string{"-t", corrupt}, ""); status != 1 ||
+		!strings.Contains(errOut, "invalid compressed data--crc error") {
+		t.Fatalf("gzip -t on a corrupt member = (%d, %q)", status, errOut)
+	}
+
+	// -S chooses the suffix in both directions.
+	suffixed := filepath.Join(dir, "suffixed.txt")
+	if err := os.WriteFile(suffixed, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if status := cmdGzip([]string{"-S", ".z", suffixed}); status != 0 {
+		t.Fatalf("gzip -S = %d", status)
+	}
+	if _, err := os.Stat(suffixed + ".z"); err != nil {
+		t.Fatalf("gzip -S did not use the suffix: %v", err)
+	}
+	if status := cmdGzip([]string{"-d", "-S", ".z", suffixed + ".z"}); status != 0 {
+		t.Fatalf("gzip -d -S = %d", status)
+	}
+
+	// -n stores neither name nor timestamp, so -lN falls back to the file name.
+	anonymous := filepath.Join(dir, "anon.txt")
+	if err := os.WriteFile(anonymous, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if status := cmdGzip([]string{"-n", "-k", anonymous}); status != 0 {
+		t.Fatalf("gzip -n = %d", status)
+	}
+	header, _, _, err := readGzipInfo(anonymous + ".gz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if header.name != "" || !header.modTime.IsZero() {
+		t.Fatalf("gzip -n stored %q and %v", header.name, header.modTime)
+	}
+
+	// An unknown suffix is the original's warning, and exits 2.
+	if status, _, errOut = captureApplet(t, cmdGzip, []string{"-d", source}, ""); status != 2 ||
+		!strings.Contains(errOut, "unknown suffix -- ignored") {
+		t.Fatalf("gzip -d on a plain name = (%d, %q)", status, errOut)
+	}
+	// So does an output file that is already there.
+	if status, _, errOut = captureApplet(t, cmdGzip, []string{"-k", archive}, ""); status != 2 ||
+		!strings.Contains(errOut, "already exists;\tnot overwritten") {
+		t.Fatalf("gzip over an existing archive = (%d, %q)", status, errOut)
+	}
+}

@@ -817,20 +817,44 @@ Decompress gzip streams. With no FILE, read stdin and write stdout.
 Decompressed output is limited to 64 GiB per input stream.
 
 Options:
-  -c        write to standard output
-  -k        keep input files
-  -f        replace existing output files
-  --help    show this help`,
+  -c, --stdout           write to standard output and keep the input
+  -d, --decompress       decompress
+  -f, --force            replace an existing output file
+  -k, --keep             keep the input file
+  -l, --list             list what a member holds instead of unpacking it
+  -n, --no-name          store or restore neither the name nor the timestamp
+  -N, --name             store or restore both
+  -q, --quiet            suppress the warnings
+  -r, --recursive        descend into directories
+  -S, --suffix=SUF       use SUF instead of .gz
+  -t, --test             check integrity without writing anything
+  -v, --verbose          report each file and its ratio
+  --help                 show this help`,
 	"gzip": `Usage: gzip [OPTION]... [FILE]...
-Compress or decompress gzip streams using the Go standard library.
+Compress or decompress gzip streams. With no FILE, read stdin and write stdout.
 Decompressed output is limited to 64 GiB per input stream.
 
 Options:
-  -d        decompress
-  -c        write to standard output
-  -k        keep input files
-  -f        replace existing output files
-  --help    show this help`,
+  -1 .. -9, --fast, --best
+                         compression level, from quickest to smallest
+  -c, --stdout           write to standard output and keep the input
+  -d, --decompress       decompress
+  -f, --force            replace an existing output file
+  -k, --keep             keep the input file
+  -l, --list             list what a member holds instead of unpacking it
+  -n, --no-name          store or restore neither the name nor the timestamp
+  -N, --name             store or restore both
+  -q, --quiet            suppress the warnings
+  -r, --recursive        descend into directories
+  -S, --suffix=SUF       use SUF instead of .gz
+  -t, --test             check integrity without writing anything
+  -v, --verbose          report each file and its ratio
+  --help                 show this help
+
+The compressed bytes come from Go's deflate encoder, so a stream is a little
+larger or smaller than the original tool's at the same level; both read each
+other's output. The reported ratio measures the deflate stream alone, leaving
+out the member's header and trailer, exactly as the original reports it.`,
 	"hostname": `Usage: hostname [-a|-d|-f|-i|-s|-y] [NAME]
 Display or set the system hostname.
 
