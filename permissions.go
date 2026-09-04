@@ -17,9 +17,18 @@ import (
 // it is a directory (needed for symbolic 'X').
 type modeComputer func(old os.FileMode, isDir bool) os.FileMode
 
+// chmodUsage reports a command-line mistake the way chmod does, with the
+// "Try ..." line after the diagnostic.
+func chmodUsage(format string, a ...interface{}) int {
+	fatalf("chmod", format, a...)
+	fmt.Fprintln(os.Stderr, "Try 'chmod --help' for more information.")
+	return 1
+}
+
 func cmdChmod(args []string) int {
 	args = expandShortOptions(args, "")
 	recursive, verbose, changesOnly, quiet := false, false, false, false
+	preserveRoot := false
 	reference := ""
 	haveReference := false
 	var operands []string
@@ -46,9 +55,14 @@ func cmdChmod(args []string) int {
 			reference, haveReference = args[i], true
 		case parsing && strings.HasPrefix(arg, "--reference="):
 			reference, haveReference = strings.TrimPrefix(arg, "--reference="), true
+		case parsing && arg == "--preserve-root":
+			preserveRoot = true
+		case parsing && arg == "--no-preserve-root":
+			preserveRoot = false
+		case parsing && strings.HasPrefix(arg, "--"):
+			return chmodUsage("unrecognized option '%s'", arg)
 		case parsing && len(arg) > 1 && arg[0] == '-':
-			fatalf("chmod", "invalid option '%s'", arg)
-			return 1
+			return chmodUsage("invalid option -- '%c'", arg[1])
 		default:
 			operands = append(operands, arg)
 		}
@@ -58,8 +72,7 @@ func cmdChmod(args []string) int {
 	var files []string
 	if haveReference {
 		if len(operands) < 1 {
-			fatalf("chmod", "missing file operand")
-			return 1
+			return chmodUsage("missing file operand")
 		}
 		refInfo, err := os.Stat(reference)
 		if err != nil {
@@ -71,27 +84,23 @@ func cmdChmod(args []string) int {
 		files = operands
 	} else {
 		if len(operands) < 1 {
-			fatalf("chmod", "missing operand")
-			return 1
+			return chmodUsage("missing operand")
 		}
 		if len(operands) < 2 {
-			fatalf("chmod", "missing operand after '%s'", operands[0])
-			return 1
+			return chmodUsage("missing operand after '%s'", operands[0])
 		}
 		spec := operands[0]
 		if len(spec) > 0 && spec[0] >= '0' && spec[0] <= '9' {
 			parsed, err := strconv.ParseUint(strings.TrimPrefix(spec, "0o"), 8, 32)
 			if err != nil || parsed > 0o7777 {
-				fatalf("chmod", "invalid mode: '%s'", spec)
-				return 1
+				return chmodUsage("invalid mode: '%s'", spec)
 			}
 			target := fileModeFromOctal(parsed)
 			compute = func(os.FileMode, bool) os.FileMode { return target }
 		} else {
 			ops, err := parseSymbolicMode(spec)
 			if err != nil {
-				fatalf("chmod", "%v", err)
-				return 1
+				return chmodUsage("%v", err)
 			}
 			umask := currentUmask()
 			compute = func(old os.FileMode, isDir bool) os.FileMode {
@@ -106,6 +115,15 @@ func cmdChmod(args []string) int {
 	}
 
 	if recursive {
+		if preserveRoot {
+			for _, path := range files {
+				if filepath.Clean(path) == "/" {
+					fatalf("chmod", "it is dangerous to operate recursively on '/'")
+					fmt.Fprintln(os.Stderr, "chmod: use --no-preserve-root to override this failsafe")
+					return 1
+				}
+			}
+		}
 		return chmodRecursive(files, compute, quiet, verbose, changesOnly)
 	}
 	return chmodApply(files, compute, quiet, verbose, changesOnly)
@@ -143,6 +161,17 @@ func chmodApply(paths []string, compute modeComputer, quiet, verbose, changesOnl
 // enabled temporarily so chmod can also be used to repair locked trees.
 func chmodRecursive(roots []string, compute modeComputer, quiet, verbose, changesOnly bool) int {
 	status := 0
+	// The walk is collected in the order the original reports in — a directory
+	// before its contents — but applied in the opposite order, so a mode that
+	// takes away a directory's search bit is set only once everything inside
+	// it has been reached. The reports are held back and printed in walk order
+	// so the output still matches.
+	type chmodStep struct {
+		path   string
+		info   os.FileInfo
+		report string
+	}
+	var steps []*chmodStep
 	var visit func(string)
 	visit = func(path string) {
 		info, err := os.Lstat(path)
@@ -156,38 +185,57 @@ func chmodRecursive(roots []string, compute modeComputer, quiet, verbose, change
 		if info.Mode()&os.ModeSymlink != 0 {
 			return
 		}
-		if info.IsDir() {
-			entries, readErr := os.ReadDir(path)
-			if os.IsPermission(readErr) {
-				if err := os.Chmod(path, info.Mode()|0o700); err == nil {
-					entries, readErr = os.ReadDir(path)
-				} else {
-					readErr = err
-				}
-			}
-			if readErr != nil {
-				if !quiet {
-					fatalf("chmod", "cannot access '%s': %v", path, errText(readErr))
-				}
-				status = 1
+		steps = append(steps, &chmodStep{path: path, info: info})
+		if !info.IsDir() {
+			return
+		}
+		entries, readErr := os.ReadDir(path)
+		if os.IsPermission(readErr) {
+			// A directory the caller cannot read is opened up for the walk, so
+			// that chmod can repair a tree that has locked itself out.
+			if err := os.Chmod(path, info.Mode()|0o700); err == nil {
+				entries, readErr = os.ReadDir(path)
 			} else {
-				for _, entry := range entries {
-					visit(filepath.Join(path, entry.Name()))
-				}
+				readErr = err
 			}
 		}
-		newMode := compute(info.Mode(), info.IsDir())
-		if err := os.Chmod(path, newMode); err != nil {
+		if readErr != nil {
 			if !quiet {
-				fatalf("chmod", "cannot change '%s': %v", path, errText(err))
+				fatalf("chmod", "cannot access '%s': %v", path, errText(readErr))
 			}
 			status = 1
-		} else {
-			reportChmod(path, info.Mode(), newMode, verbose, changesOnly)
+			return
 		}
+		for _, entry := range entries {
+			visit(filepath.Join(path, entry.Name()))
+		}
+	}
+	// Each operand is applied and reported before the next one starts, so
+	// naming a directory twice reads the second pass's modes, as it does in
+	// the original.
+	apply := func() {
+		for i := len(steps) - 1; i >= 0; i-- {
+			step := steps[i]
+			newMode := compute(step.info.Mode(), step.info.IsDir())
+			if err := os.Chmod(step.path, newMode); err != nil {
+				if !quiet {
+					fatalf("chmod", "cannot change '%s': %v", step.path, errText(err))
+				}
+				status = 1
+				continue
+			}
+			step.report = chmodReport(step.path, step.info.Mode(), newMode, verbose, changesOnly)
+		}
+		for _, step := range steps {
+			if step.report != "" {
+				fmt.Print(step.report)
+			}
+		}
+		steps = steps[:0]
 	}
 	for _, root := range roots {
 		visit(root)
+		apply()
 	}
 	return status
 }
@@ -195,17 +243,23 @@ func chmodRecursive(roots []string, compute modeComputer, quiet, verbose, change
 // reportChmod prints the -v/-c change line GNU chmod does; it is a no-op
 // unless one of those flags was given.
 func reportChmod(path string, old, updated os.FileMode, verbose, changesOnly bool) {
+	fmt.Print(chmodReport(path, old, updated, verbose, changesOnly))
+}
+
+// chmodReport builds that line, so a recursive run can hold it back and print
+// the batch in walk order.
+func chmodReport(path string, old, updated os.FileMode, verbose, changesOnly bool) string {
 	if !verbose && !changesOnly {
-		return
+		return ""
 	}
 	oldBits, newBits := octalFromFileMode(old), octalFromFileMode(updated)
 	if oldBits == newBits {
 		if verbose {
-			fmt.Printf("mode of '%s' retained as 0%03o (%s)\n", path, newBits, modeString(updated)[1:])
+			return fmt.Sprintf("mode of '%s' retained as 0%03o (%s)\n", path, newBits, modeString(updated)[1:])
 		}
-		return
+		return ""
 	}
-	fmt.Printf("mode of '%s' changed from 0%03o (%s) to 0%03o (%s)\n",
+	return fmt.Sprintf("mode of '%s' changed from 0%03o (%s) to 0%03o (%s)\n",
 		path, oldBits, modeString(old)[1:], newBits, modeString(updated)[1:])
 }
 

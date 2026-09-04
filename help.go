@@ -1005,12 +1005,26 @@ Options:
   --preserve-root        refuse to recurse on /
   --no-preserve-root     do not (the default)
   --help                 show this help`,
-	"chmod": `Usage: chmod [OPTION]... OCTAL_MODE FILE...
-Change file permissions using an octal mode from 0000 through 7777.
+	"chmod": `Usage: chmod [OPTION]... MODE FILE...
+       chmod [OPTION]... --reference=RFILE FILE...
+Change file permissions. MODE is an octal number from 0000 through 7777, or a
+symbolic list such as u+x,go=rX, where X only sets execute on a directory or on
+a file that already has one.
 
 Options:
-  -R        operate recursively
-  --help    show this help`,
+  -R, --recursive        operate recursively
+  -c, --changes          report only the files that actually change
+  -f, --silent, --quiet  suppress the error messages
+  -v, --verbose          report every file, changed or not
+  --reference=RFILE      copy RFILE's mode instead of taking a MODE operand
+  --preserve-root        refuse to recurse on /
+  --no-preserve-root     do not (the default)
+  --help                 show this help
+
+A recursive run applies each directory's new mode after everything inside it,
+so a mode that drops the search bit cannot lock the walk out part-way; the
+original applies it on the way in and stops there. The reports still come out
+in the original's order.`,
 	"chown": `Usage: chown [OPTION]... OWNER[:GROUP] FILE...
        chown [OPTION]... --reference=RFILE FILE...
 Set file ownership. OWNER and GROUP accept names or numeric IDs; an empty half

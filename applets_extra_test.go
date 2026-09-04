@@ -635,3 +635,67 @@ func TestChownOptions(t *testing.T) {
 		t.Fatalf("chgrp -Rv printed %q", out)
 	}
 }
+
+// TestChmodRecursiveOrderAndRoot covers the two things chmod grew last: the
+// --preserve-root failsafe, and the recursive walk that applies a directory's
+// mode after its contents while still reporting in the original's order.
+func TestChmodRecursiveOrderAndRoot(t *testing.T) {
+	dir := t.TempDir()
+	tree := filepath.Join(dir, "tree")
+	if err := os.MkdirAll(filepath.Join(tree, "sub"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"f", "sub/g"} {
+		if err := os.WriteFile(filepath.Join(tree, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The reports come out parent-first even though the modes are applied
+	// child-first.
+	status, out, errOut := captureApplet(t, cmdChmod, []string{"-Rv", "0700", tree}, "")
+	if status != 0 {
+		t.Fatalf("chmod -Rv = (%d, %q)", status, errOut)
+	}
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 4 || !strings.Contains(lines[0], "'"+tree+"'") ||
+		!strings.Contains(lines[2], filepath.Join(tree, "sub")+"'") {
+		t.Fatalf("chmod -Rv printed %q", out)
+	}
+	// Every entry really did change, the directory that lost its search bit
+	// included.
+	for _, name := range []string{".", "f", "sub", "sub/g"} {
+		info, err := os.Stat(filepath.Join(tree, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o700 {
+			t.Fatalf("%s has mode %v", name, info.Mode())
+		}
+	}
+
+	// --preserve-root refuses a recursive run on /, with the original's two
+	// lines; it is off by default.
+	status, out, errOut = captureApplet(t, cmdChmod, []string{"-R", "--preserve-root", "755", "/"}, "")
+	if status != 1 || out != "" || !strings.Contains(errOut, "it is dangerous to operate recursively on '/'") ||
+		!strings.Contains(errOut, "use --no-preserve-root to override this failsafe") {
+		t.Fatalf("chmod --preserve-root / = (%d, %q, %q)", status, out, errOut)
+	}
+
+	// The command-line diagnostics carry the Try line, as the original's do.
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{nil, "missing operand"},
+		{[]string{"755"}, "missing operand after '755'"},
+		{[]string{"999", tree}, "invalid mode: '999'"},
+		{[]string{"-Q", "755", tree}, "invalid option -- 'Q'"},
+		{[]string{"--nosuch", "755", tree}, "unrecognized option '--nosuch'"},
+	} {
+		status, out, errOut := captureApplet(t, cmdChmod, c.args, "")
+		if status != 1 || out != "" || !strings.Contains(errOut, c.want) ||
+			!strings.Contains(errOut, "Try 'chmod --help'") {
+			t.Fatalf("chmod %v = (%d, %q, %q), want %q", c.args, status, out, errOut, c.want)
+		}
+	}
+}

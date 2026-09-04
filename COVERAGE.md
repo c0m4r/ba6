@@ -12,7 +12,7 @@ measured against its original; nothing is left under
 [Not yet assessed](#not-yet-assessed).
 
 **Short answer to "which are 1:1?"** — of the 170, 29 are genuine drop-ins,
-64 more are near-complete, 68 are partial in ways that stay invisible until a
+65 more are near-complete, 67 are partial in ways that stay invisible until a
 script reaches for a flag, none are so narrow that they should not be treated as
 a replacement at all, and 9 have no upstream counterpart to compare
 against; see the [verdict table](#verdict-in-one-table). `netstat`, `ps aux`/
@@ -32,8 +32,8 @@ options listed per applet below.
 | Tier | Meaning | Applets |
 |---|---|---|
 | **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `base64` `basename` `cksum` `comm` `cut` `dirname` `echo` `expand` `false` `fold` `join` `mknod` `nice` `nl` `paste` `pivot_root` `printenv` `pwd` `seq` `sleep` `split` `tac` `touch` `tr` `true` `tty` `uname` `unexpand` `whoami` |
-| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chown` `chroot` `cmp` `cp` `date` `dd` `df` `du` `env` `expr` `find` `free` `grep` `groupadd` `head` `host` `hostname` `hwclock` `id` `kill` `ln` `ls` `lspci` `lsusb` `md5sum` `mkdir` `mktemp` `mv` `nohup` `pidof` `printf` `ps` `readlink` `realpath` `renice` `pgrep` `pkill` `rm` `rmdir` `setsid` `sha1sum` `sha256sum` `sha512sum` `sort` `stat` `strings` `sync` `sysctl` `tail` `tee` `test` `timeout` `top` `uniq` `uptime` `wc` `which` `xargs` |
-| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `blkid` `cfdisk` `chmod` `cpio` `curl` `diff` `dig` `dmesg` `fdisk` `file` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `getty` `gunzip` `gzip` `hexdump` `iftop` `insmod` `ip` `iptables` `less` `login` `losetup` `lsblk` `lsmod` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkswap` `modprobe` `mount` `mtr` `nano` `nc` `ncdu` `netstat` `nslookup` `od` `passwd` `ping` `rmmod` `sed` `sfdisk` `sh` `ss` `swapoff` `swapon` `tar` `traceroute` `tree` `umount` `unxz` `unzip` `unzstd` `useradd` `watch` `wget` `xz` `zip` `zstd` |
+| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `date` `dd` `df` `du` `env` `expr` `find` `free` `grep` `groupadd` `head` `host` `hostname` `hwclock` `id` `kill` `ln` `ls` `lspci` `lsusb` `md5sum` `mkdir` `mktemp` `mv` `nohup` `pidof` `printf` `ps` `readlink` `realpath` `renice` `pgrep` `pkill` `rm` `rmdir` `setsid` `sha1sum` `sha256sum` `sha512sum` `sort` `stat` `strings` `sync` `sysctl` `tail` `tee` `test` `timeout` `top` `uniq` `uptime` `wc` `which` `xargs` |
+| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `blkid` `cfdisk` `cpio` `curl` `diff` `dig` `dmesg` `fdisk` `file` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `getty` `gunzip` `gzip` `hexdump` `iftop` `insmod` `ip` `iptables` `less` `login` `losetup` `lsblk` `lsmod` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkswap` `modprobe` `mount` `mtr` `nano` `nc` `ncdu` `netstat` `nslookup` `od` `passwd` `ping` `rmmod` `sed` `sfdisk` `sh` `ss` `swapoff` `swapon` `tar` `traceroute` `tree` `umount` `unxz` `unzip` `unzstd` `useradd` `watch` `wget` `xz` `zip` `zstd` |
 | **D — narrow subset** | A slice of the original; do not treat as a replacement | _(none)_ |
 | **N/A** | ba6-specific, no upstream counterpart | `completion` `halt` `help` `init` `man` `poweroff` `reboot` `switch_root` `udhcpc` |
 
@@ -143,6 +143,7 @@ Absent behaviour rather than wrong behaviour, each of which touches many applets
 | `blockdev` | 12/26 | `--getpbsz` `--getiomin` `--getioopt` `--getalignoff` `--setbsz` `--getsize` `--getfra`/`--setfra` `--getdiskseq` `--getzonesz` `-q` `-v` | the 12 present cover the recovery cases _(src)_ |
 | `bunzip2` / `bzip2` | 6/12 | `-t` `-1`..`-9` `-v` `-z` `-L` | round-trips against the real tool in both directions, unlike the xz and zstd pair. `-c` `-d` `-k` `-f`, the in-place convention (replace the file, add or strip `.bz2`) and stdin/stdout streaming match _(run)_ |
 | `cat` | 6/10 | `-v` `-e` `-t` `-u` | `-n -b -E -T -s -A -- -`, multi-file numbering and missing-newline handling all byte-identical _(run)_ |
+| `chmod` | 8/8 | — | every option coreutils has: `-R -c -f -v --reference --preserve-root --no-preserve-root`, and the full symbolic mode grammar beside octal — multiple `who` letters, chained operations sharing one `who` (`u+x-w`), comma-separated clauses, `+`/`-`/`=`, the letters `r w x X s t`, and the `go=u` copy form. `X` only sets execute on a directory or a file that already has one, `=` clears the special bit tied to any class it touches unless the same clause sets it, and an omitted `who` is masked by the umask where an explicit `a` is not. `-v`/`-c` print GNU's `changed from`/`retained as` lines byte for byte, `-f` drops the message without changing the status, and the operand diagnostics carry the `Try ...` line. Diffed against coreutils 9.11 over the same tree in ~30 cases. One deliberate difference: a recursive run applies each directory's new mode *after* everything inside it, so `chmod -R 600` cannot lock the walk out part-way where the original's `fts` walk stops there; the reports are held back and printed in the original's parent-first order, and each operand is finished before the next begins so naming a directory twice reads the second pass's modes _(run)_ |
 | `chown` / `chgrp` | 12/12 and 11/11 | — | every option coreutils has: `-R -h -c -f -v -H -L -P --dereference --reference --preserve-root/--no-preserve-root`, plus chown's `--from`. Diffed against coreutils 9.11 by running both binaries over the same tree and comparing output, exit status and the resulting ownership in ~40 cases — the ids used are the caller's own, so an unprivileged run exercises every path but the privileged change itself. The reporting matches word for word: `changed ownership of 'f' from a:b to a:c` against `ownership of 'f' retained as a`, where chgrp names the group alone and chown names the group beside the owner only when one was asked for — and the *requested* ids on the "to" side, so `chown :group` shows an empty owner there, exactly as the original does. `-R` visits children before their parents in kernel directory order, `--from` reports a skipped file as unchanged, `-f` drops the message but keeps the failing status, and the operand and id diagnostics carry the original's quoting and `Try ...` line _(run)_ |
 | `chroot` | 0/3 | `--userspec` `--groups` `--skip-chdir` | core behaviour present _(src)_ |
 | `cmp` | 1/5 | `-b` `-i` `-l` `-n` | `-s`, `differ: byte N, line N`, all three EOF forms (`line`, `in line`, `which is empty`) and the exit codes match; the EOF file name is quoted `'x'` where a UTF-8 locale gives GNU `‘x’` _(run)_ |
@@ -326,23 +327,6 @@ Missing: **`-j` `-J` `--zstd` `--exclude` `-T` `--strip-components` `--numeric-o
 **`gzip` / `gunzip`** — 4/17 and 4/12 _(run)_. Streams interoperate with the real
 tools in both directions. Present: `-c -d -k -f`. Missing **`-1`…`-9` `-t` `-l` `-v`
 `-r` `-q` `-n` `-N` `-S`**.
-
-**`chmod`** _(run, vs GNU chmod)_ — full symbolic mode grammar alongside octal,
-matched clause by clause: multiple `who` letters (`u` `g` `o` `a`), chained
-operations sharing one `who` (`u+x-w`), comma-separated clauses (`u=rwx,g=rx`),
-`+`/`-`/`=`, the permission letters `r w x X s t`, and the `u`/`g`/`o`
-permission-copy form (`go=u`). `X` only sets execute when the file is a directory
-or already has an execute bit, `s` maps to setuid/setgid on `u`/`g` respectively,
-`t` is the sticky bit, and `=` clears the special bit tied to any class it touches
-unless that same clause also sets it — including the case where an omitted `who`
-defaults to `a` but is masked by the process umask (`chmod +w` under `022` only
-reaches the owner) where an explicit `a` is not. `-v`/`-c` print GNU's `mode of
-'FILE' changed from 0NNN (rwx...) to 0NNN (rwx...)` and `retained as` lines
-byte-for-byte; `-f` suppresses error text without changing the exit status;
-`--reference FILE`/`--reference=FILE` copies another file's mode outright. Missing:
-`-R`'s recursive traversal order differs from GNU's on adversarial recursive modes
-that lock out traversal mid-walk (GNU's `fts`-based walker stops partway in ways
-this project's directory-unlock recovery walker does not reproduce byte for byte).
 
 **`lsof`** — 3/15 _(run)_. `-n -P -p -i` present. Missing `-c -u -t -d -s -F -g -x -R -a`.
 
