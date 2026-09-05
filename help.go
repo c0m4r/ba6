@@ -173,16 +173,40 @@ five consecutive unanswered hops.
 
 Interactive keys: h help, n toggle DNS, p pause, SPACE resume, r restart
 statistics, q quit.`,
-	"swapon": `Usage: swapon [-a] [-p PRIORITY] [DEVICE]...
-Enable swap devices using the Linux swapon syscall. -a reads swap entries from
-/etc/fstab. Requires CAP_SYS_ADMIN.`,
+	"swapon": `Usage: swapon [OPTION]... [DEVICE]...
+Enable swap devices. With no device and no option it lists the ones in use, as
+the original does. Requires CAP_SYS_ADMIN to enable anything.
+
+Options:
+  -a, --all              enable every swap entry in fstab
+  -e, --ifexists         pass over a device that is not there
+  -p, --priority=N       give the device this priority
+  -o, --options=LIST     comma-separated options; only pri= reaches the kernel
+  -T, --fstab=FILE       read FILE instead of /etc/fstab
+  -L LABEL, -U UUID      name the device by its label or uuid
+  -s, --summary          print /proc/swaps, whose layout this is
+  --show[=COLUMNS]       the table form: NAME, TYPE, SIZE, USED, PRIO, and the
+                         empty UUID and LABEL columns
+  --output-all           every column
+  --noheadings           leave the heading out
+  --raw                  one space between columns, no padding
+  --bytes                sizes as byte counts rather than scaled
+  -v, --verbose          name each device as it is enabled
+  -f, -d                 accepted; no swap area is reinitialised here and
+                         discards are left to the kernel's defaults
+  --help                 show this help`,
 	"sysctl": `Usage: sysctl [-aenN] [-w] NAME[=VALUE]...
 Read or write Linux /proc/sys settings. -a lists all settings, -n prints values
 without names, -N prints names without values, -e passes over failures, and -w
 requires assignments. Settings holding several lines repeat their name on each.`,
-	"swapoff": `Usage: swapoff [-a] [DEVICE]...
-Disable swap devices using the Linux swapoff syscall. -a reads /proc/swaps.
-Requires CAP_SYS_ADMIN.`,
+	"swapoff": `Usage: swapoff [OPTION]... [DEVICE]...
+Disable swap devices. Requires CAP_SYS_ADMIN.
+
+Options:
+  -a, --all              disable every swap area in /proc/swaps
+  -L LABEL, -U UUID      name the device by its label or uuid
+  -v, --verbose          name each device as it is disabled
+  --help                 show this help`,
 	"awk": `Usage: awk [-F SEPARATOR] [-v NAME=VALUE] PROGRAM [FILE]...
 Process text as records and fields.
 

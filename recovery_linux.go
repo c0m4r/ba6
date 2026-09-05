@@ -1650,63 +1650,333 @@ func cmdSwapoff(args []string) int {
 	return swapCommand("swapoff", args, false)
 }
 
+// swapEntry is one line of /proc/swaps.
+type swapEntry struct {
+	name     string
+	kind     string
+	size     uint64 // kibibytes, as the kernel reports them
+	used     uint64
+	priority string
+}
+
+func readSwapTable() ([]swapEntry, error) {
+	data, err := os.ReadFile("/proc/swaps")
+	if err != nil {
+		return nil, err
+	}
+	var entries []swapEntry
+	for index, line := range strings.Split(string(data), "\n") {
+		if index == 0 || strings.TrimSpace(line) == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 5 {
+			continue
+		}
+		size, _ := strconv.ParseUint(fields[2], 10, 64)
+		used, _ := strconv.ParseUint(fields[3], 10, 64)
+		entries = append(entries, swapEntry{
+			name: fields[0], kind: fields[1], size: size, used: used, priority: fields[4],
+		})
+	}
+	return entries, nil
+}
+
+// swapHumanSize is util-linux's size form, where zero reads "0B" rather than
+// as a bare number.
+func swapHumanSize(bytes uint64) string {
+	if bytes == 0 {
+		return "0B"
+	}
+	return humanSizeBase(bytes, 1024)
+}
+
+// swapShowColumns are the columns --show knows, in the order --output-all
+// prints them.
+var swapShowColumns = []string{"NAME", "TYPE", "SIZE", "USED", "PRIO", "UUID", "LABEL"}
+
+// showSwapTable prints the --show table: each column as wide as its widest
+// value, the names and types left-aligned and the numbers right-aligned.
+func showSwapTable(prog string, columns []string, headings, raw, bytes bool) int {
+	entries, err := readSwapTable()
+	if err != nil {
+		fatalf(prog, "%v", err)
+		return 1
+	}
+	rows := make([][]string, 0, len(entries))
+	for _, entry := range entries {
+		row := make([]string, 0, len(columns))
+		for _, column := range columns {
+			switch column {
+			case "NAME":
+				row = append(row, entry.name)
+			case "TYPE":
+				row = append(row, entry.kind)
+			case "SIZE":
+				if bytes {
+					row = append(row, strconv.FormatUint(entry.size*1024, 10))
+				} else {
+					row = append(row, swapHumanSize(entry.size*1024))
+				}
+			case "USED":
+				if bytes {
+					row = append(row, strconv.FormatUint(entry.used*1024, 10))
+				} else {
+					row = append(row, swapHumanSize(entry.used*1024))
+				}
+			case "PRIO":
+				row = append(row, entry.priority)
+			default:
+				// UUID and LABEL are not read here; the column stays empty,
+				// which is what the original leaves for a swap without one.
+				row = append(row, "")
+			}
+		}
+		rows = append(rows, row)
+	}
+	widths := make([]int, len(columns))
+	for i, column := range columns {
+		// Without a heading there is nothing to size a column against but its
+		// own values, which is why --noheadings comes out single-spaced.
+		widths[i] = 0
+		if headings {
+			widths[i] = len(column)
+		}
+		for _, row := range rows {
+			if len(row[i]) > widths[i] {
+				widths[i] = len(row[i])
+			}
+		}
+	}
+	write := func(row []string) {
+		fields := make([]string, 0, len(row))
+		for i, value := range row {
+			// A left-aligned column pads on the right, which the original
+			// leaves off the last column — so an empty trailing column adds
+			// nothing to the line at all.
+			if raw || (i == len(row)-1 && swapColumnLeft(columns[i])) {
+				fields = append(fields, value)
+				continue
+			}
+			if swapColumnLeft(columns[i]) {
+				fields = append(fields, fmt.Sprintf("%-*s", widths[i], value))
+			} else {
+				fields = append(fields, fmt.Sprintf("%*s", widths[i], value))
+			}
+		}
+		fmt.Println(strings.Join(fields, " "))
+	}
+	if headings {
+		write(columns)
+	}
+	for _, row := range rows {
+		write(row)
+	}
+	return 0
+}
+
+// swapColumnLeft says which columns are left-aligned, which is the two that
+// hold text.
+func swapColumnLeft(column string) bool {
+	return column == "NAME" || column == "TYPE" || column == "UUID" || column == "LABEL"
+}
+
+// swapUsage reports a command-line mistake. util-linux keeps 1 for an option
+// it does not know and 16 for a usage problem it does.
+func swapUsage(prog, format string, a ...interface{}) int {
+	fatalf(prog, format, a...)
+	fmt.Fprintf(os.Stderr, "Try '%s --help' for more information.\n", prog)
+	return 16
+}
+
+// swapOptionError is the same for an option neither tool knows, except that
+// the two disagree on its status: swapon exits 1 where swapoff exits 16.
+func swapOptionError(prog, format string, a ...interface{}) int {
+	fatalf(prog, format, a...)
+	fmt.Fprintf(os.Stderr, "Try '%s --help' for more information.\n", prog)
+	if prog == "swapoff" {
+		return 16
+	}
+	return 1
+}
+
+//nolint:gocyclo // one option table; splitting it would only scatter the command line.
 func swapCommand(prog string, args []string, enable bool) int {
-	args = expandShortOptions(args, "p")
+	args = expandShortOptions(args, "poTLU")
 	all, priority := false, -1
+	summary, show, headings, raw, bytes := false, false, true, false, false
+	ifExists, verbose := false, false
+	columns := []string{"NAME", "TYPE", "SIZE", "USED", "PRIO"}
+	fstab := "/etc/fstab"
 	var paths []string
 	for index := 0; index < len(args); index++ {
-		switch args[index] {
-		case "-a", "--all":
-			all = true
-		case "-p", "--priority":
-			if !enable {
-				fatalf(prog, "priority is only valid for swapon")
-				return 1
+		arg := args[index]
+		name, value, hasValue := arg, "", false
+		if strings.HasPrefix(arg, "--") {
+			if eq := strings.IndexByte(arg, '='); eq >= 0 {
+				name, value, hasValue = arg[:eq], arg[eq+1:], true
+			}
+		}
+		needValue := func() (string, bool) {
+			if hasValue {
+				return value, true
 			}
 			index++
 			if index >= len(args) {
-				fatalf(prog, "-p requires a priority")
-				return 1
+				swapUsage(prog, "option '%s' requires an argument", name)
+				return "", false
 			}
-			parsed, err := strconv.Atoi(args[index])
+			return args[index], true
+		}
+		switch name {
+		case "-a", "--all":
+			all = true
+		case "-v", "--verbose":
+			verbose = true
+		case "-e", "--ifexists":
+			ifExists = true
+		case "-f", "--fixpgsz", "-d", "--discard", "--output-all":
+			if name == "--output-all" {
+				columns = swapShowColumns
+				show = true
+			}
+			// A swap area is never reinitialised here, and discards are left
+			// to the kernel's own defaults.
+		case "-s", "--summary":
+			summary = true
+		case "--show":
+			show = true
+			if hasValue {
+				columns = nil
+				for _, column := range strings.Split(strings.ToUpper(value), ",") {
+					if !swapKnownColumn(column) {
+						fatalf(prog, "unknown column: %s", column)
+						return 1
+					}
+					columns = append(columns, column)
+				}
+			}
+		case "--noheadings":
+			headings = false
+		case "--raw":
+			raw = true
+		case "--bytes":
+			bytes = true
+		case "-o", "--options":
+			text, ok := needValue()
+			if !ok {
+				return 16
+			}
+			// The only option that reaches the kernel is the priority.
+			for _, option := range strings.Split(text, ",") {
+				if number, found := strings.CutPrefix(option, "pri="); found {
+					parsed, convErr := strconv.Atoi(number)
+					if convErr != nil || parsed < 0 || parsed > 32767 {
+						fatalf(prog, "invalid priority %q", number)
+						return 16
+					}
+					priority = parsed
+				}
+			}
+		case "-T", "--fstab":
+			text, ok := needValue()
+			if !ok {
+				return 16
+			}
+			fstab = text
+		case "-L", "--label", "-U", "--uuid":
+			text, ok := needValue()
+			if !ok {
+				return 16
+			}
+			kind := "LABEL"
+			if name == "-U" || name == "--uuid" {
+				kind = "UUID"
+			}
+			paths = append(paths, resolveMountSource(kind+"="+text))
+		case "-p", "--priority":
+			if !enable {
+				fatalf(prog, "priority is only valid for swapon")
+				return 16
+			}
+			text, ok := needValue()
+			if !ok {
+				return 16
+			}
+			parsed, err := strconv.Atoi(text)
 			if err != nil || parsed < 0 || parsed > 32767 {
-				fatalf(prog, "invalid priority %q", args[index])
-				return 1
+				fatalf(prog, "invalid priority %q", text)
+				return 16
 			}
 			priority = parsed
 		default:
-			if strings.HasPrefix(args[index], "-") {
-				fatalf(prog, "unsupported option %q", args[index])
-				return 1
+			if strings.HasPrefix(arg, "-") && arg != "-" {
+				if strings.HasPrefix(arg, "--") {
+					return swapOptionError(prog, "unrecognized option '%s'", arg)
+				}
+				return swapOptionError(prog, "invalid option -- '%c'", arg[1])
 			}
-			paths = append(paths, args[index])
+			paths = append(paths, arg)
 		}
+	}
+	if summary {
+		// -s is /proc/swaps itself, which is where its layout comes from.
+		data, err := os.ReadFile("/proc/swaps")
+		if err != nil {
+			fatalf(prog, "%v", err)
+			return 16
+		}
+		os.Stdout.Write(data) //nolint:errcheck // a write failure surfaces on the next write anyway.
+		return 0
+	}
+	if show {
+		return showSwapTable(prog, columns, headings, raw, bytes)
+	}
+	if enable && !all && len(paths) == 0 {
+		// A bare swapon lists what is in use, in the --show table.
+		return showSwapTable(prog, columns, headings, raw, bytes)
 	}
 	if all {
 		if len(paths) != 0 {
 			fatalf(prog, "cannot combine --all with explicit devices")
-			return 1
+			return 16
 		}
 		var err error
 		if enable {
-			paths, err = swapPathsFromFstab()
+			paths, err = swapPathsFromFstabFile(fstab)
 		} else {
 			paths, err = activeSwapPaths()
 		}
 		if err != nil {
 			fatalf(prog, "%v", err)
-			return 1
+			return 16
 		}
 	}
 	if len(paths) == 0 && all {
 		return 0
 	}
 	if len(paths) == 0 {
-		fatalf(prog, "missing swap device")
-		return 1
+		return swapUsage(prog, "bad usage")
 	}
 	status := 0
 	for _, path := range paths {
+		if ifExists {
+			if _, err := os.Stat(path); err != nil {
+				continue
+			}
+		}
+		// util-linux looks at the file before privilege comes into it, so a
+		// path that is not there is reported as such for any caller.
+		if enable {
+			if _, err := os.Stat(path); err != nil {
+				fatalf(prog, "cannot open %s: %s", path, errText(err))
+				status = 255
+				continue
+			}
+		}
+		if verbose && enable {
+			fmt.Printf("%s: %s\n", prog, path)
+		}
 		pathPointer, pointerErr := syscall.BytePtrFromString(path)
 		if pointerErr != nil {
 			fatalf(prog, "%q: %v", path, pointerErr)
@@ -1724,15 +1994,40 @@ func swapCommand(prog string, args []string, enable bool) int {
 			_, _, errno = syscall.Syscall(syscall.SYS_SWAPOFF, uintptr(unsafe.Pointer(pathPointer)), 0, 0) //nolint:gosec // Direct Linux swapoff ABI with a NUL-checked path.
 		}
 		if errno != 0 {
-			fatalf(prog, "%s: %v", path, errno)
-			status = 1
+			// util-linux words the refusals it recognises itself.
+			switch {
+			case errno == syscall.EPERM && os.Geteuid() != 0:
+				fatalf(prog, "Not superuser.")
+				if verbose && !enable {
+					// swapoff names the device after the refusal, not before.
+					fmt.Printf("%s %s\n", prog, path)
+				}
+				return 16
+			case errno == syscall.ENOENT && enable:
+				fatalf(prog, "cannot open %s: %s", path, errText(errno))
+				status = 255
+			default:
+				fatalf(prog, "%s: %s", path, errText(errno))
+				status = 255
+			}
 		}
 	}
 	return status
 }
 
-func swapPathsFromFstab() ([]string, error) {
-	file, err := os.Open("/etc/fstab")
+func swapKnownColumn(column string) bool {
+	for _, known := range swapShowColumns {
+		if known == column {
+			return true
+		}
+	}
+	return false
+}
+
+// swapPathsFromFstabFile lists the swap areas one fstab names, resolving the
+// LABEL= and UUID= spellings to the devices they stand for.
+func swapPathsFromFstabFile(path string) ([]string, error) {
+	file, err := os.Open(path) //nolint:gosec // G304: -T names the file to read.
 	if err != nil {
 		return nil, err
 	}
@@ -1743,7 +2038,7 @@ func swapPathsFromFstab() ([]string, error) {
 		line := strings.TrimSpace(strings.SplitN(scanner.Text(), "#", 2)[0])
 		fields := strings.Fields(line)
 		if len(fields) >= 4 && fields[2] == "swap" && !strings.Contains(","+fields[3]+",", ",noauto,") {
-			paths = append(paths, fields[0])
+			paths = append(paths, resolveMountSource(fields[0]))
 		}
 	}
 	return paths, scanner.Err()

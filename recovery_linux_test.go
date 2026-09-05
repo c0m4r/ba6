@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -150,5 +151,67 @@ func TestMkswapWritesVersionOneHeader(t *testing.T) {
 	}
 	if binary.LittleEndian.Uint32(header[1024:1028]) != 1 || string(header[4086:]) != "SWAPSPACE2" || string(header[1052:1058]) != "rescue" {
 		t.Fatal("invalid swap header")
+	}
+}
+
+// TestSwapShowTable pins the --show table and the summary form, which are what
+// swapon prints when it is only asked to look.
+func TestSwapShowTable(t *testing.T) {
+	// The kernel's own table is the input, so the shape of each line is what
+	// the test asserts.
+	status, out, errOut := captureApplet(t, cmdSwapon, []string{"--show"}, "")
+	if status != 0 {
+		t.Fatalf("swapon --show = (%d, %q)", status, errOut)
+	}
+	if out != "" {
+		lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+		if strings.Join(strings.Fields(lines[0]), " ") != "NAME TYPE SIZE USED PRIO" {
+			t.Fatalf("swapon --show header = %q", lines[0])
+		}
+		// --noheadings drops the header, and with it the padding the header
+		// width would have forced.
+		_, plain, _ := captureApplet(t, cmdSwapon, []string{"--show", "--noheadings"}, "")
+		for _, line := range strings.Split(strings.TrimRight(plain, "\n"), "\n") {
+			if strings.Contains(line, "  ") {
+				t.Fatalf("swapon --show --noheadings padded a column: %q", line)
+			}
+		}
+		// --raw is single-spaced too, and --bytes prints counts.
+		_, raw, _ := captureApplet(t, cmdSwapon, []string{"--show", "--raw"}, "")
+		if strings.Contains(raw, "  ") {
+			t.Fatalf("swapon --show --raw = %q", raw)
+		}
+		_, bytes, _ := captureApplet(t, cmdSwapon, []string{"--show", "--bytes", "--noheadings"}, "")
+		for _, line := range strings.Split(strings.TrimRight(bytes, "\n"), "\n") {
+			if fields := strings.Fields(line); len(fields) == 5 {
+				if _, err := strconv.ParseUint(fields[2], 10, 64); err != nil {
+					t.Fatalf("swapon --bytes size = %q", fields[2])
+				}
+			}
+		}
+	}
+	// -s is /proc/swaps itself.
+	_, summary, _ := captureApplet(t, cmdSwapon, []string{"-s"}, "")
+	expected, err := os.ReadFile("/proc/swaps")
+	if err != nil {
+		t.Skip("no /proc/swaps")
+	}
+	if summary != string(expected) {
+		t.Fatalf("swapon -s = %q, want %q", summary, expected)
+	}
+	// An unknown column is refused by name.
+	status, out, errOut = captureApplet(t, cmdSwapon, []string{"--show=BOGUS"}, "")
+	if status != 1 || out != "" || !strings.Contains(errOut, "unknown column: BOGUS") {
+		t.Fatalf("swapon --show=BOGUS = (%d, %q, %q)", status, out, errOut)
+	}
+	// A device that is not there is reported before privilege comes into it.
+	status, _, errOut = captureApplet(t, cmdSwapon, []string{"/definitely/absent"}, "")
+	if status != 255 || !strings.Contains(errOut, "cannot open /definitely/absent") {
+		t.Fatalf("swapon on a missing device = (%d, %q)", status, errOut)
+	}
+	// swapoff with no operand is the original's usage failure, status 16.
+	if status, _, errOut = captureApplet(t, cmdSwapoff, nil, ""); status != 16 ||
+		!strings.Contains(errOut, "bad usage") {
+		t.Fatalf("swapoff with no operand = (%d, %q)", status, errOut)
 	}
 }
