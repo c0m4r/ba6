@@ -12,7 +12,7 @@ measured against its original; nothing is left under
 [Not yet assessed](#not-yet-assessed).
 
 **Short answer to "which are 1:1?"** — of the 170, 29 are genuine drop-ins,
-68 more are near-complete, 64 are partial in ways that stay invisible until a
+69 more are near-complete, 63 are partial in ways that stay invisible until a
 script reaches for a flag, none are so narrow that they should not be treated as
 a replacement at all, and 9 have no upstream counterpart to compare
 against; see the [verdict table](#verdict-in-one-table). `netstat`, `ps aux`/
@@ -32,8 +32,8 @@ options listed per applet below.
 | Tier | Meaning | Applets |
 |---|---|---|
 | **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `base64` `basename` `cksum` `comm` `cut` `dirname` `echo` `expand` `false` `fold` `join` `mknod` `nice` `nl` `paste` `pivot_root` `printenv` `pwd` `seq` `sleep` `split` `tac` `touch` `tr` `true` `tty` `uname` `unexpand` `whoami` |
-| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `date` `dd` `df` `du` `env` `expr` `find` `free` `grep` `groupadd` `gunzip` `gzip` `head` `host` `hostname` `hwclock` `id` `kill` `ln` `ls` `lspci` `lsusb` `md5sum` `mkdir` `mktemp` `mv` `nohup` `pidof` `printf` `ps` `readlink` `realpath` `renice` `pgrep` `pkill` `rm` `rmdir` `setsid` `sha1sum` `sha256sum` `sha512sum` `sort` `stat` `strings` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `uniq` `uptime` `wc` `which` `xargs` |
-| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `blkid` `cfdisk` `cpio` `curl` `diff` `dig` `dmesg` `fdisk` `file` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `getty` `hexdump` `iftop` `insmod` `ip` `iptables` `less` `login` `losetup` `lsblk` `lsmod` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkswap` `modprobe` `mount` `mtr` `nano` `nc` `ncdu` `netstat` `nslookup` `od` `passwd` `ping` `rmmod` `sed` `sfdisk` `sh` `ss` `swapoff` `swapon` `traceroute` `tree` `umount` `unxz` `unzip` `unzstd` `useradd` `watch` `wget` `xz` `zip` `zstd` |
+| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `date` `dd` `df` `du` `env` `expr` `find` `free` `grep` `groupadd` `gunzip` `gzip` `head` `host` `hostname` `hwclock` `id` `kill` `ln` `ls` `lspci` `lsusb` `md5sum` `mkdir` `mktemp` `mv` `nohup` `pidof` `printf` `ps` `readlink` `realpath` `renice` `pgrep` `pkill` `rm` `rmdir` `setsid` `sed` `sha1sum` `sha256sum` `sha512sum` `sort` `stat` `strings` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `uniq` `uptime` `wc` `which` `xargs` |
+| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `blkid` `cfdisk` `cpio` `curl` `diff` `dig` `dmesg` `fdisk` `file` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `getty` `hexdump` `iftop` `insmod` `ip` `iptables` `less` `login` `losetup` `lsblk` `lsmod` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkswap` `modprobe` `mount` `mtr` `nano` `nc` `ncdu` `netstat` `nslookup` `od` `passwd` `ping` `rmmod` `sfdisk` `sh` `ss` `swapoff` `swapon` `traceroute` `tree` `umount` `unxz` `unzip` `unzstd` `useradd` `watch` `wget` `xz` `zip` `zstd` |
 | **D — narrow subset** | A slice of the original; do not treat as a replacement | _(none)_ |
 | **N/A** | ba6-specific, no upstream counterpart | `completion` `halt` `help` `init` `man` `poweroff` `reboot` `switch_root` `udhcpc` |
 
@@ -182,6 +182,7 @@ Absent behaviour rather than wrong behaviour, each of which touches many applets
 | `renice` | 3/3 | — | `-n` `-p` `-g` `-u` and the legacy positional form; old/new priority reporting matches, including kernel clamping of out-of-range requests _(run)_ |
 | `rm` | 8/10 | `-I` `--one-file-system` | `-rv` prints only the top directory, GNU prints every entry; `-i` prompt reads `remove 'I'?` vs GNU `remove regular empty file 'I'?` _(run)_ |
 | `rmdir` | 3/3 | — | `-p` `-v`, the non-empty error and the refusal to remove a non-directory all match _(run)_ |
+| `sed` | 15/17 | `-e`'s `--debug` trace, and `e` (the command that runs a shell command, which the seccomp filter would refuse anyway) | a program-counter-based interpreter, verified line by line against GNU sed 4.10. Commands: `{ }` blocks (nested), `a`/`i`/`c` in both the backslash-continued and one-line forms with real sed's escape handling, `y///`, `n`/`N` (with GNU's non-POSIX end-of-input rule), `D`/`P`, `h`/`H`/`g`/`G`/`x`, `b`/`t`/`T`/`:label`, `q`/`Q` with an exit code, `r`/`R`/`w`/`W`, `z`, `F`, `l` with its wrapping, `=`, and `s///` with `g`, `p`, `i`/`I`, `w file` and the occurrence number — where a bare number replaces only that match and a number with `g` replaces it and everything after. Addresses take a line number, `$`, `/REGEX/`, GNU's `first~step` form and two-address ranges, each negatable. Options: `-n -e -f -E/-r -i[SUFFIX] -s -z -l --posix`. `l`'s wrapping follows the original byte for byte, including the empty first line a width of one produces, because the column is checked before every escaped byte rather than every character. One difference remains: a script error names the problem without the original's `-e expression #N, char M:` prefix _(run)_ |
 | `setsid` | 3/3 | — | `-c` `-f` `-w`, session/process-group identity and exit statuses match; `-f` forks via Go's exec rather than a raw fork+exec _(run)_ |
 | `sha256sum` | 6/10 | `--tag` `-z` `--ignore-missing` `--strict` `-w` | `-c` verification, `-` stdin, the `-b` binary marker and the rejection of `--quiet`/`--status` outside `-c` all match _(run)_ |
 | `sort` | 20/27 | `-R`/`--random-sort` `--random-source` `-S`/`--buffer-size` `-T` `--parallel` `--batch-size` `--compress-program` `--debug` `--files0-from` `-V` | `-k` field keys with per-key modifiers (`bdfgiMnr`), `-t`, `-n -g -h -M -f -d -i -b -r -u -s -c -C -o -z`, and `-m` (every input is read and ordered, so a merge of sorted inputs is identical). The field rules match GNU's: without `-t` a field starts at the first blank of the run preceding it, with `-t` the separator belongs to neither neighbour, and a `.C` offset counts from there. The last-resort whole-line comparison is applied unless `-s` or `-u` is given, a global `-r` reverses it while a key's own `r` does not, and a key with no modifiers of its own inherits the global ones. Verified against GNU on 400 randomized inputs across 31 option sets, plus the `-c` disorder message and `-o` _(run)_ |
@@ -282,26 +283,6 @@ patterns (`/a/,/b/`), and the builtins `split`, `match` (setting
 and match gawk's output. Missing: user-defined functions, `getline`, output/input
 redirection (`print > file`, `cmd | getline`), `ARGV`/`ENVIRON`, `(i,j) in array`
 (only `a[i,j]` itself works), and gawk-specific extensions beyond POSIX.
-
-**`sed`** _(run, vs GNU sed 4.10)_ — a program-counter-based interpreter, verified
-line by line across every idiom below. Present: `{ }` block grouping (including
-nested blocks), `a`/`i`/`c` (both the classic backslash-continued form and the GNU
-one-line form, with the same backslash escapes — `\t`, `\n`, a bare `\x` dropping
-the backslash — real sed applies to that text, and `a`'s queued output still
-appears even when the same cycle later runs `d`), `y///`, `n`/`N` (N at end of
-input keeps the pattern space and falls to the end of the script rather than
-quitting, matching GNU's non-POSIX default), `D`/`P` (the blank-line-squeezing
-`/^$/{N;/^\n$/D}` idiom and its relatives), `h`/`H`/`g`/`G`/`x` (hold space,
-including the classic `1!G;h;$!d` reverse-lines idiom), `b`/`t`/`T`/`:label`
-(arbitrary forward and backward jumps, `t`/`T` correctly tracking "has a
-substitution happened since the last input line or branch"), `q`/`Q` with an
-optional exit code, `r`/`w` (whole-file append and pattern-space write, with
-`s///w file` too), `l`, and `-i`/`--in-place` (with a `-i.suffix`/`-i*pattern*`
-backup, each file processed with its own fresh hold space and line numbering, and a
-same-directory temp file renamed over the original only once the script finished
-without error). Missing: `R`/`W` (the rarer per-invocation-one-line variants of
-`r`/`w`), `-s`, `-z`, `--posix`, `z`/`F`/`e` (GNU's newest extensions), the numeric
-`s///2` occurrence flag, and `l`'s line-wrap width (lines are never wrapped).
 
 **`file`** _(run, vs file 5.46)_ — real ELF introspection via Go's `debug/elf`.
 Diffed against a dynamically-linked PIE executable (`/bin/ls`), a shared object

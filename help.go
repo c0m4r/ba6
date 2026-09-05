@@ -940,18 +940,30 @@ BSD options are written without a dash and may be bundled:
   A         every process
   w         wide output; command lines are never truncated here`,
 	"sed": `Usage: sed [OPTION]... SCRIPT [FILE]...
-Apply a focused stream-editing language to input lines.
+Apply a stream-editing language to input lines.
 
 Options:
-  -n        suppress default output
-  -e SCRIPT add a script
-  -f FILE   read a script from FILE
-  -E/-r     use POSIX extended regular-expression syntax (the default is BRE)
-  --help    show this help
+  -n, --quiet, --silent  suppress the default output
+  -e SCRIPT, --expression=SCRIPT
+                         add a script fragment
+  -f FILE, --file=FILE   read a script from FILE
+  -E, -r                 POSIX extended regular expressions (the default is BRE)
+  -i[SUFFIX], --in-place[=SUFFIX]
+                         edit each file in place, keeping a backup when a
+                         suffix is given
+  -s, --separate         treat the files separately rather than as one stream
+  -z, --null-data        lines are separated by NUL, not newline
+  -l N, --line-length=N  the width l wraps at (default 70; 0 never wraps)
+  --posix, --sandbox, -u accepted for compatibility
+  --help                 show this help
 
-Supported commands are s/// with g, p, and i flags, d, p, q, and =.
-Line-number, $, /REGEX/, and two-address ranges are supported. Regex
-backreferences in patterns are rejected because RE2 cannot implement them.`,
+Commands: s/// with the g, p, i/I, w and occurrence-number flags, y///, the
+line commands a i c d D p P g G h H x n N z F l = q Q r R w W, { } blocks,
+:label with b t T, and -i's in-place editing. Addresses may be a line number,
+$, /REGEX/, GNU's first~step form, or a two-address range, each negatable with
+!. Regex backreferences in patterns are rejected because RE2 cannot implement
+them, and a script error names the problem without the original's
+"-e expression #N, char M:" prefix.`,
 	"sha1sum": `Usage: sha1sum [OPTION]... [FILE]...
 Compute or check SHA-1 digests. -c verifies checksum files; -b/-t select the
 printed marker; --quiet and --status control verification output.`,

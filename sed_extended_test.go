@@ -6,6 +6,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -132,5 +133,77 @@ func TestSedEscapeSequenceMatchesNewline(t *testing.T) {
 	status, out, _ := captureApplet(t, cmdSed, []string{`N;s/\n/-/`}, "a\nb\n")
 	if status != 0 || out != "a-b\n" {
 		t.Fatalf(`sed N;s/\n/-/ = (%d, %q), want "a-b\n"`, status, out)
+	}
+}
+
+// TestSedOccurrenceStepAndList covers the pieces sed grew last: the s///N
+// occurrence flag, GNU's first~step addresses, l's wrapping, F and z, and the
+// -s/-z/-l options.
+func TestSedOccurrenceStepAndList(t *testing.T) {
+	for _, c := range []struct {
+		args  []string
+		input string
+		want  string
+	}{
+		// A bare number replaces only that occurrence; with g, that one and
+		// everything after it.
+		{[]string{"s/ /-/2"}, "a b c d\n", "a b-c d\n"},
+		{[]string{"s/ /-/2g"}, "a b c d\n", "a b-c-d\n"},
+		{[]string{"s/ /-/9"}, "a b c d\n", "a b c d\n"},
+		// first~step selects every step'th line from first on.
+		{[]string{"-n", "1~2p"}, "1\n2\n3\n4\n5\n", "1\n3\n5\n"},
+		{[]string{"-n", "0~3p"}, "1\n2\n3\n4\n5\n6\n", "3\n6\n"},
+		{[]string{"-n", "2~0p"}, "1\n2\n3\n", "2\n"},
+		// z empties the pattern space; F prints the input's name.
+		{[]string{"z;s/^$/empty/"}, "a\nb\n", "empty\nempty\n"},
+		{[]string{"-n", "F"}, "a\n", "-\n"},
+		// l escapes and, by default, wraps at 70 columns.
+		{[]string{"-n", "l"}, "a\tb\n", "a\\tb$\n"},
+		{[]string{"-n", "l 0"}, strings.Repeat("x", 80) + "\n", strings.Repeat("x", 80) + "$\n"},
+		{[]string{"-n", "l 5"}, "abcdefgh\n", "abcd\\\nefgh$\n"},
+		{[]string{"-n", "-l", "5", "l"}, "abcdefgh\n", "abcd\\\nefgh$\n"},
+	} {
+		status, out, errOut := captureApplet(t, cmdSed, c.args, c.input)
+		if status != 0 || out != c.want {
+			t.Fatalf("sed %v on %q = (%d, %q, %q), want %q", c.args, c.input, status, out, errOut, c.want)
+		}
+	}
+
+	// The default width wraps a long line one character short of 70.
+	_, out, _ := captureApplet(t, cmdSed, []string{"-n", "l"}, strings.Repeat("x", 100)+"\n")
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 2 || len(lines[0]) != 70 || !strings.HasSuffix(lines[0], "\\") {
+		t.Fatalf("sed -n l wrapped as %q", out)
+	}
+
+	// -z reads and writes NUL-separated records.
+	if _, out, _ = captureApplet(t, cmdSed, []string{"-z", "s/a/A/"}, "a\x00b\x00"); out != "A\x00b\x00" {
+		t.Fatalf("sed -z = %q", out)
+	}
+
+	// -s gives each file its own line numbering and its own $.
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first")
+	second := filepath.Join(dir, "second")
+	if err := os.WriteFile(first, []byte("a\nb\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(second, []byte("c\nd\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, out, _ = captureApplet(t, cmdSed, []string{"-s", "-n", "$p", first, second}, ""); out != "b\nd\n" {
+		t.Fatalf("sed -s $p = %q", out)
+	}
+	if _, out, _ = captureApplet(t, cmdSed, []string{"-n", "$p", first, second}, ""); out != "d\n" {
+		t.Fatalf("sed $p across files = %q", out)
+	}
+	// F names the file each line came from.
+	if _, out, _ = captureApplet(t, cmdSed, []string{"-n", "F", first, second}, ""); out != first+"\n"+first+"\n"+second+"\n"+second+"\n" {
+		t.Fatalf("sed F = %q", out)
+	}
+	// A zero occurrence is refused, as in the original.
+	if status, _, errOut := captureApplet(t, cmdSed, []string{"s/a/b/0"}, "a\n"); status == 0 ||
+		!strings.Contains(errOut, "may not be zero") {
+		t.Fatalf("sed s///0 = (%d, %q)", status, errOut)
 	}
 }
