@@ -981,8 +981,6 @@ func dumpEscapeC(b byte) string {
 		return `\f`
 	case 13:
 		return `\r`
-	case '\\':
-		return `\\`
 	}
 	if b >= 32 && b < 127 {
 		return string(rune(b))
@@ -1036,15 +1034,29 @@ func dumpFormatAddr(radix, width, addr int) string {
 // up a word, how a word (or, for byteField, a single byte) renders as a
 // fixed-width field, and how the address column and any trailing padding or
 // ASCII gutter are drawn.
+// dumpFormat is one way of rendering a line's bytes: od's -t takes several and
+// prints each in turn under the same address.
+type dumpFormat struct {
+	unitSize int
+	// width is the column this format wants for one unit, separator included.
+	// When several formats are stacked the columns are widened so that every
+	// one of them spans the same line, which is how the original lines them up.
+	width     int
+	wordField func(uint64) string
+	byteField func(byte) string
+	// gutter appends od's ">text<" column, which the "z" type suffix asks for.
+	gutter bool
+}
+
 type dumpRenderer struct {
-	unitSize    int
-	wordField   func(uint64) string
-	byteField   func(byte) string
-	blank       string
+	formats     []dumpFormat
 	addrRadix   int
 	addrWidth   int
+	perLine     int
 	trailingPad bool
 	ascii       bool
+	// bigEndian swaps each unit's bytes, which --endian=big asks for.
+	bigEndian bool
 	// suppressEmptyFinal skips the final address-only line when the selected
 	// region is empty, matching hexdump (od always prints it, even at 0).
 	suppressEmptyFinal bool
@@ -1062,7 +1074,10 @@ func runDump(data []byte, skip, limit int, dedup bool, r dumpRenderer) {
 	if skip > end {
 		skip = end
 	}
-	const perLine = 16
+	perLine := r.perLine
+	if perLine <= 0 {
+		perLine = 16
+	}
 	var lastContent string
 	haveLast, skippedStar := false, false
 	for off := skip; off < end; off += perLine {
@@ -1070,36 +1085,13 @@ func runDump(data []byte, skip, limit int, dedup bool, r dumpRenderer) {
 		if lineEnd > end {
 			lineEnd = end
 		}
-		var body strings.Builder
-		if r.byteField != nil {
-			i := off
-			for ; i < lineEnd; i++ {
-				body.WriteString(r.byteField(data[i]))
-			}
-			for ; r.trailingPad && i < off+perLine; i++ {
-				body.WriteString(r.blank)
-			}
-		} else {
-			i := off
-			for ; i < lineEnd; i += r.unitSize {
-				body.WriteString(r.wordField(dumpWord(data, i, r.unitSize)))
-			}
-			for ; r.trailingPad && i < off+perLine; i += r.unitSize {
-				body.WriteString(r.blank)
-			}
+		// Every format renders the same bytes; only the first line of the
+		// group carries the address, the rest are indented under it.
+		lines := make([]string, 0, len(r.formats))
+		for _, format := range r.formats {
+			lines = append(lines, r.renderLine(data, off, lineEnd, perLine, format))
 		}
-		content := body.String()
-		if r.ascii {
-			var gutter strings.Builder
-			for _, b := range data[off:lineEnd] {
-				if b >= 32 && b < 127 {
-					gutter.WriteByte(b)
-				} else {
-					gutter.WriteByte('.')
-				}
-			}
-			content += " |" + gutter.String() + "|"
-		}
+		content := strings.Join(lines, "\n")
 		if dedup && lineEnd-off == perLine && haveLast && content == lastContent {
 			if !skippedStar {
 				fmt.Println("*")
@@ -1108,12 +1100,99 @@ func runDump(data []byte, skip, limit int, dedup bool, r dumpRenderer) {
 			continue
 		}
 		skippedStar, haveLast, lastContent = false, true, content
-		fmt.Println(dumpFormatAddr(r.addrRadix, r.addrWidth, off) + content)
+		address := dumpFormatAddr(r.addrRadix, r.addrWidth, off)
+		for i, line := range lines {
+			if i == 0 {
+				fmt.Println(address + line)
+				continue
+			}
+			fmt.Println(strings.Repeat(" ", len(address)) + line)
+		}
 	}
 	suppressFinal := r.suppressEmptyFinal && (len(data) == 0 || limit == 0)
 	if r.addrRadix != 0 && !suppressFinal {
 		fmt.Println(dumpFormatAddr(r.addrRadix, r.addrWidth, end))
 	}
+}
+
+// renderLine lays out one line's bytes in one format, padding each unit to the
+// column width the whole group shares.
+func (r dumpRenderer) renderLine(data []byte, off, lineEnd, perLine int, format dumpFormat) string {
+	column := format.width
+	if width := r.columnWidth(perLine, format); width > column {
+		column = width
+	}
+	blank := strings.Repeat(" ", column)
+	var body strings.Builder
+	i := off
+	for ; i < lineEnd; i += format.unitSize {
+		text := ""
+		if format.byteField != nil {
+			text = format.byteField(data[i])
+		} else {
+			text = format.wordField(r.unitAt(data, i, format.unitSize))
+		}
+		fmt.Fprintf(&body, "%*s", column, text)
+	}
+	for ; (r.trailingPad || format.gutter) && i < off+perLine; i += format.unitSize {
+		body.WriteString(blank)
+	}
+	content := body.String()
+	if r.ascii {
+		var gutter strings.Builder
+		for _, b := range data[off:lineEnd] {
+			if b >= 32 && b < 127 {
+				gutter.WriteByte(b)
+			} else {
+				gutter.WriteByte('.')
+			}
+		}
+		content += " |" + gutter.String() + "|"
+	}
+	if format.gutter {
+		var text strings.Builder
+		for _, b := range data[off:lineEnd] {
+			if b >= 32 && b < 127 {
+				text.WriteByte(b)
+			} else {
+				text.WriteByte('.')
+			}
+		}
+		content += "  >" + text.String() + "<"
+	}
+	return content
+}
+
+// columnWidth is how wide one unit's column has to be for this format's line
+// to span as far as the widest format in the group.
+func (r dumpRenderer) columnWidth(perLine int, format dumpFormat) int {
+	widest := 0
+	for _, other := range r.formats {
+		if span := other.width * (perLine / other.unitSize); span > widest {
+			widest = span
+		}
+	}
+	units := perLine / format.unitSize
+	if units == 0 {
+		return format.width
+	}
+	return widest / units
+}
+
+// unitAt reads one unit, honouring --endian.
+func (r dumpRenderer) unitAt(data []byte, off, size int) uint64 {
+	if !r.bigEndian {
+		return dumpWord(data, off, size)
+	}
+	var value uint64
+	for i := 0; i < size; i++ {
+		b := byte(0)
+		if off+i < len(data) {
+			b = data[off+i]
+		}
+		value = value<<8 | uint64(b)
+	}
+	return value
 }
 
 // readDumpInputs concatenates every named operand (or stdin for "-"/none)
@@ -1134,13 +1213,250 @@ func readDumpInputs(prog string, names []string) ([]byte, int) {
 	return data, 0
 }
 
+// odFormat builds one -t specification's renderer. The widths are the ones the
+// original derives from the type and size: how many digits the largest value of
+// that width needs, plus room for a sign where the type has one.
+func odFormat(kind byte, size int, brain bool) (dumpFormat, error) {
+	format := dumpFormat{unitSize: size}
+	switch kind {
+	case 'a':
+		format.byteField = dumpEscapeA
+		format.width, format.unitSize = 4, 1
+		return format, nil
+	case 'c':
+		format.byteField = dumpEscapeC
+		format.width, format.unitSize = 4, 1
+		return format, nil
+	case 'x':
+		if size != 1 && size != 2 && size != 4 && size != 8 {
+			return format, odSizeError(size, "integral")
+		}
+		width := size * 2
+		format.wordField = func(v uint64) string { return fmt.Sprintf("%0*x", width, v) }
+		format.width = width + 1
+	case 'o':
+		if size != 1 && size != 2 && size != 4 && size != 8 {
+			return format, odSizeError(size, "integral")
+		}
+		width := (size*8 + 2) / 3
+		format.wordField = func(v uint64) string { return fmt.Sprintf("%0*o", width, v) }
+		format.width = width + 1
+	case 'u':
+		width := map[int]int{1: 3, 2: 5, 4: 10, 8: 20}[size]
+		if width == 0 {
+			return format, odSizeError(size, "integral")
+		}
+		format.wordField = func(v uint64) string { return strconv.FormatUint(v, 10) }
+		format.width = width + 1
+	case 'd':
+		width := map[int]int{1: 4, 2: 6, 4: 11, 8: 20}[size]
+		if width == 0 {
+			return format, odSizeError(size, "integral")
+		}
+		shift := uint(64 - size*8) //nolint:gosec // G115: the size is one of 1, 2, 4 or 8.
+		format.wordField = func(v uint64) string {
+			// The unit is read unsigned, so sign-extend it to its own width:
+			// shift it up to the top of an int64 and back down arithmetically.
+			return strconv.FormatInt(int64(v<<shift)>>shift, 10) //nolint:gosec // G115: this is the sign extension itself.
+		}
+		format.width = width + 1
+	case 'f':
+		// The field is as wide as that type's digits plus room for the sign,
+		// point and exponent. A two-byte float — IEEE half, or the brain form
+		// under fB — is widened to a single before it is printed, which is what
+		// the original does with it.
+		width := map[int]int{2: 15, 4: 15, 8: 24}[size]
+		if width == 0 {
+			if size == 16 {
+				// The x87 long double is a real type here, but its range
+				// exceeds what this implementation can print, so say so
+				// plainly rather than round the value into a lie.
+				return format, errors.New("this build doesn't decode the 16-byte floating point type")
+			}
+			return format, odSizeError(size, "floating point")
+		}
+		bits := size * 8
+		if bits == 16 {
+			bits = 32
+		}
+		half := size == 2
+		format.wordField = func(v uint64) string {
+			var value float64
+			switch {
+			case half && brain:
+				value = float64(math.Float32frombits(uint32(v) << 16)) //nolint:gosec // G115: a 2-byte unit fits a uint32.
+			case half:
+				value = float64(odHalfToFloat(uint16(v))) //nolint:gosec // G115: same.
+			case bits == 32:
+				value = float64(math.Float32frombits(uint32(v))) //nolint:gosec // G115: a 4-byte unit fits a uint32.
+			default:
+				value = math.Float64frombits(v)
+			}
+			return odFloatText(value, bits)
+		}
+		format.width = width + 1
+	default:
+		return format, odBadCharError{kind}
+	}
+	return format, nil
+}
+
+// odBadCharError is an unknown type letter, whose message names the whole
+// specification itself rather than being wrapped in the two-line size one.
+type odBadCharError struct{ kind byte }
+
+func (e odBadCharError) Error() string {
+	return fmt.Sprintf("invalid character '%c' in type string", e.kind)
+}
+
+// odSizeError is the original's refusal of a width no C type has, whose second
+// line explains which type was missing.
+func odSizeError(size int, kind string) error {
+	return fmt.Errorf("this system doesn't provide a %d-byte %s type", size, kind)
+}
+
+// odHalfToFloat expands an IEEE-754 binary16 into the single it is printed as.
+func odHalfToFloat(bits uint16) float32 {
+	sign := uint32(bits&0x8000) << 16
+	exponent := int32(bits>>10) & 0x1f
+	mantissa := uint32(bits & 0x3ff)
+	switch exponent {
+	case 0x1f:
+		// Infinity and NaN keep their payload in the top mantissa bits.
+		return math.Float32frombits(sign | 0x7f800000 | mantissa<<13)
+	case 0:
+		if mantissa == 0 {
+			return math.Float32frombits(sign)
+		}
+		// A subnormal half is a normal single, so shift until it is normalised.
+		exponent = 1
+		for mantissa&0x400 == 0 {
+			mantissa <<= 1
+			exponent--
+		}
+		mantissa &= 0x3ff
+	}
+	return math.Float32frombits(sign | uint32(exponent+112)<<23 | mantissa<<13) //nolint:gosec // G115: the exponent is bounded by the 5-bit field.
+}
+
+// odWrapSpecError names the whole -t argument, as the original's message does.
+func odWrapSpecError(err error, spec string) error {
+	var bad odBadCharError
+	if errors.As(err, &bad) {
+		return fmt.Errorf("%w '%s'", err, spec)
+	}
+	return fmt.Errorf("invalid type string '%s';\n%w", spec, err)
+}
+
+// odFloatText prints a float the way the original does: "%g" at the type's own
+// number of digits, widening the precision until the text reads back as the
+// same value. That is what leaves 100 as "100" while 1.2345679e+08 needs the
+// exponent form.
+func odFloatText(value float64, bits int) string {
+	switch {
+	case math.IsNaN(value):
+		// A NaN keeps its sign, which is what the original's printf does.
+		if math.Signbit(value) {
+			return "-nan"
+		}
+		return "nan"
+	case math.IsInf(value, 1):
+		return "inf"
+	case math.IsInf(value, -1):
+		return "-inf"
+	}
+	digits, smallest := 6, float64(math.SmallestNonzeroFloat32*(1<<23))
+	if bits == 64 {
+		digits, smallest = 15, math.SmallestNonzeroFloat64*(1<<52)
+	}
+	// A subnormal is searched from one digit up rather than from the type's
+	// own, which is how the original prints 5e-324 rather than its full
+	// fifteen-digit expansion.
+	if math.Abs(value) < smallest {
+		digits = 1
+	}
+	for precision := digits; precision <= digits+3; precision++ {
+		text := strconv.FormatFloat(value, 'g', precision, bits)
+		if back, err := strconv.ParseFloat(text, bits); err == nil && back == value {
+			return text
+		}
+	}
+	return strconv.FormatFloat(value, 'g', -1, bits)
+}
+
+// odTypeSpec reads one -t argument, which may hold several specifications in a
+// row: a type letter, an optional size as a number or a letter, and an optional
+// "z" asking for the printable-character column.
+func odTypeSpec(spec string) ([]dumpFormat, error) {
+	var formats []dumpFormat
+	for i := 0; i < len(spec); {
+		kind := spec[i]
+		i++
+		size, brain := 4, false
+		switch kind {
+		case 'a', 'c':
+			size = 1
+		case 'f':
+			size = 8
+		}
+		if i < len(spec) {
+			switch letter := spec[i]; {
+			case letter >= '0' && letter <= '9':
+				start := i
+				for i < len(spec) && spec[i] >= '0' && spec[i] <= '9' {
+					i++
+				}
+				n, err := strconv.Atoi(spec[start:i])
+				if err != nil {
+					return nil, fmt.Errorf("invalid type string '%s'", spec)
+				}
+				size = n
+				brain = false
+			case kind != 'f' && strings.IndexByte("CSIL", letter) >= 0:
+				size = map[byte]int{'C': 1, 'S': 2, 'I': 4, 'L': 8}[letter]
+				i++
+			case kind == 'f' && strings.IndexByte("BHFDL", letter) >= 0:
+				size = map[byte]int{'B': 2, 'H': 2, 'F': 4, 'D': 8, 'L': 16}[letter]
+				brain = letter == 'B'
+				i++
+			}
+		}
+		format, err := odFormat(kind, size, brain)
+		if err != nil {
+			return nil, odWrapSpecError(err, spec)
+		}
+		if i < len(spec) && spec[i] == 'z' {
+			format.gutter = true
+			i++
+		}
+		formats = append(formats, format)
+	}
+	if len(formats) == 0 {
+		return nil, fmt.Errorf("missing type string")
+	}
+	return formats, nil
+}
+
+//nolint:gocyclo // one option table; splitting it would only scatter the command line.
 func cmdOd(args []string) int {
-	args = expandShortOptions(args, "AjN")
+	// -w's argument has to be attached, so it is rewritten before the clusters
+	// are split apart, which would otherwise separate the two.
+	args = append([]string(nil), args...)
+	for i, arg := range args {
+		if arg == "--" {
+			break
+		}
+		if strings.HasPrefix(arg, "-w") && len(arg) > 2 {
+			args[i] = "--width=" + arg[2:]
+		}
+	}
+	args = expandShortOptions(args, "AjNt")
 	addrRadix, addrWidth := 8, 7
 	skip, limit := 0, -1
 	dedup := true
-	unitSize, signed := 2, false
-	renderMode := "o" // o, x, d(unsigned), i(signed), c, a
+	perLine := 16
+	bigEndian := false
+	var formats []dumpFormat
 	var files []string
 	parsing := true
 	for i := 0; i < len(args); i++ {
@@ -1153,25 +1469,94 @@ func cmdOd(args []string) int {
 			}
 			return args[i], true
 		}
+		// addTraditional appends one of the historic single-letter formats,
+		// which accumulate just as -t specifications do.
+		addTraditional := func(spec string) bool {
+			parsed, err := odTypeSpec(spec)
+			if err != nil {
+				fatalf("od", "%v", err)
+				return false
+			}
+			formats = append(formats, parsed...)
+			return true
+		}
 		switch {
 		case parsing && arg == "--":
 			parsing = false
-		case parsing && arg == "-b":
-			unitSize, signed, renderMode = 1, false, "o"
-		case parsing && arg == "-c":
-			renderMode = "c"
 		case parsing && arg == "-a":
-			renderMode = "a"
+			if !addTraditional("a") {
+				return 1
+			}
+		case parsing && arg == "-b":
+			if !addTraditional("o1") {
+				return 1
+			}
+		case parsing && arg == "-c":
+			if !addTraditional("c") {
+				return 1
+			}
 		case parsing && arg == "-d":
-			unitSize, signed, renderMode = 2, false, "d"
-		case parsing && arg == "-o":
-			unitSize, signed, renderMode = 2, false, "o"
-		case parsing && arg == "-x":
-			unitSize, signed, renderMode = 2, false, "x"
+			if !addTraditional("u2") {
+				return 1
+			}
+		case parsing && arg == "-f":
+			if !addTraditional("fF") {
+				return 1
+			}
 		case parsing && arg == "-i":
-			unitSize, signed, renderMode = 4, true, "d"
+			if !addTraditional("dI") {
+				return 1
+			}
+		case parsing && arg == "-l":
+			if !addTraditional("dL") {
+				return 1
+			}
+		case parsing && arg == "-o":
+			if !addTraditional("o2") {
+				return 1
+			}
+		case parsing && arg == "-s":
+			if !addTraditional("d2") {
+				return 1
+			}
+		case parsing && arg == "-x":
+			if !addTraditional("x2") {
+				return 1
+			}
+		case parsing && (arg == "-t" || arg == "--format"):
+			v, ok := next("-t")
+			if !ok {
+				return 1
+			}
+			parsed, err := odTypeSpec(v)
+			if err != nil {
+				fatalf("od", "%v", err)
+				return 1
+			}
+			formats = append(formats, parsed...)
 		case parsing && (arg == "-v" || arg == "--output-duplicates"):
 			dedup = false
+		case parsing && (arg == "-w" || arg == "--width"):
+			// The width's argument is optional and has to be attached, so a
+			// separate word is an operand; without one the original uses 32.
+			perLine = 32
+		case parsing && strings.HasPrefix(arg, "--width="):
+			n, err := parseByteSize(strings.TrimPrefix(arg, "--width="))
+			if err != nil || n == 0 {
+				fatalf("od", "invalid output width %q", arg)
+				return 1
+			}
+			perLine = int(n) //nolint:gosec // G115: a line width this large is refused by the size parser.
+		case parsing && strings.HasPrefix(arg, "--endian="):
+			switch strings.TrimPrefix(arg, "--endian=") {
+			case "big":
+				bigEndian = true
+			case "little":
+				bigEndian = false
+			default:
+				fatalf("od", "invalid argument %q for 'endian'", arg)
+				return 1
+			}
 		case parsing && arg == "-A":
 			v, ok := next("-A")
 			if !ok {
@@ -1195,23 +1580,23 @@ func cmdOd(args []string) int {
 			if !ok {
 				return 1
 			}
-			n, err := strconv.Atoi(v)
-			if err != nil || n < 0 {
+			n, err := parseByteSize(v)
+			if err != nil {
 				fatalf("od", "invalid skip count '%s'", v)
 				return 1
 			}
-			skip = n
+			skip = int(n) //nolint:gosec // G115: an input this large cannot be read into memory anyway.
 		case parsing && arg == "-N":
 			v, ok := next("-N")
 			if !ok {
 				return 1
 			}
-			n, err := strconv.Atoi(v)
-			if err != nil || n < 0 {
+			n, err := parseByteSize(v)
+			if err != nil {
 				fatalf("od", "invalid byte count '%s'", v)
 				return 1
 			}
-			limit = n
+			limit = int(n) //nolint:gosec // G115: same.
 		case parsing && len(arg) > 1 && arg[0] == '-' && arg != "-":
 			fatalf("od", "invalid option '%s'", arg)
 			return 1
@@ -1224,40 +1609,21 @@ func cmdOd(args []string) int {
 	if status != 0 {
 		return status
 	}
-
-	r := dumpRenderer{addrRadix: addrRadix, addrWidth: addrWidth}
-	switch renderMode {
-	case "c":
-		r.byteField = func(b byte) string { return fmt.Sprintf(" %3s", dumpEscapeC(b)) }
-		r.blank = "    "
-	case "a":
-		r.byteField = func(b byte) string { return fmt.Sprintf(" %3s", dumpEscapeA(b)) }
-		r.blank = "    "
-	case "d":
-		r.unitSize = unitSize
-		if signed {
-			r.wordField = func(v uint64) string { return fmt.Sprintf(" %11d", int32(v)) } //nolint:gosec // G115: intentional truncation to the 4-byte od -i word
-		} else {
-			r.wordField = func(v uint64) string { return fmt.Sprintf(" %5d", v) }
-		}
-	case "x":
-		r.unitSize = unitSize
-		r.wordField = func(v uint64) string { return fmt.Sprintf(" %04x", v) }
-	default: // "o"
-		r.unitSize = unitSize
-		if unitSize == 1 {
-			r.wordField = func(v uint64) string { return fmt.Sprintf(" %03o", v) }
-		} else {
-			r.wordField = func(v uint64) string { return fmt.Sprintf(" %06o", v) }
-		}
+	if len(formats) == 0 {
+		// The default is two-byte octal words.
+		formats, _ = odTypeSpec("o2")
 	}
-	runDump(data, skip, limit, dedup, r)
+	runDump(data, skip, limit, dedup, dumpRenderer{
+		formats: formats, addrRadix: addrRadix, addrWidth: addrWidth,
+		perLine: perLine, bigEndian: bigEndian,
+	})
 	return 0
 }
 
 func cmdHexdump(args []string) int {
 	args = expandShortOptions(args, "ns")
 	skip, limit := 0, -1
+	showAll := false
 	renderMode := "" // "" (default), C, c, b, d, o, x
 	var files []string
 	for i := 0; i < len(args); i++ {
@@ -1283,6 +1649,9 @@ func cmdHexdump(args []string) int {
 			renderMode = "o"
 		case "-x":
 			renderMode = "x"
+		case "-v":
+			// -v prints every line, including the runs the "*" would stand for.
+			showAll = true
 		case "-n":
 			v, ok := next("-n")
 			if !ok {
@@ -1320,39 +1689,34 @@ func cmdHexdump(args []string) int {
 	}
 
 	r := dumpRenderer{addrRadix: 16, addrWidth: 7, trailingPad: true, suppressEmptyFinal: true}
+	format := dumpFormat{unitSize: 1, width: 4}
 	switch renderMode {
 	case "C":
-		r.addrWidth, r.ascii = 8, true
-		r.byteField = func(b byte) string { return fmt.Sprintf(" %02x", b) }
-		r.blank = "   "
 		// The 8th/9th byte gets an extra gap; runDump has no per-index hook
 		// for that, so build this one format directly instead of through it.
-		runDumpHexdumpCanonical(data, skip, limit)
+		runDumpHexdumpCanonical(data, skip, limit, !showAll)
 		return 0
 	case "c":
-		r.byteField = func(b byte) string { return fmt.Sprintf(" %3s", dumpEscapeC(b)) }
-		r.blank = "    "
+		format.byteField = dumpEscapeC
+		format.width = 4
 	case "b":
-		r.byteField = func(b byte) string { return fmt.Sprintf(" %03o", b) }
-		r.blank = "    "
+		format.byteField = func(b byte) string { return fmt.Sprintf("%03o", b) }
+		format.width = 4
 	case "d":
-		r.unitSize = 2
-		r.wordField = func(v uint64) string { return fmt.Sprintf("%8s", fmt.Sprintf("%05d", v)) }
-		r.blank = "        "
+		format.unitSize, format.width = 2, 8
+		format.wordField = func(v uint64) string { return fmt.Sprintf("%05d", v) }
 	case "o":
-		r.unitSize = 2
-		r.wordField = func(v uint64) string { return fmt.Sprintf("%8s", fmt.Sprintf("%06o", v)) }
-		r.blank = "        "
+		format.unitSize, format.width = 2, 8
+		format.wordField = func(v uint64) string { return fmt.Sprintf("%06o", v) }
 	case "x":
-		r.unitSize = 2
-		r.wordField = func(v uint64) string { return fmt.Sprintf("%8s", fmt.Sprintf("%04x", v)) }
-		r.blank = "        "
+		format.unitSize, format.width = 2, 8
+		format.wordField = func(v uint64) string { return fmt.Sprintf("%04x", v) }
 	default:
-		r.unitSize = 2
-		r.wordField = func(v uint64) string { return fmt.Sprintf(" %04x", v) }
-		r.blank = "     "
+		format.unitSize, format.width = 2, 5
+		format.wordField = func(v uint64) string { return fmt.Sprintf("%04x", v) }
 	}
-	runDump(data, skip, limit, true, r)
+	r.formats = []dumpFormat{format}
+	runDump(data, skip, limit, !showAll, r)
 	return 0
 }
 
@@ -1360,7 +1724,7 @@ func cmdHexdump(args []string) int {
 // layout (two 8-byte hex groups separated by an extra space, then the ASCII
 // gutter), which needs a mid-line gap runDump's uniform field loop cannot
 // express.
-func runDumpHexdumpCanonical(data []byte, skip, limit int) {
+func runDumpHexdumpCanonical(data []byte, skip, limit int, dedup bool) {
 	end := len(data)
 	if limit >= 0 && skip+limit < end {
 		end = skip + limit
@@ -1397,7 +1761,7 @@ func runDumpHexdumpCanonical(data []byte, skip, limit int) {
 		}
 		body.WriteByte('|')
 		content := body.String()
-		if lineEnd-off == perLine && haveLast && content == lastLine {
+		if dedup && lineEnd-off == perLine && haveLast && content == lastLine {
 			if !skippedStar {
 				fmt.Println("*")
 				skippedStar = true

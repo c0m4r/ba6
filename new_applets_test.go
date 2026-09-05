@@ -919,3 +919,109 @@ func minimalELF(t *testing.T) []byte {
 	section(2, 11, 1, uint64(elf.SHF_ALLOC), uint64(bodyOffset), uint64(len(body))) // .rodata, SHT_PROGBITS
 	return out
 }
+
+// TestOdTypeSpecs pins the -t option surface: every type letter and size, the
+// widths the original derives from them, the "z" gutter, the stacking of
+// several specs under one address, -w and --endian.
+func TestOdTypeSpecs(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "data")
+	// "Hello!" plus two high bytes, so the signed types show a negative value.
+	if err := os.WriteFile(path, []byte("Hello!\xff\xfe"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"-t", "x1"}, "0000000 48 65 6c 6c 6f 21 ff fe\n0000010\n"},
+		{[]string{"-t", "x2"}, "0000000 6548 6c6c 216f feff\n0000010\n"},
+		{[]string{"-t", "x4"}, "0000000 6c6c6548 feff216f\n0000010\n"},
+		// A signed type sign-extends the unit; an unsigned one does not.
+		{[]string{"-t", "d1"}, "0000000   72  101  108  108  111   33   -1   -2\n0000010\n"},
+		{[]string{"-t", "u1"}, "0000000  72 101 108 108 111  33 255 254\n0000010\n"},
+		{[]string{"-t", "d2"}, "0000000  25928  27756   8559   -257\n0000010\n"},
+		{[]string{"-t", "o1"}, "0000000 110 145 154 154 157 041 377 376\n0000010\n"},
+		{[]string{"-t", "c"}, "0000000   H   e   l   l   o   ! 377 376\n0000010\n"},
+		// The size letters are the C type names.
+		{[]string{"-t", "xC"}, "0000000 48 65 6c 6c 6f 21 ff fe\n0000010\n"},
+		{[]string{"-t", "dS"}, "0000000  25928  27756   8559   -257\n0000010\n"},
+		// A "z" suffix pads the fields out and adds the character column.
+		{[]string{"-t", "x1z"}, "0000000 48 65 6c 6c 6f 21 ff fe                          >Hello!..<\n0000010\n"},
+		// --endian reads each unit the other way round.
+		{[]string{"--endian=big", "-t", "x2"}, "0000000 4865 6c6c 6f21 fffe\n0000010\n"},
+		// -w's argument is attached, and the address column follows the width.
+		{[]string{"-t", "x1", "-w4"}, "0000000 48 65 6c 6c\n0000004 6f 21 ff fe\n0000010\n"},
+		{[]string{"-A", "n", "-t", "x1"}, " 48 65 6c 6c 6f 21 ff fe\n"},
+	} {
+		status, out, errOut := captureApplet(t, cmdOd, append(c.args, path), "")
+		if status != 0 || out != c.want {
+			t.Fatalf("od %v = (%d, %q, %q), want %q", c.args, status, out, errOut, c.want)
+		}
+	}
+
+	// Stacked specs print under one address, and the narrower one's columns are
+	// widened so that the two line up.
+	_, out, _ := captureApplet(t, cmdOd, []string{"-t", "x1", "-t", "c", path}, "")
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 3 || !strings.HasPrefix(lines[0], "0000000  48  65") ||
+		!strings.HasPrefix(lines[1], "          H   e") {
+		t.Fatalf("od -t x1 -t c = %q", out)
+	}
+	// The traditional letters accumulate the same way.
+	_, stacked, _ := captureApplet(t, cmdOd, []string{"-x", "-c", path}, "")
+	if strings.Count(strings.TrimRight(stacked, "\n"), "\n") != 2 {
+		t.Fatalf("od -x -c = %q", stacked)
+	}
+
+	// A float is printed at the type's own precision, widened only as far as it
+	// takes for the text to read back as the same value — so 1.0 is "1".
+	floats := filepath.Join(dir, "floats")
+	if err := os.WriteFile(floats, []byte{0, 0, 0x80, 0x3f}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, out, _ = captureApplet(t, cmdOd, []string{"-t", "f4", floats}, ""); out != "0000000               1\n0000004\n" {
+		t.Fatalf("od -t f4 = %q", out)
+	}
+
+	// A half is widened to a single before it is printed, and fB reads the
+	// brain form of the same width.
+	halves := filepath.Join(dir, "halves")
+	if err := os.WriteFile(halves, []byte{0x00, 0x3c, 0x00, 0xc0}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, out, _ = captureApplet(t, cmdOd, []string{"-t", "f2", halves}, ""); out != "0000000               1              -2\n0000004\n" {
+		t.Fatalf("od -t f2 = %q", out)
+	}
+
+	// A bad type letter is refused with the original's wording, which names the
+	// whole specification.
+	status, out, errOut := captureApplet(t, cmdOd, []string{"-t", "q", path}, "")
+	if status != 1 || out != "" || !strings.Contains(errOut, "invalid character 'q' in type string 'q'") {
+		t.Fatalf("od -t q = (%d, %q, %q)", status, out, errOut)
+	}
+	// A width no C type has is refused with its own two-line message.
+	status, out, errOut = captureApplet(t, cmdOd, []string{"-t", "x9", path}, "")
+	if status != 1 || out != "" || !strings.Contains(errOut, "invalid type string 'x9';") ||
+		!strings.Contains(errOut, "9-byte integral type") {
+		t.Fatalf("od -t x9 = (%d, %q, %q)", status, out, errOut)
+	}
+}
+
+// TestHexdumpOutputDuplicates pins -v, which prints the lines the "*" would
+// otherwise stand for.
+func TestHexdumpOutputDuplicates(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "zeros")
+	if err := os.WriteFile(path, make([]byte, 64), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, elided, _ := captureApplet(t, cmdHexdump, []string{"-C", path}, "")
+	if !strings.Contains(elided, "*\n") {
+		t.Fatalf("hexdump -C did not elide the repeated lines: %q", elided)
+	}
+	_, full, _ := captureApplet(t, cmdHexdump, []string{"-v", "-C", path}, "")
+	if strings.Contains(full, "*\n") || strings.Count(full, "\n") != 5 {
+		t.Fatalf("hexdump -v -C = %q", full)
+	}
+}

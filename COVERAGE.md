@@ -12,7 +12,7 @@ measured against its original; nothing is left under
 [Not yet assessed](#not-yet-assessed).
 
 **Short answer to "which are 1:1?"** — of the 170, 29 are genuine drop-ins,
-69 more are near-complete, 63 are partial in ways that stay invisible until a
+71 more are near-complete, 61 are partial in ways that stay invisible until a
 script reaches for a flag, none are so narrow that they should not be treated as
 a replacement at all, and 9 have no upstream counterpart to compare
 against; see the [verdict table](#verdict-in-one-table). `netstat`, `ps aux`/
@@ -32,8 +32,8 @@ options listed per applet below.
 | Tier | Meaning | Applets |
 |---|---|---|
 | **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `base64` `basename` `cksum` `comm` `cut` `dirname` `echo` `expand` `false` `fold` `join` `mknod` `nice` `nl` `paste` `pivot_root` `printenv` `pwd` `seq` `sleep` `split` `tac` `touch` `tr` `true` `tty` `uname` `unexpand` `whoami` |
-| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `date` `dd` `df` `du` `env` `expr` `find` `free` `grep` `groupadd` `gunzip` `gzip` `head` `host` `hostname` `hwclock` `id` `kill` `ln` `ls` `lspci` `lsusb` `md5sum` `mkdir` `mktemp` `mv` `nohup` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `sed` `setsid` `sha1sum` `sha256sum` `sha512sum` `sort` `stat` `strings` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `uniq` `uptime` `wc` `which` `xargs` |
-| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `blkid` `cfdisk` `cpio` `curl` `diff` `dig` `dmesg` `fdisk` `file` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `getty` `hexdump` `iftop` `insmod` `ip` `iptables` `less` `login` `losetup` `lsblk` `lsmod` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkswap` `modprobe` `mount` `mtr` `nano` `nc` `ncdu` `netstat` `nslookup` `od` `passwd` `ping` `rmmod` `sfdisk` `sh` `ss` `swapoff` `swapon` `traceroute` `tree` `umount` `unxz` `unzip` `unzstd` `useradd` `watch` `wget` `xz` `zip` `zstd` |
+| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `date` `dd` `df` `du` `env` `expr` `find` `free` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `kill` `ln` `ls` `lspci` `lsusb` `md5sum` `mkdir` `mktemp` `mv` `nohup` `od` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `sed` `setsid` `sha1sum` `sha256sum` `sha512sum` `sort` `stat` `strings` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `uniq` `uptime` `wc` `which` `xargs` |
+| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `blkid` `cfdisk` `cpio` `curl` `diff` `dig` `dmesg` `fdisk` `file` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `getty` `iftop` `insmod` `ip` `iptables` `less` `login` `losetup` `lsblk` `lsmod` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkswap` `modprobe` `mount` `mtr` `nano` `nc` `ncdu` `netstat` `nslookup` `passwd` `ping` `rmmod` `sfdisk` `sh` `ss` `swapoff` `swapon` `traceroute` `tree` `umount` `unxz` `unzip` `unzstd` `useradd` `watch` `wget` `xz` `zip` `zstd` |
 | **D — narrow subset** | A slice of the original; do not treat as a replacement | _(none)_ |
 | **N/A** | ba6-specific, no upstream counterpart | `completion` `halt` `help` `init` `man` `poweroff` `reboot` `switch_root` `udhcpc` |
 
@@ -121,6 +121,7 @@ Absent behaviour rather than wrong behaviour, each of which touches many applets
 | `join` | 11/11 | — | `-1` `-2` `-a` `-v` `-o` `-t` `-e` `-i` `--header` `-z`, field re-join rules and unsorted-input reporting match _(run)_ |
 | `mknod` | 1/3 | `-Z` `--context` | `-m` present; FIFO creation identical, device nodes need root _(run)_ |
 | `nice` | 2/2 | — | `-n` and the legacy `-N` form; niceness applies to the whole command run, exit codes match _(run)_ |
+| `od` | 24/26 | the `f16`/`fL` long double, whose range this build cannot print, and `-S`/`--strings` and `--traditional` | rewritten around the original's own format model and diffed against coreutils 9.11 over ~100 invocations on text, binary, float and all-zero inputs. `-t` takes every type and size the original does — `a c d f o u x` with a numeric size or the `C S I L` letters (`B H F D` for floats) and the `z` gutter — and several specifications stack under one address, with the narrower one's columns widened so the group lines up, exactly as the original lines them up. The traditional letters (`-a -b -c -d -f -i -l -o -s -x`) accumulate the same way. Also present: `-A`, `-j`, `-N`, `-v`, `-w[N]` (whose argument must be attached, as in the original) and `--endian`. Two details worth naming: the field widths are the ones the original derives from each type, down to the sign column a signed type reserves; and a float is printed at its type's own precision, widened only until the text reads back as the same value — which is why 1.0 is "1" while 1.2345679e+08 needs the exponent, and why a subnormal starts its search at one digit and prints "5e-324". A width no C type has draws the original's two-line refusal _(run)_ |
 | `paste` | 3/3 | — | `-d` `-s` `-z`, delimiter cycling, escape handling, short files and multi-file padding match _(run)_ |
 | `pivot_root` | n/a | — | thin `pivot_root(2)` wrapper, no chdir/exec; success, `EBUSY` on a non-mount-point `new_root`, `EPERM` for a non-root caller, and the missing-argument guard all match util-linux, tested under `unshare --mount --propagation private` on a disposable VM so nothing touched a real root filesystem _(run)_ |
 | `printenv` | 1/1 | — | identical, including `-0` _(run)_ |
@@ -159,6 +160,7 @@ Absent behaviour rather than wrong behaviour, each of which touches many applets
 | `grep` | 43/45 | `-P`/`--perl-regexp` (RE2 is not PCRE) | measured against GNU grep 3.12 and diffed on 1000 randomized inputs across 35 option sets plus 60 hand-built cases, every one byte-identical. Present: `-i -v -n -c -l -L -h -H -w -x -F -E -G -r -R -q -o -s -b -a -I -z -Z -T -U -e -f -m -A -B -C -NUM -d -D --color --binary-files --include --exclude --exclude-from --exclude-dir --label --group-separator --no-group-separator --line-buffered`. The context machinery matches GNU's exactly: `:` for a selected line against `-` for a context line, the `--` separator only where the printed *coverage* is non-contiguous (so `-A1 -o` prints one where the groups really are apart and none where the trailing context closed the gap), trailing context surviving `-m`, and an empty match selecting a line while printing and highlighting nothing. Binary files report `binary file matches` on stderr while `-c`, `-l` and `-q` still read them; `-T` right-aligns numbers in a field as wide as the input's largest possible offset (the file's size, or 19 digits for a pipe). `--color=always` writes GNU's own escapes for matches, names, separators and line numbers. Patterns gained the GNU escapes `\< \> \b \B \w \W \s \S` in both BRE and ERE, and `-w`/`-x` are applied as position tests rather than as regexp syntax, so `-o -w` finds every word on a line the way the original does _(run)_ |
 | `groupadd` | 2/10 | `-f` `-o` `-r`/`--system` `-p` `-K` `-R` `-P` `-U` | `-g` and the bare form; the created `/etc/group` line, shadow-utils exit statuses (9 name in use, 4 GID in use, 3 invalid name) and message wording match, tested against a real account database on a disposable VM _(run)_ |
 | `gzip` / `gunzip` | 17/17 and 12/12 | — | every option the originals have: `-1`…`-9` `--fast` `--best` `-c -d -f -k -l -n -N -q -r -S -t -v`. Streams interoperate in both directions, and the bookkeeping was diffed against gzip 1.14 over ~30 invocations: the `-l` table's column widths, the `-v` `NAME:\t 99.1% -- replaced with NAME.gz` line, `-tv`'s ` OK`, the `(totals)` row, and the two exit statuses the original distinguishes — 1 for a failure, 2 for the warnings it prints for an unknown suffix or an output file that is already there. Two details that are easy to get wrong both match: the reported ratio measures the deflate stream alone, so the member's header and trailer come off the compressed side first (and the totals row discounts only the last member's, which is where the original keeps that figure), and it is *rounded* to a tenth rather than truncated, negative ratios included. `-l` names the file the member would unpack to, and only `-N` reads the name stored inside it — which is also the name `-dN` writes to, so its "already exists" check sees it. The compressed bytes come from Go's deflate encoder, so a stream is a little larger or smaller than the original's at the same level _(run)_ |
+| `hexdump` | 12/17 | `-e`/`-f` (the custom format strings the other options are shorthand for) and `-L` | `-C` (the classic hex+ASCII gutter), the bare default (tight 2-byte hex — narrower than the explicit `-x`, a real quirk of the tool), `-b -c -d -o -x`, `-n`/`-s` on every mode rather than only `-C`, and `-v`. Byte-identical to util-linux 2.41 on text, binary and all-zero inputs, including the zero-padded 8-column fields that are wider than od's equivalents, the trailing-line suppression on empty input, and `-s` past EOF against an explicit `-n 0` _(run)_ |
 | `head` | 4/5 | `-z`, and **negative counts** (`-n -2`, `-c -3`) | `-n` `-c` `-q` `-v` `-n +N` and multi-file headers match _(run)_ |
 | `hostname` | 7/7 | — | measured against inetutils 2.8 (this host's reference). `-a` (hosts-file aliases, each with the original's trailing blank), `-d` (`(none)` without a dot), `-f` (canonical name via /etc/hosts then DNS, falling back to the short name), `-i` (all addresses, space-separated), `-s`, `-y` (kernel domainname) plus `-F FILE` and the bare `NAME` set form — the `sethostname:`, `Empty hostname`, `fopen:` and `getline: No text` error paths all match; setting needs root, verified by comparing the unprivileged failure. Names are looked up in /etc/hosts first and DNS second; the DNS step needs a socket, so under the default seccomp filter only /etc/hosts names resolve (give `--seccomp=off` for full DNS) _(run)_ |
 | `hwclock` | 5/8 | `--adjfile` drift handling `--directisa` `--test` | `--show`/`--get` format, `--hctosys`, `--systohc`, `--set --date`, `--utc`/`--localtime`; ioctl on /dev/rtc with a sysfs fallback _(run)_ |
@@ -202,33 +204,6 @@ Absent behaviour rather than wrong behaviour, each of which touches many applets
 | `xargs` | 14/14 | — | every option group present: `-0 -a -d -E -e -I -L -n -p -P -r -s -t -x --process-slot-var`. Input splitting, quoting, `-I` substitution, `-s` line-length capping, `-x`'s exact `argument line too long` wording, `-P` concurrency and `-L` line batching (blank lines skipped, a trailing blank continues a line, quoting honoured within a line) all byte-identical to GNU findutils, including the `--max-lines`/`--max-args`/`--replace` mutual-exclusion warnings and their last-option-wins rule, and `--process-slot-var`'s 0-based slot numbering. Quotes and backslash escapes do not span physical lines under `-L` the way they do without it _(run)_ |
 
 ### Tier C — partial
-
-**`od`** _(run, vs util-linux 2.41)_ — 14/26 option groups. Default output is
-2-byte octal words with an octal address column, matching GNU's own field widths,
-zero-extension of a trailing partial word, and the `*` elision of runs of identical
-lines (disabled by `-v`). Present and byte-identical on every case tested:
-default/`-o` (octal words), `-b` (octal bytes), `-c` (the C escape set: `\0 \a \b \t
-\n \v \f \r \\`, literal printable ASCII, `\NNN` octal for everything else), `-a`
-(named mnemonics for the C0 controls plus `sp`/`del`, masking the high bit the way
-real od's `-a` does — not what its `-c` does), `-x` (hex words), `-i` (4-byte signed
-decimal), `-A o/d/x/n` (address radix, including suppressing the column entirely),
-`-j` (skip), `-N` (max bytes), and multiple file operands read as one concatenated
-stream. Missing: the modern `-t TYPE` spec, `-f` (float), `-s`/`-l` variants, `-w`
-(line width), `--endian`.
-
-**`hexdump`** _(run, vs util-linux 2.41)_ — 11/17 option groups. `-n`/`-s` (byte
-count and skip, including past EOF) work on every mode, not just `-C`. Present and
-byte-identical: `-C` (the classic hex+ASCII gutter), the bare default (tight 2-byte
-hex, hex address — narrower field spacing than the explicit `-x`, a real quirk where
-hexdump's default format and its own `-x` flag are not the same width), `-c` (C
-escapes), `-b`/`-d`/`-o`/`-x` (octal bytes and 2-byte octal/decimal/hex words, all
-zero-padded to a fixed 8-column field, wider than od's equivalents — a verified
-difference between the two tools' conventions, not an inconsistency). Both the
-trailing-line suppression on empty input (hexdump prints nothing for a 0-byte read;
-od still prints one address line) and the interaction between `-s` past EOF (prints
-the real end offset) versus an explicit `-n 0` (prints nothing) match the real tool.
-Missing: `-e`/`-f` (custom format strings — the feature both tools' other flags are
-shorthand for), `-v`, `-L`.
 
 **`diff`** _(run, vs GNU diffutils 3.10/3.12)_ — 15/48 options. Default output is
 GNU diff's classic format (`NcN`/`NaN`/`NdN` headers, `<`/`>`/`---`). Present, diffed

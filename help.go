@@ -386,8 +386,21 @@ Evaluate arithmetic, comparisons, and boolean expressions.`,
 	"halt": `Usage: halt [-nf]
 Ask PID 1 to halt the machine. -f uses the reboot syscall directly and requires
 CAP_SYS_BOOT; -n skips the pre-syscall sync in forced mode.`,
-	"hexdump": `Usage: hexdump [-C] [FILE]
-Display input in hexadecimal and ASCII.`,
+	"hexdump": `Usage: hexdump [OPTION]... [FILE]...
+Display the input in one of the fixed formats. With no option the bare
+two-byte hex form is used, which is narrower than the explicit -x.
+
+Options:
+  -C        canonical hex+ASCII, sixteen bytes to a line
+  -b        octal bytes           -c  characters with C escapes
+  -d        unsigned decimal words        -o  octal words
+  -x        hexadecimal words
+  -n N      stop after N bytes    -s N  skip N bytes first
+  -v        print every line rather than eliding a repeated one with "*"
+  --help    show this help
+
+The -e and -f format strings, which the other options are shorthand for, are
+not implemented.`,
 	"init": `Usage: init [-f INITTAB]
        init [--] COMMAND [ARG]...
 Run the system initializer when invoked as PID 1. The default inittab path is
@@ -437,8 +450,35 @@ Edit text in a small full-screen terminal editor. ^S saves and ^X exits.`,
 Copy data over a TCP or UDP connection.`,
 	"nslookup": `Usage: nslookup NAME [SERVER]
 Resolve a host name using DNS.`,
-	"od": `Usage: od [-c] [FILE]
-Display input in hexadecimal and ASCII.`,
+	"od": `Usage: od [OPTION]... [FILE]...
+Write an unambiguous representation of the input, two-byte octal words by
+default. Several files are read as one stream, and "-" is standard input.
+
+Options:
+  -t, --format=TYPE      choose the output format; several accumulate and are
+                         printed one under the other
+  -A, --address-radix=R  address column radix: d, o, x, or n for none
+  -j, --skip-bytes=N     skip N bytes first
+  -N, --read-bytes=N     stop after N bytes
+  -w[N], --width[=N]     N bytes per line (32 when N is left out); N must be
+                         attached to -w, as it is in the original
+  -v, --output-duplicates
+                         print every line rather than eliding a repeated one
+                         with "*"
+  --endian=big|little    read each unit in that byte order
+  --help                 show this help
+
+TYPE is a letter, an optional size and an optional "z":
+  a          named characters, with the high bit ignored
+  c          printable characters or backslash escapes
+  d[SIZE]    signed decimal        o[SIZE]  octal
+  u[SIZE]    unsigned decimal      x[SIZE]  hexadecimal
+  f[SIZE]    floating point, printed as the shortest decimal that reads back
+  SIZE is a number, or C, S, I or L for char, short, int and long; for f it may
+  be F, D or L. A trailing z adds the printable-character column.
+
+Traditional accumulating forms: -a (a), -b (o1), -c (c), -d (u2), -f (fF),
+-i (dI), -l (dL), -o (o2), -s (d2), -x (x2).`,
 	"pgrep": `Usage: pgrep [OPTION]... [PATTERN]
 Print the process ids whose name matches an extended regular expression. The
 pattern may be left out when some other selection option is given. A name in
