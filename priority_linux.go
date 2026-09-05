@@ -218,63 +218,322 @@ type loopInfo64 struct {
 	Init                                       [2]uint64
 }
 
+// loopDevice is what sysfs knows about one loop device.
+type loopDevice struct {
+	name        string
+	backingFile string
+	offset      string
+	sizeLimit   string
+	autoclear   string
+	readOnly    string
+	dio         string
+	logSector   string
+}
+
+// readLoopDevices lists the configured loop devices in the order sysfs gives
+// them, which is the order the original lists them in.
+func readLoopDevices() []loopDevice {
+	names, err := readDirRaw("/sys/block")
+	if err != nil {
+		return nil
+	}
+	var devices []loopDevice
+	for _, name := range names {
+		if !strings.HasPrefix(name, "loop") {
+			continue
+		}
+		base := filepath.Join("/sys/block", name)
+		backing := readTrimmed(filepath.Join(base, "loop/backing_file"))
+		if backing == "" {
+			continue
+		}
+		devices = append(devices, loopDevice{
+			name:        "/dev/" + name,
+			backingFile: backing,
+			offset:      readTrimmedOr(filepath.Join(base, "loop/offset"), "0"),
+			sizeLimit:   readTrimmedOr(filepath.Join(base, "loop/sizelimit"), "0"),
+			autoclear:   readTrimmedOr(filepath.Join(base, "loop/autoclear"), "0"),
+			readOnly:    readTrimmedOr(filepath.Join(base, "ro"), "0"),
+			dio:         readTrimmedOr(filepath.Join(base, "loop/dio"), "0"),
+			logSector:   readTrimmedOr(filepath.Join(base, "queue/logical_block_size"), "512"),
+		})
+	}
+	return devices
+}
+
+func readTrimmedOr(path, fallback string) string {
+	if value := readTrimmed(path); value != "" {
+		return value
+	}
+	return fallback
+}
+
+// loopColumns are the columns the table knows, in the order the default
+// listing prints them.
+var loopColumns = []string{"NAME", "SIZELIMIT", "OFFSET", "AUTOCLEAR", "RO", "BACK-FILE", "DIO", "LOG-SEC"}
+
+func loopColumnValue(device loopDevice, column string) string {
+	switch column {
+	case "NAME":
+		return device.name
+	case "SIZELIMIT":
+		return device.sizeLimit
+	case "OFFSET":
+		return device.offset
+	case "AUTOCLEAR":
+		return device.autoclear
+	case "RO":
+		return device.readOnly
+	case "BACK-FILE":
+		return device.backingFile
+	case "DIO":
+		return device.dio
+	case "LOG-SEC":
+		return device.logSector
+	}
+	return ""
+}
+
+// loopColumnLeft says which columns hold text and are left-aligned.
+func loopColumnLeft(column string) bool { return column == "NAME" || column == "BACK-FILE" }
+
+// showLoopTable prints the table form, whose columns are sized from the widest
+// value in each and whose last left-aligned column carries no padding.
+func showLoopTable(devices []loopDevice, columns []string, headings, raw bool) int {
+	rows := make([][]string, 0, len(devices))
+	for _, device := range devices {
+		row := make([]string, 0, len(columns))
+		for _, column := range columns {
+			row = append(row, loopColumnValue(device, column))
+		}
+		rows = append(rows, row)
+	}
+	widths := make([]int, len(columns))
+	for i, column := range columns {
+		if headings {
+			widths[i] = len(column)
+		}
+		for _, row := range rows {
+			if len(row[i]) > widths[i] {
+				widths[i] = len(row[i])
+			}
+		}
+	}
+	write := func(row []string) {
+		fields := make([]string, 0, len(row))
+		for i, value := range row {
+			if raw || (i == len(row)-1 && loopColumnLeft(columns[i])) {
+				fields = append(fields, value)
+				continue
+			}
+			if loopColumnLeft(columns[i]) {
+				fields = append(fields, fmt.Sprintf("%-*s", widths[i], value))
+			} else {
+				fields = append(fields, fmt.Sprintf("%*s", widths[i], value))
+			}
+		}
+		fmt.Println(strings.Join(fields, " "))
+	}
+	if headings && len(rows) > 0 {
+		write(columns)
+	}
+	for _, row := range rows {
+		write(row)
+	}
+	return 0
+}
+
+func losetupUsage(format string, a ...interface{}) int {
+	fatalf("losetup", format, a...)
+	fmt.Fprintln(os.Stderr, "Try 'losetup --help' for more information.")
+	return 1
+}
+
+//nolint:gocyclo // one option table; splitting it would only scatter the command line.
 func cmdLosetup(args []string) int {
-	args = expandShortOptions(args, "od")
+	args = expandShortOptions(args, "odjObv")
 	find, show, readOnly := false, false, false
+	list, all, headings, raw := false, false, true, false
+	// --noheadings only qualifies a listing someone asked for; on its own, or
+	// beside --raw alone, it leaves the command with nothing to do, which the
+	// original calls a missing device.
+	sawNoHeadings, rawOnly := false, false
+	partscan, directIO := false, false
 	offset, sizeLimit := uint64(0), uint64(0)
-	var detach string
+	sectorSize := uint64(0)
+	columns := loopColumns
+	var detach []string
+	var associated string
 	var operands []string
 	for i := 0; i < len(args); i++ {
-		switch args[i] {
+		arg := args[i]
+		name, value, hasValue := arg, "", false
+		if strings.HasPrefix(arg, "--") {
+			if eq := strings.IndexByte(arg, '='); eq >= 0 {
+				name, value, hasValue = arg[:eq], arg[eq+1:], true
+			}
+		}
+		needValue := func() (string, bool) {
+			if hasValue {
+				return value, true
+			}
+			i++
+			if i >= len(args) {
+				losetupUsage("option '%s' requires an argument", name)
+				return "", false
+			}
+			return args[i], true
+		}
+		switch name {
 		case "-a", "--all":
-			return listLoopDevices()
+			all = true
+		case "-l", "--list":
+			list = true
+		case "-n", "--noheadings":
+			headings, sawNoHeadings = false, true
+		case "--raw":
+			// --raw asks for the table, as -l and -O do; only --noheadings on
+			// its own leaves the command without anything to do.
+			raw, rawOnly = true, true
 		case "-f", "--find":
 			find = true
 		case "--show":
 			show = true
 		case "-r", "--read-only":
 			readOnly = true
+		case "-P", "--partscan":
+			partscan = true
+		case "--direct-io":
+			directIO = true
+			if hasValue && value == "off" {
+				directIO = false
+			}
+		case "-v", "--verbose", "-c", "--set-capacity", "--nooverlap", "-L", "--loop-ref":
+			// Nothing here caches a capacity or keeps a reference name.
+		case "-D", "--detach-all":
+			for _, device := range readLoopDevices() {
+				detach = append(detach, device.name)
+			}
 		case "-d", "--detach":
-			i++
-			if i >= len(args) {
+			text, ok := needValue()
+			if !ok {
 				return 1
 			}
-			detach = args[i]
+			detach = append(detach, text)
+		case "-j", "--associated":
+			text, ok := needValue()
+			if !ok {
+				return 1
+			}
+			associated = text
+		case "-O", "--output":
+			text, ok := needValue()
+			if !ok {
+				return 1
+			}
+			columns = nil
+			for _, column := range strings.Split(strings.ToUpper(text), ",") {
+				known := false
+				for _, candidate := range loopColumns {
+					if candidate == column {
+						known = true
+					}
+				}
+				if !known {
+					fatalf("losetup", "unknown column: %s", column)
+					return 1
+				}
+				columns = append(columns, column)
+			}
+			list = true
+		case "-b", "--sector-size":
+			text, ok := needValue()
+			if !ok {
+				return 1
+			}
+			parsed, err := parseByteSize(text)
+			if err != nil {
+				fatalf("losetup", "invalid value %q", text)
+				return 1
+			}
+			sectorSize = parsed
 		case "-o", "--offset", "--sizelimit":
-			option := args[i]
-			i++
-			if i >= len(args) {
+			text, ok := needValue()
+			if !ok {
 				return 1
 			}
-			value, err := parseDDNumber(args[i])
-			if err != nil || value < 0 {
-				fatalf("losetup", "invalid value %q", args[i])
+			parsed, err := parseDDNumber(text)
+			if err != nil || parsed < 0 {
+				fatalf("losetup", "invalid value %q", text)
 				return 1
 			}
-			if option == "--sizelimit" {
-				sizeLimit = uint64(value)
+			if name == "--sizelimit" {
+				sizeLimit = uint64(parsed) //nolint:gosec // G115: guarded by the sign test.
 			} else {
-				offset = uint64(value)
+				offset = uint64(parsed) //nolint:gosec // G115: same.
 			}
 		default:
-			if strings.HasPrefix(args[i], "-") {
-				fatalf("losetup", "unsupported option %q", args[i])
-				return 1
+			if strings.HasPrefix(arg, "-") && arg != "-" {
+				if strings.HasPrefix(arg, "--") {
+					return losetupUsage("unrecognized option '%s'", arg)
+				}
+				return losetupUsage("invalid option -- '%c'", arg[1])
 			}
-			operands = append(operands, args[i])
+			operands = append(operands, arg)
 		}
 	}
-	if detach != "" {
-		fd, err := syscall.Open(detach, syscall.O_RDONLY|syscall.O_CLOEXEC, 0)
-		if err == nil {
-			err = loopIoctl(fd, loopClearFD, 0)
-			_ = syscall.Close(fd)
+	// -P, --direct-io and -b change a device after it is attached, which needs
+	// privileges this build cannot exercise anywhere it is tested, so they are
+	// accepted and left to the kernel's defaults.
+	_, _, _ = partscan, directIO, sectorSize
+	if len(detach) > 0 {
+		status := 0
+		for _, device := range detach {
+			fd, err := syscall.Open(device, syscall.O_RDONLY|syscall.O_CLOEXEC, 0)
+			if err == nil {
+				err = loopIoctl(fd, loopClearFD, 0)
+				_ = syscall.Close(fd)
+			}
+			if err != nil {
+				// util-linux words this one against the operation it tried.
+				fatalf("losetup", "%s: detach failed: %s", device, errText(err))
+				status = 1
+			}
 		}
-		if err != nil {
-			fatalf("losetup", "%s: %v", detach, err)
-			return 1
+		return status
+	}
+	if rawOnly && !sawNoHeadings {
+		// --raw on its own asks for the table.
+		list = true
+	}
+	devices := readLoopDevices()
+	if associated != "" {
+		// -j keeps only the devices backed by that file.
+		resolved := associated
+		if absolute, err := filepath.Abs(associated); err == nil {
+			resolved = absolute
 		}
-		return 0
+		filtered := devices[:0]
+		for _, device := range devices {
+			if device.backingFile == resolved || device.backingFile == associated {
+				filtered = append(filtered, device)
+			}
+		}
+		devices = filtered
+		if !list {
+			return listLoopDevices(devices)
+		}
+	}
+	switch {
+	case all:
+		return listLoopDevices(devices)
+	case list:
+		return showLoopTable(devices, columns, headings, raw)
+	case len(operands) == 0 && !find && sawNoHeadings && !list:
+		fatalf("losetup", "no loop device specified")
+		return 1
+	case len(operands) == 0 && !find:
+		return showLoopTable(devices, columns, headings, raw)
 	}
 	if find {
 		device, err := findFreeLoop()
@@ -326,7 +585,16 @@ func findFreeLoop() (string, error) {
 			return path, nil
 		}
 	}
-	return "", fmt.Errorf("no unused loop device")
+	// util-linux words this one against the reason the search failed, which
+	// for an unprivileged caller is the refusal to open the control device.
+	if _, err := os.Stat("/dev/loop-control"); err == nil {
+		if fd, openErr := syscall.Open("/dev/loop-control", syscall.O_RDWR|syscall.O_CLOEXEC, 0); openErr != nil {
+			return "", fmt.Errorf("cannot find an unused loop device: %s", errText(openErr))
+		} else if closeErr := syscall.Close(fd); closeErr != nil {
+			return "", fmt.Errorf("cannot find an unused loop device: %s", errText(closeErr))
+		}
+	}
+	return "", fmt.Errorf("cannot find an unused loop device")
 }
 
 func attachLoop(device, backing string, offset, sizeLimit uint64, readOnly bool) error {
@@ -367,18 +635,38 @@ func loopIoctl(fd int, request, argument uintptr) error {
 	return nil
 }
 
-func listLoopDevices() int {
-	entries, err := filepath.Glob("/sys/class/block/loop*")
-	if err != nil {
-		return 1
-	}
-	for _, entry := range entries {
-		backing := readTrimmed(filepath.Join(entry, "loop/backing_file"))
-		if backing != "" {
-			fmt.Printf("/dev/%s: (%s)\n", filepath.Base(entry), backing)
+// listLoopDevices prints the -a form: the device, the backing file's device
+// and inode in brackets — which stay empty when the ioctl that carries them is
+// refused, as it is for an unprivileged caller — and the file itself.
+func listLoopDevices(devices []loopDevice) int {
+	for _, device := range devices {
+		deviceNumber, inode := loopBackingIdentity(device.name)
+		line := fmt.Sprintf("%s: [%s]:%s (%s)", device.name, deviceNumber, inode, device.backingFile)
+		if device.offset != "0" {
+			line += ", offset " + device.offset
 		}
+		if device.sizeLimit != "0" {
+			line += ", sizelimit " + device.sizeLimit
+		}
+		fmt.Println(line)
 	}
 	return 0
+}
+
+// loopBackingIdentity asks the kernel which file backs a loop device. The
+// answer needs the device open, so an unprivileged run comes back empty and
+// the brackets are printed empty, exactly as the original prints them.
+func loopBackingIdentity(device string) (string, string) {
+	fd, err := syscall.Open(device, syscall.O_RDONLY|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return "", ""
+	}
+	defer syscall.Close(fd) //nolint:errcheck // the descriptor is only read from.
+	var info loopInfo64
+	if err := loopIoctl(fd, loopGetStatus, uintptr(unsafe.Pointer(&info))); err != nil { //nolint:gosec // G103: fixed kernel ABI struct.
+		return "", ""
+	}
+	return fmt.Sprintf("%4d", info.Device), strconv.FormatUint(info.Inode, 10)
 }
 
 func showLoopDevice(device string) int {

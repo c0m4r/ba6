@@ -236,11 +236,33 @@ Options:
   -v, --verbose  name the file as it is loaded
   -s, --syslog   accepted; nothing here logs
   --help         show this help`,
-	"losetup": `Usage: losetup -a
-       losetup -f [--show] [FILE]
-       losetup [-r] [-o OFFSET] [--sizelimit SIZE] LOOPDEV FILE
-       losetup -d LOOPDEV
-List, find, attach, inspect, or detach Linux loop devices.`,
+	"losetup": `Usage: losetup [OPTION]... [LOOPDEV [FILE]]
+With no operands, list the loop devices in use as a table. Attaching or
+detaching one needs CAP_SYS_ADMIN.
+
+Options:
+  -a, --all              the older listing form, "/dev/loopN: [dev]:ino (file)"
+  -l, --list             the table form (the default with no operands)
+  -O, --output=COLUMNS   choose the columns: NAME, SIZELIMIT, OFFSET,
+                         AUTOCLEAR, RO, BACK-FILE, DIO, LOG-SEC
+  -n, --noheadings       leave the heading out; only valid beside a listing
+  --raw                  one space between columns, no padding
+  -j, --associated=FILE  only the devices backed by FILE
+  -f, --find             print the first unused device, or use it for FILE
+  --show                 print the device a successful attach used
+  -d, --detach=DEV       detach a device
+  -D, --detach-all       detach every device in use
+  -r, --read-only        attach read-only
+  -o, --offset=N         start the mapping N bytes into the file
+  --sizelimit=N          map only N bytes of it
+  -P, -b, --direct-io, -c, -v
+                         accepted; these change a device after it is attached
+                         and are left to the kernel's defaults
+  --help                 show this help
+
+The bracketed device and inode of the -a form come from an ioctl the kernel
+only answers for a caller that can open the device, so they are empty for an
+unprivileged run — which is what the original prints then too.`,
 	"login": `Usage: login [USERNAME]
 Authenticate a user against /etc/passwd and /etc/shadow, initialize their
 supplementary groups and environment, and start their configured login shell.

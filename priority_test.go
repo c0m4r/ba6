@@ -251,3 +251,55 @@ func TestPivotRootArgumentGuard(t *testing.T) {
 		t.Fatalf("pivot_root extra arg = (%d, %q)", status, stderr)
 	}
 }
+
+// TestLosetupTable pins the two listing forms and the column rules, which are
+// what losetup prints when it is only asked to look.
+func TestLosetupTable(t *testing.T) {
+	devices := readLoopDevices()
+	if len(devices) == 0 {
+		t.Skip("no loop devices are configured")
+	}
+	status, out, errOut := captureApplet(t, cmdLosetup, nil, "")
+	if status != 0 {
+		t.Fatalf("losetup = (%d, %q)", status, errOut)
+	}
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if strings.Join(strings.Fields(lines[0]), " ") != "NAME SIZELIMIT OFFSET AUTOCLEAR RO BACK-FILE DIO LOG-SEC" {
+		t.Fatalf("losetup header = %q", lines[0])
+	}
+	// -a is the older one-line-per-device form.
+	_, older, _ := captureApplet(t, cmdLosetup, []string{"-a"}, "")
+	for _, line := range strings.Split(strings.TrimRight(older, "\n"), "\n") {
+		if !strings.HasPrefix(line, "/dev/loop") || !strings.Contains(line, ": [") || !strings.HasSuffix(line, ")") {
+			t.Fatalf("losetup -a printed %q", line)
+		}
+	}
+	// -O chooses the columns, and an unknown one is refused by name.
+	_, chosen, _ := captureApplet(t, cmdLosetup, []string{"-O", "NAME,BACK-FILE"}, "")
+	if fields := strings.Fields(strings.Split(chosen, "\n")[0]); len(fields) != 2 || fields[0] != "NAME" {
+		t.Fatalf("losetup -O = %q", chosen)
+	}
+	status, out, errOut = captureApplet(t, cmdLosetup, []string{"-O", "BOGUS"}, "")
+	if status != 1 || out != "" || !strings.Contains(errOut, "unknown column: BOGUS") {
+		t.Fatalf("losetup -O BOGUS = (%d, %q, %q)", status, out, errOut)
+	}
+	// -j keeps only the devices backed by that file.
+	_, filtered, _ := captureApplet(t, cmdLosetup, []string{"-j", devices[0].backingFile}, "")
+	if !strings.Contains(filtered, devices[0].name) {
+		t.Fatalf("losetup -j = %q", filtered)
+	}
+	if _, empty, _ := captureApplet(t, cmdLosetup, []string{"-j", "/definitely/absent"}, ""); empty != "" {
+		t.Fatalf("losetup -j on an unused file = %q", empty)
+	}
+	// --noheadings on its own has no listing to qualify.
+	if status, _, errOut = captureApplet(t, cmdLosetup, []string{"-n"}, ""); status != 1 ||
+		!strings.Contains(errOut, "no loop device specified") {
+		t.Fatalf("losetup -n = (%d, %q)", status, errOut)
+	}
+	// An unknown option carries the original's Try line.
+	if status, _, errOut = captureApplet(t, cmdLosetup, []string{"--nosuch"}, ""); status != 1 ||
+		!strings.Contains(errOut, "unrecognized option '--nosuch'") ||
+		!strings.Contains(errOut, "Try 'losetup --help'") {
+		t.Fatalf("losetup --nosuch = (%d, %q)", status, errOut)
+	}
+}
