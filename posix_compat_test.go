@@ -172,8 +172,10 @@ func TestTarReextractReplacesSymlinkAndKeepOldFilesRetainsIt(t *testing.T) {
 	if err := os.Symlink("stale", link); err != nil {
 		t.Fatal(err)
 	}
+	// -k reports the clash the way the original does — per member, with the
+	// walk carrying on and the run exiting 2 — and leaves the link alone.
 	status, _, stderr = captureApplet(t, cmdTar, []string{"-xzkf", archive, "-C", destination}, "")
-	if status == 0 || !strings.Contains(stderr, "refusing to replace") {
+	if status != 2 || !strings.Contains(stderr, "Cannot create symlink to 'real': File exists") {
 		t.Fatalf("tar -k = (%d, %q)", status, stderr)
 	}
 	if target, err := os.Readlink(link); err != nil || target != "stale" {

@@ -967,21 +967,41 @@ Options:
 	"sha512sum": `Usage: sha512sum [OPTION]... [FILE]...
 Compute or check SHA-512 digests. -c verifies checksum files; -b/-t select the
 printed marker; --quiet and --status control verification output.`,
-	"tar": `Usage: tar -c|-x|-t [-kzv] [-f ARCHIVE] [-C DIR] [FILE]...
-Create, extract, or list tar archives. ARCHIVE '-' means stdin/stdout.
-Extraction rejects escaping paths and is limited to 64 GiB of regular data.
+	"tar": `Usage: tar -c|-x|-t [OPTION]... [-f ARCHIVE] [MEMBER]...
+Create, extract, or list tar archives. ARCHIVE '-' means stdin/stdout. With -x
+or -t, naming members lists or extracts only those, a directory bringing its
+contents with it. Extraction rejects escaping paths and is limited to 64 GiB of
+regular data.
 
 Options:
-  -c        create an archive
-  -x        extract an archive
-  -t        list archive members
-  -f FILE   use FILE as the archive
-  -z        filter the archive through gzip
-  -v        list processed members
-  -k, --keep-old-files
-            keep existing files instead of replacing them while extracting
-  -C DIR    read or extract relative to DIR
-  --help    show this help`,
+  -c, --create           create an archive
+  -x, --extract, --get   extract an archive
+  -t, --list             list archive members
+  -f, --file=ARCHIVE     use ARCHIVE instead of stdin/stdout
+  -C, --directory=DIR    read or extract relative to DIR
+  -z, --gzip             filter the archive through gzip
+  -j, --bzip2            through bzip2
+  -J, --xz               through xz
+  --zstd                 through zstandard
+  -v, --verbose          list the members as they are processed; -tv prints the
+                         long listing
+  -k, --keep-old-files   keep existing files instead of replacing them
+  --overwrite            replace them (the default)
+  -O, --to-stdout        write the members' contents out instead of unpacking
+  -P, --absolute-names   keep a leading "/" rather than stripping it
+  -p, --preserve-permissions
+                         restore each member's recorded mode
+  --numeric-owner        store and show ids rather than names
+  --strip-components=N   drop N leading path components while extracting
+  --exclude=PATTERN      leave out the members matching PATTERN, where "*"
+                         crosses a slash as it does in the original
+  -T, --files-from=FILE  take the operand names from FILE, one per line
+  --help                 show this help
+
+The xz and zstandard writers store their data rather than compressing it, so an
+archive written with -J or --zstd is a valid but uncompressed stream of that
+format; both are read fully. Appending to an archive (-r, -u, -A, --delete) is
+not implemented.`,
 	"uname": `Usage: uname [OPTION]...
 Display kernel and machine information.
 

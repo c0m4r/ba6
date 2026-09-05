@@ -685,3 +685,118 @@ func TestGzipListTestAndLevels(t *testing.T) {
 		t.Fatalf("gzip over an existing archive = (%d, %q)", status, errOut)
 	}
 }
+
+// TestTarSelectionAndOptions covers what tar grew past -c/-x/-t/-f/-z/-C/-v/-p:
+// member selection, --strip-components, --exclude, -T, -O and the long listing.
+func TestTarSelectionAndOptions(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "src")
+	if err := os.MkdirAll(filepath.Join(source, "sub"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{"a.txt": "hello\n", "sub/b.txt": "world\n"} {
+		if err := os.WriteFile(filepath.Join(source, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	archive := filepath.Join(dir, "t.tar")
+	if status := cmdTar([]string{"-cf", archive, "-C", dir, "src"}); status != 0 {
+		t.Fatalf("tar -cf = %d", status)
+	}
+
+	// -t lists every member; naming a directory selects it and its contents.
+	_, out, _ := captureApplet(t, cmdTar, []string{"-tf", archive}, "")
+	if lines := strings.Split(strings.TrimRight(out, "\n"), "\n"); len(lines) != 4 {
+		t.Fatalf("tar -tf listed %q", out)
+	}
+	_, out, _ = captureApplet(t, cmdTar, []string{"-tf", archive, "src/sub"}, "")
+	if out != "src/sub/\nsrc/sub/b.txt\n" {
+		t.Fatalf("tar -tf src/sub = %q", out)
+	}
+	// A selection that never turns up is the original's failure.
+	status, _, errOut := captureApplet(t, cmdTar, []string{"-tf", archive, "nosuch"}, "")
+	if status != 2 || !strings.Contains(errOut, "nosuch: Not found in archive") ||
+		!strings.Contains(errOut, "Exiting with failure status") {
+		t.Fatalf("tar -tf nosuch = (%d, %q)", status, errOut)
+	}
+
+	// -tv is the long listing: mode, owner/group, size, stamp and name, with a
+	// symbolic link showing what it points at.
+	_, out, _ = captureApplet(t, cmdTar, []string{"-tvf", archive, "src/a.txt"}, "")
+	fields := strings.Fields(out)
+	if len(fields) != 6 || !strings.HasPrefix(fields[0], "-rw") || fields[2] != "6" || fields[5] != "src/a.txt" {
+		t.Fatalf("tar -tvf = %q", out)
+	}
+
+	// -O writes a member's contents out instead of unpacking it.
+	if _, out, _ = captureApplet(t, cmdTar, []string{"-xOf", archive, "src/a.txt"}, ""); out != "hello\n" {
+		t.Fatalf("tar -xOf = %q", out)
+	}
+
+	// --strip-components drops leading components.
+	stripped := filepath.Join(dir, "stripped")
+	if err := os.Mkdir(stripped, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if status := cmdTar([]string{"-xf", archive, "-C", stripped, "--strip-components=1"}); status != 0 {
+		t.Fatalf("tar --strip-components = %d", status)
+	}
+	if _, err := os.Stat(filepath.Join(stripped, "a.txt")); err != nil {
+		t.Fatalf("--strip-components did not shorten the path: %v", err)
+	}
+
+	// --exclude leaves the matching members out but keeps the directory whose
+	// contents were excluded, as the original does.
+	partial := filepath.Join(dir, "partial")
+	if err := os.Mkdir(partial, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if status := cmdTar([]string{"-xf", archive, "-C", partial, "--exclude=*/sub/*"}); status != 0 {
+		t.Fatalf("tar --exclude = %d", status)
+	}
+	if _, err := os.Stat(filepath.Join(partial, "src", "sub")); err != nil {
+		t.Fatalf("--exclude dropped the directory itself: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(partial, "src", "sub", "b.txt")); !os.IsNotExist(err) {
+		t.Fatalf("--exclude kept the excluded member: %v", err)
+	}
+
+	// -T takes the operand names from a file.
+	list := filepath.Join(dir, "list.txt")
+	if err := os.WriteFile(list, []byte("src/a.txt\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fromList := filepath.Join(dir, "list.tar")
+	if status := cmdTar([]string{"-cf", fromList, "-C", dir, "-T", list}); status != 0 {
+		t.Fatalf("tar -T = %d", status)
+	}
+	if _, out, _ = captureApplet(t, cmdTar, []string{"-tf", fromList}, ""); out != "src/a.txt\n" {
+		t.Fatalf("tar -T produced %q", out)
+	}
+
+	// Every codec round-trips through its own reader.
+	for _, codec := range []string{"-z", "-j", "-J", "--zstd"} {
+		packed := filepath.Join(dir, "packed"+strings.TrimLeft(codec, "-"))
+		if status := cmdTar([]string{"-cf", packed, codec, "-C", dir, "src"}); status != 0 {
+			t.Fatalf("tar -c %s = %d", codec, status)
+		}
+		unpacked := filepath.Join(dir, "unpacked"+strings.TrimLeft(codec, "-"))
+		if err := os.Mkdir(unpacked, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if status := cmdTar([]string{"-xf", packed, codec, "-C", unpacked}); status != 0 {
+			t.Fatalf("tar -x %s = %d", codec, status)
+		}
+		body, err := os.ReadFile(filepath.Join(unpacked, "src", "sub", "b.txt"))
+		if err != nil || string(body) != "world\n" {
+			t.Fatalf("%s did not round-trip: %q %v", codec, body, err)
+		}
+	}
+
+	// An archive that cannot be opened is the original's unrecoverable error.
+	status, _, errOut = captureApplet(t, cmdTar, []string{"-tf", filepath.Join(dir, "absent.tar")}, "")
+	if status != 2 || !strings.Contains(errOut, "Cannot open:") ||
+		!strings.Contains(errOut, "Error is not recoverable") {
+		t.Fatalf("tar on a missing archive = (%d, %q)", status, errOut)
+	}
+}

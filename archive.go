@@ -5,6 +5,7 @@ package main
 
 import (
 	"archive/tar"
+	"compress/bzip2"
 	"compress/gzip"
 	"encoding/binary"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -20,10 +22,144 @@ type tarOptions struct {
 	operation byte
 	archive   string
 	directory string
-	gzip      bool
-	verbose   bool
-	keepOld   bool
-	files     []string
+	// compression is the codec letter: 'z' gzip, 'j' bzip2, 'J' xz, 'Z' zstd,
+	// and zero for a plain archive.
+	compression     byte
+	gzip            bool
+	verbose         bool
+	keepOld         bool
+	overwrite       bool
+	toStdout        bool
+	absolute        bool
+	numericOwner    bool
+	preserve        bool
+	stripComponents int
+	excludes        []string
+	files           []string
+	// matched records which selections have been seen, so the ones that never
+	// turn up can be reported the way the original reports them.
+	matched map[string]bool
+	// warnedAbsolute keeps the leading-slash warning to one line per run.
+	warnedAbsolute bool
+	status         int
+}
+
+// listing is where the -v file list goes: standard output, unless the archive
+// itself is being written there.
+func (o *tarOptions) listing() *os.File {
+	if o.archive == "-" && o.operation == 'c' {
+		return os.Stderr
+	}
+	return os.Stdout
+}
+
+// selects reports whether an archive member was asked for. With no operands
+// every member is wanted; otherwise a member matches a selection exactly, or
+// as something inside a directory that was named.
+func (o *tarOptions) selects(name string) bool {
+	if len(o.files) == 0 {
+		return true
+	}
+	clean := strings.TrimSuffix(filepath.ToSlash(name), "/")
+	for _, want := range o.files {
+		wanted := strings.TrimSuffix(filepath.ToSlash(want), "/")
+		if clean == wanted || strings.HasPrefix(clean, wanted+"/") {
+			o.matched[want] = true
+			return true
+		}
+	}
+	return false
+}
+
+// excluded reports whether --exclude covers this member. The patterns are
+// matched the way the original matches them, against the whole name and with
+// "*" free to cross a slash.
+func (o *tarOptions) excluded(name string) bool {
+	// A directory's own name carries a trailing slash in the archive, which the
+	// patterns are written without; the original matches the trimmed form, so
+	// "*/sub/*" leaves the directory itself in place and drops its contents.
+	trimmed := strings.TrimSuffix(filepath.ToSlash(name), "/")
+	for _, pattern := range o.excludes {
+		if tarPatternMatch(pattern, trimmed) {
+			return true
+		}
+	}
+	return false
+}
+
+// tarPatternMatch is fnmatch without FNM_PATHNAME, which is what tar's
+// --exclude uses: a "*" matches separators too.
+func tarPatternMatch(pattern, name string) bool {
+	if pattern == "" {
+		return false
+	}
+	// The implementation is the same recursive walk fnmatch does, kept here so
+	// that "*" is not stopped by a slash the way filepath.Match stops it.
+	var match func(p, s string) bool
+	match = func(p, s string) bool {
+		for len(p) > 0 {
+			switch p[0] {
+			case '*':
+				for i := 0; i <= len(s); i++ {
+					if match(p[1:], s[i:]) {
+						return true
+					}
+				}
+				return false
+			case '?':
+				if len(s) == 0 {
+					return false
+				}
+				p, s = p[1:], s[1:]
+			case '[':
+				if len(s) == 0 {
+					return false
+				}
+				end := strings.IndexByte(p[1:], ']')
+				if end < 0 {
+					if s[0] != '[' {
+						return false
+					}
+					p, s = p[1:], s[1:]
+					continue
+				}
+				set := p[1 : 1+end]
+				negate := strings.HasPrefix(set, "!") || strings.HasPrefix(set, "^")
+				if negate {
+					set = set[1:]
+				}
+				found := false
+				for i := 0; i < len(set); i++ {
+					if i+2 < len(set) && set[i+1] == '-' {
+						if s[0] >= set[i] && s[0] <= set[i+2] {
+							found = true
+						}
+						i += 2
+						continue
+					}
+					if set[i] == s[0] {
+						found = true
+					}
+				}
+				if found == negate {
+					return false
+				}
+				p, s = p[2+end:], s[1:]
+			case '\\':
+				if len(p) < 2 || len(s) == 0 || p[1] != s[0] {
+					return false
+				}
+				p, s = p[2:], s[1:]
+			default:
+				if len(s) == 0 || p[0] != s[0] {
+					return false
+				}
+				p, s = p[1:], s[1:]
+			}
+		}
+		return len(s) == 0
+	}
+	return match(pattern, name)
 }
 
 const maxExpandedArchiveBytes int64 = 64 << 30
@@ -36,25 +172,44 @@ func cmdTar(args []string) int {
 	}
 	switch opts.operation {
 	case 'c':
-		err = createTar(opts)
+		err = createTar(&opts)
 	case 'x':
-		err = extractTar(opts)
+		err = extractTar(&opts)
 	case 't':
-		err = listTar(opts)
+		err = listTar(&opts)
 	}
 	if err != nil {
 		fatalf("tar", "%v", err)
+		var fatal tarFatal
+		if errors.As(err, &fatal) {
+			fmt.Fprintln(os.Stderr, "tar: Error is not recoverable: exiting now")
+			return 2
+		}
 		return 1
 	}
-	return 0
+	// A selection that never turned up is the original's own failure, reported
+	// after the members that did.
+	for _, want := range opts.files {
+		if opts.operation != 'c' && !opts.matched[want] {
+			fatalf("tar", "%s: Not found in archive", want)
+			opts.status = 2
+		}
+	}
+	if opts.status != 0 {
+		fmt.Fprintln(os.Stderr, "tar: Exiting with failure status due to previous errors")
+	}
+	return opts.status
 }
 
+//nolint:gocyclo // one option table; splitting it would only scatter the command line.
 func parseTarOptions(args []string) (tarOptions, error) {
-	opts := tarOptions{archive: "-", directory: "."}
+	opts := tarOptions{archive: "-", directory: ".", matched: map[string]bool{}}
 	args = append([]string(nil), args...)
-	if len(args) > 0 && args[0] != "" && args[0][0] != '-' && strings.Trim(args[0], "ctxzvfkC") == "" {
+	// The historic first-argument form takes the option letters without a dash.
+	if len(args) > 0 && args[0] != "" && args[0][0] != '-' && strings.Trim(args[0], "ctxzjJvfkCOpP") == "" {
 		args[0] = "-" + args[0]
 	}
+	var filesFrom []string
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" {
@@ -62,21 +217,85 @@ func parseTarOptions(args []string) (tarOptions, error) {
 			break
 		}
 		if strings.HasPrefix(arg, "--") {
-			switch arg {
+			name, value, hasValue := arg, "", false
+			if eq := strings.IndexByte(arg, '='); eq >= 0 {
+				name, value, hasValue = arg[:eq], arg[eq+1:], true
+			}
+			needValue := func() (string, error) {
+				if hasValue {
+					return value, nil
+				}
+				i++
+				if i >= len(args) {
+					return "", fmt.Errorf("option '%s' requires an argument", name)
+				}
+				return args[i], nil
+			}
+			var err error
+			switch name {
 			case "--create":
 				opts.operation = 'c'
 			case "--extract", "--get":
 				opts.operation = 'x'
 			case "--list":
 				opts.operation = 't'
-			case "--gzip":
-				opts.gzip = true
+			case "--gzip", "--gunzip", "--ungzip":
+				opts.compression = 'z'
+			case "--bzip2":
+				opts.compression = 'j'
+			case "--xz":
+				opts.compression = 'J'
+			case "--zstd":
+				opts.compression = 'Z'
 			case "--verbose":
 				opts.verbose = true
 			case "--keep-old-files":
 				opts.keepOld = true
+			case "--overwrite":
+				opts.overwrite, opts.keepOld = true, false
+			case "--to-stdout":
+				opts.toStdout = true
+			case "--absolute-names":
+				opts.absolute = true
+			case "--numeric-owner":
+				opts.numericOwner = true
+			case "--preserve-permissions", "--same-permissions":
+				opts.preserve = true
+			case "--no-same-owner", "--same-owner", "--no-same-permissions", "--wildcards", "--no-wildcards":
+				// Accepted for compatibility: ownership is only restored when
+				// the caller can set it, and the patterns are always globs.
+			case "--file":
+				if opts.archive, err = needValue(); err != nil {
+					return opts, err
+				}
+			case "--directory":
+				if opts.directory, err = needValue(); err != nil {
+					return opts, err
+				}
+			case "--exclude":
+				pattern, patternErr := needValue()
+				if patternErr != nil {
+					return opts, patternErr
+				}
+				opts.excludes = append(opts.excludes, pattern)
+			case "--files-from":
+				list, listErr := needValue()
+				if listErr != nil {
+					return opts, listErr
+				}
+				filesFrom = append(filesFrom, list)
+			case "--strip-components":
+				count, countErr := needValue()
+				if countErr != nil {
+					return opts, countErr
+				}
+				n, convErr := strconv.Atoi(count)
+				if convErr != nil || n < 0 {
+					return opts, fmt.Errorf("invalid number of components stripped: %s", count)
+				}
+				opts.stripComponents = n
 			default:
-				return opts, fmt.Errorf("invalid option %q", arg)
+				return opts, fmt.Errorf("unrecognized option '%s'", arg)
 			}
 			continue
 		}
@@ -85,17 +304,27 @@ func parseTarOptions(args []string) (tarOptions, error) {
 				option := arg[pos]
 				switch option {
 				case 'c', 'x', 't':
-					if opts.operation != 0 && opts.operation != arg[pos] {
+					if opts.operation != 0 && opts.operation != option {
 						return opts, fmt.Errorf("multiple operations specified")
 					}
-					opts.operation = arg[pos]
+					opts.operation = option
 				case 'z':
-					opts.gzip = true
+					opts.compression = 'z'
+				case 'j':
+					opts.compression = 'j'
+				case 'J':
+					opts.compression = 'J'
 				case 'v':
 					opts.verbose = true
 				case 'k':
 					opts.keepOld = true
-				case 'f', 'C':
+				case 'O':
+					opts.toStdout = true
+				case 'P':
+					opts.absolute = true
+				case 'p':
+					opts.preserve = true
+				case 'f', 'C', 'T':
 					var value string
 					if pos+1 < len(arg) {
 						value = arg[pos+1:]
@@ -103,14 +332,17 @@ func parseTarOptions(args []string) (tarOptions, error) {
 					} else {
 						i++
 						if i >= len(args) {
-							return opts, fmt.Errorf("option -%c requires an argument", arg[pos])
+							return opts, fmt.Errorf("option -%c requires an argument", option)
 						}
 						value = args[i]
 					}
-					if option == 'f' {
+					switch option {
+					case 'f':
 						opts.archive = value
-					} else {
+					case 'C':
 						opts.directory = value
+					case 'T':
+						filesFrom = append(filesFrom, value)
 					}
 				default:
 					return opts, fmt.Errorf("invalid option -- '%c'", option)
@@ -120,19 +352,82 @@ func parseTarOptions(args []string) (tarOptions, error) {
 		}
 		opts.files = append(opts.files, arg)
 	}
+	opts.gzip = opts.compression == 'z'
+	for _, list := range filesFrom {
+		names, err := readTarFileList(list)
+		if err != nil {
+			return opts, err
+		}
+		opts.files = append(opts.files, names...)
+	}
 	if opts.operation == 0 {
 		return opts, fmt.Errorf("one of -c, -x, or -t is required")
 	}
 	if opts.operation == 'c' && len(opts.files) == 0 {
 		return opts, fmt.Errorf("refusing to create an empty archive")
 	}
-	if opts.operation != 'c' && len(opts.files) > 0 {
-		return opts, fmt.Errorf("member selection is not supported")
-	}
 	return opts, nil
 }
 
-func createTar(opts tarOptions) (retErr error) {
+// readTarFileList reads the member names -T points at, one per line.
+func readTarFileList(path string) ([]string, error) {
+	data, err := readInputBytes(path)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, line := range strings.Split(string(data), "\n") {
+		if line = strings.TrimRight(line, "\r"); line != "" {
+			names = append(names, line)
+		}
+	}
+	return names, nil
+}
+
+// tarCompressedWriter wraps the archive stream in whichever codec was chosen.
+func tarCompressedWriter(output io.Writer, codec byte) (io.Writer, io.Closer, error) {
+	switch codec {
+	case 'z':
+		writer := gzip.NewWriter(output)
+		return writer, writer, nil
+	case 'j':
+		writer, err := newBzip2Writer(output)
+		if err != nil {
+			return nil, nil, err
+		}
+		return writer, writer, nil
+	case 'J':
+		writer, err := newXZWriter(output)
+		if err != nil {
+			return nil, nil, err
+		}
+		return writer, writer, nil
+	case 'Z':
+		writer, err := newZstdWriter(output)
+		if err != nil {
+			return nil, nil, err
+		}
+		return writer, writer, nil
+	}
+	return output, nil, nil
+}
+
+// tarCompressedReader is the same in the other direction.
+func tarCompressedReader(input io.Reader, codec byte) (io.Reader, error) {
+	switch codec {
+	case 'z':
+		return gzip.NewReader(input)
+	case 'j':
+		return bzip2.NewReader(input), nil
+	case 'J':
+		return newXZReader(input)
+	case 'Z':
+		return newZstdReader(input)
+	}
+	return input, nil
+}
+
+func createTar(opts *tarOptions) (retErr error) {
 	base, err := filepath.Abs(opts.directory)
 	if err != nil {
 		return err
@@ -149,11 +444,9 @@ func createTar(opts tarOptions) (retErr error) {
 			retErr = err
 		}
 	}()
-	archiveWriter := output
-	var gzipWriter *gzip.Writer
-	if opts.gzip {
-		gzipWriter = gzip.NewWriter(output)
-		archiveWriter = gzipWriter
+	archiveWriter, compressor, err := tarCompressedWriter(output, opts.compression)
+	if err != nil {
+		return err
 	}
 	tarWriter := tar.NewWriter(archiveWriter)
 	for _, operand := range opts.files {
@@ -162,14 +455,19 @@ func createTar(opts tarOptions) (retErr error) {
 			source = filepath.Join(base, source)
 		}
 		archiveName := filepath.Clean(operand)
-		if filepath.IsAbs(archiveName) {
+		if filepath.IsAbs(archiveName) && !opts.absolute {
+			// The original strips the leading slash and says so once.
+			if !opts.warnedAbsolute {
+				fmt.Fprintln(os.Stderr, "tar: Removing leading `/' from member names")
+				opts.warnedAbsolute = true
+			}
 			archiveName = strings.TrimLeft(filepath.ToSlash(archiveName), "/")
 		}
 		archiveName = filepath.ToSlash(archiveName)
-		if err := addTarPath(tarWriter, source, archiveName, opts.verbose); err != nil {
+		if err := addTarPath(tarWriter, source, archiveName, opts); err != nil {
 			tarWriter.Close()
-			if gzipWriter != nil {
-				gzipWriter.Close()
+			if compressor != nil {
+				compressor.Close()
 			}
 			return err
 		}
@@ -177,15 +475,15 @@ func createTar(opts tarOptions) (retErr error) {
 	if err := tarWriter.Close(); err != nil {
 		return err
 	}
-	if gzipWriter != nil {
-		if err := gzipWriter.Close(); err != nil {
+	if compressor != nil {
+		if err := compressor.Close(); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func validateTarCreateSources(opts tarOptions, base string) error {
+func validateTarCreateSources(opts *tarOptions, base string) error {
 	if opts.archive == "-" {
 		return nil
 	}
@@ -247,26 +545,52 @@ func createArchiveOutput(name string) (io.Writer, func() error, error) {
 	return file, file.Close, nil
 }
 
-func addTarPath(writer *tar.Writer, source, archiveName string, verbose bool) error {
-	return filepath.Walk(source, func(path string, info os.FileInfo, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		relative, err := filepath.Rel(source, path)
+// addTarPath adds one operand and, for a directory, everything inside it. The
+// entries are visited in the order the directory gives them, which is the order
+// the original stores and lists them in.
+func addTarPath(writer *tar.Writer, source, archiveName string, opts *tarOptions) error {
+	var walk func(path, name string) error
+	walk = func(path, name string) error {
+		info, err := os.Lstat(path)
 		if err != nil {
 			return err
 		}
-		name := archiveName
-		if relative != "." {
-			name = filepath.ToSlash(filepath.Join(archiveName, relative))
+		if err := addTarEntry(writer, path, name, info, opts); err != nil {
+			if errors.Is(err, filepath.SkipDir) {
+				return nil
+			}
+			return err
 		}
-		linkTarget := ""
-		if info.Mode()&os.ModeSymlink != 0 {
-			linkTarget, err = os.Readlink(path)
-			if err != nil {
+		if !info.IsDir() {
+			return nil
+		}
+		entries, readErr := readDirRaw(path)
+		if readErr != nil {
+			return readErr
+		}
+		for _, entry := range entries {
+			if err := walk(filepath.Join(path, entry), name+"/"+entry); err != nil {
 				return err
 			}
 		}
+		return nil
+	}
+	return walk(source, archiveName)
+}
+
+// addTarEntry writes one member's header, and its contents when it has any.
+// A member --exclude covers is reported as filepath.SkipDir so the caller can
+// leave a whole directory out.
+func addTarEntry(writer *tar.Writer, path, name string, info os.FileInfo, opts *tarOptions) error {
+	linkTarget := ""
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(path)
+		if err != nil {
+			return err
+		}
+		linkTarget = target
+	}
+	{
 		header, err := tar.FileInfoHeader(info, linkTarget)
 		if err != nil {
 			return err
@@ -275,11 +599,20 @@ func addTarPath(writer *tar.Writer, source, archiveName string, verbose bool) er
 		if info.IsDir() && !strings.HasSuffix(header.Name, "/") {
 			header.Name += "/"
 		}
+		if opts.excluded(header.Name) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if opts.numericOwner {
+			header.Uname, header.Gname = "", ""
+		}
 		if err := writer.WriteHeader(header); err != nil {
 			return err
 		}
-		if verbose {
-			fmt.Fprintln(os.Stderr, name)
+		if opts.verbose {
+			fmt.Fprintln(opts.listing(), header.Name)
 		}
 		if !info.Mode().IsRegular() {
 			return nil
@@ -299,25 +632,30 @@ func addTarPath(writer *tar.Writer, source, archiveName string, verbose bool) er
 			return copyErr
 		}
 		return closeErr
-	})
+	}
 }
 
-func openTarReader(opts tarOptions) (io.ReadCloser, *tar.Reader, error) {
+// tarFatal is a failure the original reports as unrecoverable: its own message,
+// then the "Error is not recoverable" line, and exit status 2.
+type tarFatal struct{ text string }
+
+func (f tarFatal) Error() string { return f.text }
+
+func openTarReader(opts *tarOptions) (io.ReadCloser, *tar.Reader, error) {
 	input, err := openInput(opts.archive)
 	if err != nil {
+		return nil, nil, tarFatal{fmt.Sprintf("%s: Cannot open: %s", opts.archive, errText(err))}
+	}
+	reader, err := tarCompressedReader(input, opts.compression)
+	if err != nil {
+		input.Close()
 		return nil, nil, err
 	}
-	var reader io.Reader = input
-	if opts.gzip {
-		gzipReader, gzipErr := gzip.NewReader(input)
-		if gzipErr != nil {
-			input.Close()
-			return nil, nil, gzipErr
-		}
-		reader = gzipReader
-		return &combinedReadCloser{Reader: gzipReader, closers: []io.Closer{gzipReader, input}}, tar.NewReader(reader), nil
+	closers := []io.Closer{input}
+	if closer, ok := reader.(io.Closer); ok && opts.compression != 0 {
+		closers = append([]io.Closer{closer}, closers...)
 	}
-	return input, tar.NewReader(reader), nil
+	return &combinedReadCloser{Reader: reader, closers: closers}, tar.NewReader(reader), nil
 }
 
 type combinedReadCloser struct {
@@ -335,12 +673,15 @@ func (c *combinedReadCloser) Close() error {
 	return result
 }
 
-func listTar(opts tarOptions) error {
+func listTar(opts *tarOptions) error {
 	input, reader, err := openTarReader(opts)
 	if err != nil {
 		return err
 	}
 	defer input.Close()
+	// The user/group and size share one field whose width only ever grows, as
+	// the original's own running maximum does.
+	width := 19
 	for {
 		header, nextErr := reader.Next()
 		if errors.Is(nextErr, io.EOF) {
@@ -349,13 +690,57 @@ func listTar(opts tarOptions) error {
 		if nextErr != nil {
 			return nextErr
 		}
-		if _, err := fmt.Fprintln(os.Stdout, header.Name); err != nil {
+		if !opts.selects(header.Name) || opts.excluded(header.Name) {
+			continue
+		}
+		if !opts.verbose {
+			if _, err := fmt.Fprintln(os.Stdout, header.Name); err != nil {
+				return err
+			}
+			continue
+		}
+		line, grown := tarLongLine(header, width, opts.numericOwner)
+		width = grown
+		if _, err := fmt.Fprintln(os.Stdout, line); err != nil {
 			return err
 		}
 	}
 }
 
-func extractTar(opts tarOptions) error {
+// tarLongLine renders one member the way "tar tv" does, and reports the field
+// width to carry into the next line.
+func tarLongLine(header *tar.Header, width int, numeric bool) (string, int) {
+	owner := header.Uname
+	group := header.Gname
+	if numeric || owner == "" {
+		owner = strconv.Itoa(header.Uid)
+	}
+	if numeric || group == "" {
+		group = strconv.Itoa(header.Gid)
+	}
+	identity := owner + "/" + group
+	size := strconv.FormatInt(header.Size, 10)
+	if header.Typeflag == tar.TypeChar || header.Typeflag == tar.TypeBlock {
+		size = fmt.Sprintf("%d,%d", header.Devmajor, header.Devminor)
+	}
+	pad := width - len(identity) - len(size)
+	if pad < 1 {
+		pad = 1
+		width = len(identity) + len(size) + 1
+	}
+	name := header.Name
+	switch header.Typeflag {
+	case tar.TypeSymlink:
+		name += " -> " + header.Linkname
+	case tar.TypeLink:
+		name += " link to " + header.Linkname
+	}
+	mode := modeString(header.FileInfo().Mode())
+	return fmt.Sprintf("%s %s%*s %s %s", mode, identity, pad+len(size), size,
+		header.ModTime.Format("2006-01-02 15:04"), name), width
+}
+
+func extractTar(opts *tarOptions) error {
 	input, reader, err := openTarReader(opts)
 	if err != nil {
 		return err
@@ -383,12 +768,30 @@ func extractTar(opts tarOptions) error {
 		if nextErr != nil {
 			return nextErr
 		}
-		target, err := safeTarTarget(root, header.Name)
+		if !opts.selects(header.Name) || opts.excluded(header.Name) {
+			continue
+		}
+		// --strip-components drops leading path components, and a member left
+		// with nothing at all is skipped.
+		memberName := tarStripComponents(header.Name, opts.stripComponents)
+		if memberName == "" {
+			continue
+		}
+		if opts.toStdout {
+			// -O writes the members' contents out instead of unpacking them.
+			if header.Typeflag == tar.TypeReg || header.Typeflag == byte(0) {
+				if _, err := io.CopyN(os.Stdout, reader, header.Size); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		target, err := safeTarTarget(root, memberName)
 		if err != nil {
 			return err
 		}
 		if opts.verbose {
-			fmt.Fprintln(os.Stderr, header.Name)
+			fmt.Fprintln(opts.listing(), header.Name)
 		}
 		if header.Mode < 0 || header.Mode > 0o7777 {
 			return fmt.Errorf("invalid mode for archive member %q", header.Name)
@@ -400,7 +803,7 @@ func extractTar(opts tarOptions) error {
 				return err
 			}
 			if info, statErr := os.Lstat(target); statErr == nil && !info.IsDir() {
-				return fmt.Errorf("refusing to replace non-directory path %q", header.Name)
+				return fmt.Errorf("refusing to replace non-directory path %q", memberName)
 			} else if statErr != nil && !os.IsNotExist(statErr) {
 				return statErr
 			}
@@ -418,10 +821,13 @@ func extractTar(opts tarOptions) error {
 			}
 			if info, statErr := os.Lstat(target); statErr == nil {
 				if opts.keepOld {
-					return fmt.Errorf("refusing to replace existing path %q", header.Name)
+					// The original reports this per member and carries on.
+					fatalf("tar", "%s: Cannot open: File exists", memberName)
+					opts.status = 2
+					continue
 				}
 				if !info.Mode().IsRegular() {
-					return fmt.Errorf("refusing to replace non-regular path %q", header.Name)
+					return fmt.Errorf("refusing to replace non-regular path %q", memberName)
 				}
 			} else if !os.IsNotExist(statErr) {
 				return statErr
@@ -433,10 +839,15 @@ func extractTar(opts tarOptions) error {
 			if err := ensureTarParents(root, target); err != nil {
 				return err
 			}
-			if err := validateTarSymlink(root, target, header.Name, header.Linkname); err != nil {
+			if err := validateTarSymlink(root, target, memberName, header.Linkname); err != nil {
 				return err
 			}
-			if err := extractTarSymlink(target, header.Linkname, header.Name, opts.keepOld); err != nil {
+			if err := extractTarSymlink(target, header.Linkname, memberName, opts.keepOld); err != nil {
+				if opts.keepOld && strings.Contains(err.Error(), "refusing to replace") {
+					fatalf("tar", "%s: Cannot create symlink to '%s': File exists", memberName, header.Linkname)
+					opts.status = 2
+					continue
+				}
 				return err
 			}
 		case tar.TypeLink:
@@ -454,7 +865,7 @@ func extractTar(opts tarOptions) error {
 				return err
 			}
 		default:
-			return fmt.Errorf("unsupported archive member type for %q", header.Name)
+			return fmt.Errorf("unsupported archive member type for %q", memberName)
 		}
 	}
 	for i := len(directories) - 1; i >= 0; i-- {
@@ -466,6 +877,24 @@ func extractTar(opts tarOptions) error {
 		}
 	}
 	return nil
+}
+
+// tarStripComponents removes the first n path components from a member name,
+// which is what --strip-components asks for.
+func tarStripComponents(name string, count int) string {
+	if count == 0 {
+		return name
+	}
+	trailing := strings.HasSuffix(name, "/")
+	parts := strings.Split(strings.Trim(filepath.ToSlash(name), "/"), "/")
+	if len(parts) <= count {
+		return ""
+	}
+	stripped := strings.Join(parts[count:], "/")
+	if trailing {
+		stripped += "/"
+	}
+	return stripped
 }
 
 // extractTarSymlink installs a symlink with rename(2), just as regular

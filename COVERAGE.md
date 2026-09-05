@@ -12,7 +12,7 @@ measured against its original; nothing is left under
 [Not yet assessed](#not-yet-assessed).
 
 **Short answer to "which are 1:1?"** — of the 170, 29 are genuine drop-ins,
-67 more are near-complete, 65 are partial in ways that stay invisible until a
+68 more are near-complete, 64 are partial in ways that stay invisible until a
 script reaches for a flag, none are so narrow that they should not be treated as
 a replacement at all, and 9 have no upstream counterpart to compare
 against; see the [verdict table](#verdict-in-one-table). `netstat`, `ps aux`/
@@ -32,8 +32,8 @@ options listed per applet below.
 | Tier | Meaning | Applets |
 |---|---|---|
 | **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `base64` `basename` `cksum` `comm` `cut` `dirname` `echo` `expand` `false` `fold` `join` `mknod` `nice` `nl` `paste` `pivot_root` `printenv` `pwd` `seq` `sleep` `split` `tac` `touch` `tr` `true` `tty` `uname` `unexpand` `whoami` |
-| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `date` `dd` `df` `du` `env` `expr` `find` `free` `grep` `groupadd` `gunzip` `gzip` `head` `host` `hostname` `hwclock` `id` `kill` `ln` `ls` `lspci` `lsusb` `md5sum` `mkdir` `mktemp` `mv` `nohup` `pidof` `printf` `ps` `readlink` `realpath` `renice` `pgrep` `pkill` `rm` `rmdir` `setsid` `sha1sum` `sha256sum` `sha512sum` `sort` `stat` `strings` `sync` `sysctl` `tail` `tee` `test` `timeout` `top` `uniq` `uptime` `wc` `which` `xargs` |
-| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `blkid` `cfdisk` `cpio` `curl` `diff` `dig` `dmesg` `fdisk` `file` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `getty` `hexdump` `iftop` `insmod` `ip` `iptables` `less` `login` `losetup` `lsblk` `lsmod` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkswap` `modprobe` `mount` `mtr` `nano` `nc` `ncdu` `netstat` `nslookup` `od` `passwd` `ping` `rmmod` `sed` `sfdisk` `sh` `ss` `swapoff` `swapon` `tar` `traceroute` `tree` `umount` `unxz` `unzip` `unzstd` `useradd` `watch` `wget` `xz` `zip` `zstd` |
+| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `date` `dd` `df` `du` `env` `expr` `find` `free` `grep` `groupadd` `gunzip` `gzip` `head` `host` `hostname` `hwclock` `id` `kill` `ln` `ls` `lspci` `lsusb` `md5sum` `mkdir` `mktemp` `mv` `nohup` `pidof` `printf` `ps` `readlink` `realpath` `renice` `pgrep` `pkill` `rm` `rmdir` `setsid` `sha1sum` `sha256sum` `sha512sum` `sort` `stat` `strings` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `uniq` `uptime` `wc` `which` `xargs` |
+| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `blkid` `cfdisk` `cpio` `curl` `diff` `dig` `dmesg` `fdisk` `file` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `getty` `hexdump` `iftop` `insmod` `ip` `iptables` `less` `login` `losetup` `lsblk` `lsmod` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkswap` `modprobe` `mount` `mtr` `nano` `nc` `ncdu` `netstat` `nslookup` `od` `passwd` `ping` `rmmod` `sed` `sfdisk` `sh` `ss` `swapoff` `swapon` `traceroute` `tree` `umount` `unxz` `unzip` `unzstd` `useradd` `watch` `wget` `xz` `zip` `zstd` |
 | **D — narrow subset** | A slice of the original; do not treat as a replacement | _(none)_ |
 | **N/A** | ba6-specific, no upstream counterpart | `completion` `halt` `help` `init` `man` `poweroff` `reboot` `switch_root` `udhcpc` |
 
@@ -190,6 +190,7 @@ Absent behaviour rather than wrong behaviour, each of which touches many applets
 | `sync` | 0/2 | `-d` `-f`, and **file operands** | bare `sync` is identical; `sync PATH` is rejected _(run)_ |
 | `sysctl` | 6/17 | `-p`/`--load` `--system` `-r`/`--pattern` `-q` `-b` `--deprecated` | `-a`, `-n`, `-N`, `-e`, `-w` and bare reads. `sysctl -a` matches procps key for key and value for value (1590 keys on the measurement host) with identical stderr, including the write-only, permission-denied, empty-file, multi-line and deprecated-key rules _(run)_ |
 | `tail` | 5/12 | `-F` `--retry` `--pid` `-s` `-z` `--max-unchanged-stats` | `-n` `-c` `-n +N` `-c +N` `-q` `-v` `-f` match _(run)_ |
+| `tar` | 24/154 | appending to an existing archive (`-r -u -A --delete`), `--owner`/`--group`, `-S`/`--sparse`, `--wildcards` control, and the many format and device options | **format-compatible both ways** with GNU tar 1.35 in all four codecs: ba6 reads real `.tar`, `.tar.gz`, `.tar.bz2`, `.tar.xz` and `.tar.zst`, and GNU reads ba6's. Present: `-c -x -t -f -C -z -j -J --zstd -v -k --overwrite -O -P -p --numeric-owner --strip-components --exclude -T`, and naming members on `-x`/`-t` now selects them, a directory bringing its contents. Diffed against the original over the same tree in ~20 invocations: the `-tv` long listing down to its 19-column user/group/size field, the readdir order members are stored and listed in, `--exclude`'s fnmatch semantics where `*` crosses a slash and a directory whose contents are excluded still appears, the `Removing leading \`/' from member names` warning, and the three failure shapes — `NAME: Not found in archive` and `Cannot open: File exists` with the run carrying on to exit 2, and `Cannot open:` plus `Error is not recoverable: exiting now` for an archive that will not open. The xz and zstandard writers store rather than compress, so an archive written with `-J` or `--zstd` is a valid but uncompressed stream of that format _(run)_ |
 | `tee` | 4/4 | — | `-a` `-i` `-p` and the four `--output-error` modes present, output identical _(run)_ |
 | `timeout` | 2/5 | `-f` `-p` `-v` | `-s` `-k` and the 124 exit code match _(run)_ |
 | `top` | common display paths | configuration files, alternate windows, field-layout editor, colour mapping, kill/renice prompts, and task-area scrolling | Provides the five standard summary lines; procps-style task columns; batch and terminal modes; `-b -n -d -p -u/-U -o/-O -c -H -i -S -E -e -w -1`; and basic live keys for sorting and view toggles. Dynamic CPU percentages use adjacent `/proc` snapshots rather than lifetime averages. In raw terminal mode, each rendered row ends in CRLF so the process table remains column-aligned. |
@@ -318,12 +319,6 @@ table covering every case this applet's own probe can produce, including the
 wider libmagic database (image/audio/font formats beyond the handful of magic
 bytes already matched, non-x86 architecture names beyond the common set, core
 files).
-
-**`tar`** — 8/154 _(run)_. Works and is **format-compatible both ways** with GNU tar
-(ba6 reads real `.tar`/`.tar.gz`, GNU reads ba6's). Present: `-c -x -t -f -z -C -v -p`.
-Missing: **`-j` `-J` `--zstd` `--exclude` `-T` `--strip-components` `--numeric-owner`
-`--owner`/`--group` `-k` `--overwrite` `-O` `-A` `-r` `-u` `--delete` `-P` `-S`**.
-`tvf` prints bare names instead of the `drwxr-xr-x user/group size date name` listing.
 
 **`lsof`** — 3/15 _(run)_. `-n -P -p -i` present. Missing `-c -u -t -d -s -F -g -x -R -a`.
 

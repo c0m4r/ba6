@@ -119,7 +119,7 @@ func createCpio(opts cpioOptions) (retErr error) {
 		return fmt.Errorf("no input paths")
 	}
 	if opts.archive != "-" {
-		if err := validateTarCreateSources(tarOptions{archive: opts.archive, directory: ".", files: paths}, "."); err != nil {
+		if err := validateTarCreateSources(&tarOptions{archive: opts.archive, directory: ".", files: paths}, "."); err != nil {
 			return err
 		}
 	}

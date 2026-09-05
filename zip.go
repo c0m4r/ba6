@@ -68,7 +68,7 @@ func parseZipOptions(args []string) (zipOptions, error) {
 }
 
 func createZip(opts zipOptions) (retErr error) {
-	if err := validateTarCreateSources(tarOptions{archive: opts.archive, directory: ".", files: opts.files}, "."); err != nil {
+	if err := validateTarCreateSources(&tarOptions{archive: opts.archive, directory: ".", files: opts.files}, "."); err != nil {
 		return err
 	}
 	output, closeOutput, err := createArchiveOutput(opts.archive)
