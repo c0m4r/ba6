@@ -12,7 +12,7 @@ measured against its original; nothing is left under
 [Not yet assessed](#not-yet-assessed).
 
 **Short answer to "which are 1:1?"** — of the 170, 29 are genuine drop-ins,
-73 more are near-complete, 59 are partial in ways that stay invisible until a
+75 more are near-complete, 57 are partial in ways that stay invisible until a
 script reaches for a flag, none are so narrow that they should not be treated as
 a replacement at all, and 9 have no upstream counterpart to compare
 against; see the [verdict table](#verdict-in-one-table). `netstat`, `ps aux`/
@@ -32,8 +32,8 @@ options listed per applet below.
 | Tier | Meaning | Applets |
 |---|---|---|
 | **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `base64` `basename` `cksum` `comm` `cut` `dirname` `echo` `expand` `false` `fold` `join` `mknod` `nice` `nl` `paste` `pivot_root` `printenv` `pwd` `seq` `sleep` `split` `tac` `touch` `tr` `true` `tty` `uname` `unexpand` `whoami` |
-| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `date` `dd` `df` `du` `env` `expr` `find` `free` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `kill` `ln` `ls` `lspci` `lsusb` `md5sum` `mkdir` `mktemp` `mount` `mv` `nohup` `od` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `sed` `setsid` `sha1sum` `sha256sum` `sha512sum` `sort` `stat` `strings` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `umount` `uniq` `uptime` `wc` `which` `xargs` |
-| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `blkid` `cfdisk` `cpio` `curl` `diff` `dig` `dmesg` `fdisk` `file` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `getty` `iftop` `insmod` `ip` `iptables` `less` `login` `losetup` `lsblk` `lsmod` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkswap` `modprobe` `mtr` `nano` `nc` `ncdu` `netstat` `nslookup` `passwd` `ping` `rmmod` `sfdisk` `sh` `ss` `swapoff` `swapon` `traceroute` `tree` `unxz` `unzip` `unzstd` `useradd` `watch` `wget` `xz` `zip` `zstd` |
+| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `date` `dd` `df` `du` `env` `expr` `find` `free` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `kill` `ln` `ls` `lspci` `lsusb` `md5sum` `mkdir` `mktemp` `mount` `mv` `nohup` `od` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `sed` `setsid` `sha1sum` `sha256sum` `sha512sum` `sort` `stat` `strings` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `umount` `uniq` `unzip` `uptime` `wc` `which` `xargs` `zip` |
+| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `blkid` `cfdisk` `cpio` `curl` `diff` `dig` `dmesg` `fdisk` `file` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `getty` `iftop` `insmod` `ip` `iptables` `less` `login` `losetup` `lsblk` `lsmod` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkswap` `modprobe` `mtr` `nano` `nc` `ncdu` `netstat` `nslookup` `passwd` `ping` `rmmod` `sfdisk` `sh` `ss` `swapoff` `swapon` `traceroute` `tree` `unxz` `unzstd` `useradd` `watch` `wget` `xz` `zstd` |
 | **D — narrow subset** | A slice of the original; do not treat as a replacement | _(none)_ |
 | **N/A** | ba6-specific, no upstream counterpart | `completion` `halt` `help` `init` `man` `poweroff` `reboot` `switch_root` `udhcpc` |
 
@@ -202,6 +202,7 @@ Absent behaviour rather than wrong behaviour, each of which touches many applets
 | `uptime` | 4/4 | — | `-p` (decades/years/weeks/days/hours/minutes with singular/plural units), `-s` (boot time as `yyyy-mm-dd HH:MM:SS`), `-r` (boot epoch, uptime with six decimals, user count, three load averages) and `-c` (CLOCK_BOOTTIME minus pid 1's start) all present, and the default line now carries the user count with procps' exact `, %2d users?,  ` spacing and `%2d:%02d` uptime layout — byte-identical under C locale. The user count comes from `/run/systemd/sessions` `CLASS=user` entries when systemd runs, else from utmp records; both match procps' own `sd_get_sessions`-then-utmp order _(run)_ |
 | `wc` | 4/8 | `-L` `--total` `--files0-from` `--debug` | counts, column widths and the `total` line are byte-identical, including stdin and the unpadded single-count form _(run)_ |
 | `which` | 1/10 | the `--skip-*`/`--show-*` family | found-path output identical; on a miss GNU prints `no X in (PATH)` to stderr, ba6 prints nothing (exit 1 either way) _(run)_ |
+| `zip` / `unzip` | 8/175 and 14/35 | zip's update, delete and move modes (`-u -d -m`), encryption, split archives and the wide option surface; unzip's `-Z` info mode, `-a`/`-b` text conversion, `-C` case-insensitive matching and the overwrite prompt | both interoperate with Info-ZIP 6.00 in either direction, and the output was diffed invocation by invocation. unzip: `-l -v -t -p -c -d -j -o -n -q/-qq -x` and member patterns, whose globs let `*` cross a slash as Info-ZIP's do; the `-l` and `-v` tables, the `testing: NAME   OK` lines and their summary, the `creating:`/`extracting:`/`inflating:` verbs with the name padded the way the original pads it, and the statuses it reserves — 9 for an archive it cannot open, 11 for a pattern nothing matched, with the `caution: filename not matched` line. Without `-o` an existing file is kept rather than prompted for, since there is no terminal to ask at. zip: `-r -j -0 -1`…`-9 -q -x` with the short options clustering, members written in whichever of the stored and deflated forms is smaller — and stored outright for the `.Z .zip .zoo .arc .lzh .arj` suffixes the original never tries — so the `adding: NAME (method N%)` lines match. Extraction rejects paths that escape the destination _(run)_ |
 | `xargs` | 14/14 | — | every option group present: `-0 -a -d -E -e -I -L -n -p -P -r -s -t -x --process-slot-var`. Input splitting, quoting, `-I` substitution, `-s` line-length capping, `-x`'s exact `argument line too long` wording, `-P` concurrency and `-L` line batching (blank lines skipped, a trailing blank continues a line, quoting honoured within a line) all byte-identical to GNU findutils, including the `--max-lines`/`--max-args`/`--replace` mutual-exclusion warnings and their last-option-wins rule, and `--process-slot-var`'s 0-based slot numbering. Quotes and backslash escapes do not span physical lines under `-L` the way they do without it _(run)_ |
 
 ### Tier C — partial
@@ -451,14 +452,6 @@ directions. Only the `newc` format is implemented, so the `-H` variants (`odc`,
 `crc`, the binary formats) and `-p`/`--pass-through` are absent, along with
 `-a` `-m` `-u` `-l` `--sparse` and the rename and pattern-file options.
 Extraction rejects paths that escape the destination.
-
-**`zip` / `unzip`** — 2/175 and 1/35 options _(run)_. Both interoperate with Info-ZIP
-in both directions, including deflate-compressed and multi-directory archives, and
-`unzip -t` on a ba6-written archive passes. What is missing is nearly the whole
-option surface rather than the format: no `-t`/`-v`/`-l` listing modes, no
-`-d EXDIR`, `-o`/`-n` overwrite control, `-j`, `-P`/encryption, `-x` exclusions,
-update or delete modes, or split archives. Extraction rejects paths that escape the
-destination.
 
 **`xz` / `unxz` / `zstd` / `unzstd`** — 5/62 and 1/21 options _(run)_. The
 decoders are complete: `unxz` implements the LZMA range coder, the full LZMA2

@@ -775,9 +775,21 @@ handles LZMA2-compressed streams from any encoder, every integrity check the
 format defines, multiple blocks, and concatenated streams; encoding stores
 rather than compresses. -c uses standard output, -k keeps inputs, and -f
 replaces an existing output.`,
-	"zip": `Usage: zip [-r] [-0] ARCHIVE FILE...
-Create ZIP archives. -r descends into directories and -0 stores rather than
-deflates regular file data.`,
+	"zip": `Usage: zip [OPTION]... ARCHIVE FILE... [-x PATTERN]...
+Create a ZIP archive.
+
+Options:
+  -r        descend into directories
+  -j        store each file under its own name alone
+  -0        store rather than deflate
+  -1 .. -9  deflate; every level maps onto this writer's single one
+  -q        say nothing about each member
+  -x PAT    leave out the files matching PAT
+  --help    show this help
+
+Each member is written in whichever of the two forms is smaller, and one whose
+name ends in .Z, .zip, .zoo, .arc, .lzh or .arj is stored without trying, which
+is what the original does with them.`,
 	"zstd": `Usage: zstd [-cdkfq] [FILE]...
 Write a Zstandard frame of raw blocks (and RLE blocks for uniform data), or
 decode one with -d. Decoding handles entropy-coded blocks from any encoder,
@@ -1774,9 +1786,28 @@ status alone and prints nothing.`,
 Decode an XZ stream, including LZMA2-compressed data from any encoder, every
 integrity check the format defines, multiple blocks, and concatenated streams.
 -c uses standard output, -k keeps inputs, and -f replaces an existing output.`,
-	"unzip": `Usage: unzip [-l] [-d DIRECTORY] ARCHIVE [MEMBER]...
-List or safely extract ZIP archives. -l prints member names; extraction
-rejects paths and symbolic links that escape DIRECTORY.`,
+	"unzip": `Usage: unzip [OPTION]... ARCHIVE [MEMBER]... [-x PATTERN]...
+List, test or extract a ZIP archive. A member pattern is a glob in which "*"
+crosses a slash; extraction rejects paths and symbolic links that escape the
+destination.
+
+Options:
+  -l        list the members as a table
+  -v        list them with method, compressed size, ratio and CRC
+  -t        read every member through and report the archive as sound
+  -p        write the members to standard output, nothing else
+  -c        as -p, but name each member first
+  -d DIR    extract into DIR
+  -j        drop the directories a member is stored under
+  -o        overwrite existing files without asking
+  -n        never overwrite an existing file
+  -q        one -q drops the per-member lines, -qq the summary too
+  -x PAT    skip the members matching PAT
+  --help    show this help
+
+Without -o an existing file is kept rather than prompting, since there is no
+place to ask. Exit status is 9 when the archive cannot be opened and 11 when
+no member matched.`,
 	"unzstd": `Usage: unzstd [-ckf] [FILE]...
 Decode a Zstandard stream, including entropy-coded blocks from any encoder.
 The frame checksum is verified, and concatenated and skippable frames are
