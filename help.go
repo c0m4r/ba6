@@ -202,9 +202,16 @@ Size suffixes include c, w, b, K, kB, M, MB, G, and GB.`,
 	"file": `Usage: file [-b] FILE...
 Identify filesystem objects and common data formats using metadata and magic
 bytes. -b omits file names from output.`,
-	"insmod": `Usage: insmod MODULE_FILE [PARAMETER=VALUE]...
+	"insmod": `Usage: insmod [-fsv] MODULE_FILE [PARAMETER=VALUE]...
 Insert a kernel module using finit_module, with an init_module fallback on old
-kernels. Requires CAP_SYS_MODULE.`,
+kernels. A compressed module is handed to the kernel to decompress. Requires
+CAP_SYS_MODULE.
+
+Options:
+  -f, --force    load a module built for another kernel version anyway
+  -v, --verbose  name the file as it is loaded
+  -s, --syslog   accepted; nothing here logs
+  --help         show this help`,
 	"losetup": `Usage: losetup -a
        losetup -f [--show] [FILE]
        losetup [-r] [-o OFFSET] [--sizelimit SIZE] LOOPDEV FILE
@@ -238,8 +245,14 @@ that kernel permissions hide are skipped.`,
 	"lsblk": `Usage: lsblk [-abn] [-o COLUMN,...]
 List Linux block devices from sysfs. Columns include NAME, KNAME, MAJ:MIN, RM,
 SIZE, RO, TYPE, MOUNTPOINT, and MOUNTPOINTS.`,
-	"lsmod": `Usage: lsmod
-Display loaded kernel modules from /proc/modules.`,
+	"lsmod": `Usage: lsmod [-sv]
+Display the loaded kernel modules in kmod's own columns, reading the sizes and
+reference counts from /proc/modules and the holder list from sysfs, which is
+where kmod reads it and why the two agree on its order.
+
+Options:
+  -s, -v    accepted; nothing here logs and there is nothing more to say
+  --help    show this help`,
 
 	"lspci": `Usage: lspci [OPTION]...
 List PCI devices from /sys with vendor, device, and class names from pci.ids
@@ -258,13 +271,37 @@ Options:
 Create a securely named temporary file or directory. TEMPLATE must contain a
 run of at least three X characters, which are replaced -- exactly those, and no
 others -- by random alphanumerics. Text after the run is kept as a suffix.`,
-	"modprobe": `Usage: modprobe [-qv] MODULE [PARAMETER=VALUE]...
-       modprobe -r [-qv] MODULE
-Load or remove a module and its dependencies using the running kernel's
-modules.dep, modules.alias, and modules.builtin files.`,
-	"rmmod": `Usage: rmmod [-f] MODULE...
-Remove kernel modules. Requires CAP_SYS_MODULE; -f also requires kernel support
-for forced module unloading.`,
+	"modprobe": `Usage: modprobe [OPTION]... MODULE [PARAMETER=VALUE]...
+       modprobe -r [OPTION]... MODULE...
+Load or remove a module and its dependencies, using the running kernel's
+modules.dep, modules.alias and modules.builtin files. Modules already loaded
+are left alone, and a removal stops at a module something still refers to.
+
+Options:
+  -a, --all              treat every operand as a module name
+  -r, --remove           remove instead of inserting
+  -n, --dry-run          go through the motions without loading anything
+  -D, --show-depends     list what would be loaded, in order
+  -v, --verbose          name each module as it is handled
+  -q, --quiet            say nothing about a module that is not there
+  -f, --force            load a module built for another kernel version
+  --first-time           fail if the module is already loaded or removed
+  -d, --dirname=DIR      look under DIR instead of /lib/modules
+  -S, --set-version=VER  use that kernel version's directory
+  -i, -b, -s, -C, -w, --remove-holders
+                         accepted; there are no install or remove commands to
+                         ignore here and no blacklist is consulted
+  --help                 show this help`,
+	"rmmod": `Usage: rmmod [-fsv] MODULE...
+Remove kernel modules. A name that is not loaded is reported as such before the
+kernel is asked, as kmod reports it. Requires CAP_SYS_MODULE; -f also requires
+kernel support for forced module unloading.
+
+Options:
+  -f, --force    force the unload, skipping the loaded check
+  -v, --verbose  name each module as it is removed
+  -s, --syslog   accepted; nothing here logs
+  --help         show this help`,
 	"pivot_root": `Usage: pivot_root NEW_ROOT PUT_OLD
 Move the root filesystem to PUT_OLD and make NEW_ROOT the new root. A thin
 wrapper around the pivot_root(2) syscall; it does not chdir or exec anything.
