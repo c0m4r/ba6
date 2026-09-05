@@ -342,7 +342,7 @@ func describeFile(name string, dereference bool) (string, error) {
 	case !mode.IsRegular():
 		return "special file", nil
 	}
-	if kind, label, _, probeErr := probeFilesystem(name); probeErr == nil && kind != "" {
+	if kind, label, probeErr := probeFilesystem(name); probeErr == nil && kind != "" {
 		description := kind + " filesystem data"
 		if label != "" {
 			description += ", label " + strconv.Quote(label)

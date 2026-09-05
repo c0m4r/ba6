@@ -6,6 +6,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -442,5 +443,109 @@ func TestMountOptionFilters(t *testing.T) {
 		if got := mountOptionsSelected(c.filter, c.options); got != c.want {
 			t.Fatalf("mountOptionsSelected(%q, %q) = %v", c.filter, c.options, got)
 		}
+	}
+}
+
+// blkidImage builds a superblock image the probes can read: an ext4 one, a
+// FAT16 boot sector, or a swap header with its signature at the end of the
+// first page.
+func blkidImage(t *testing.T, dir, name, kind string) string {
+	t.Helper()
+	image := make([]byte, 65536)
+	switch kind {
+	case "ext4":
+		image[1080], image[1081] = 0x53, 0xef
+		binary.LittleEndian.PutUint32(image[1028:1032], 4096)
+		binary.LittleEndian.PutUint32(image[1048:1052], 0)
+		binary.LittleEndian.PutUint32(image[1100:1104], 1)
+		binary.LittleEndian.PutUint32(image[1116:1120], 4)
+		binary.LittleEndian.PutUint32(image[1120:1124], 0x40)
+		copy(image[1128:1144], []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+			0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10})
+		copy(image[1144:1160], "rescue")
+	case "vfat":
+		binary.LittleEndian.PutUint16(image[11:13], 512)
+		image[13] = 4
+		binary.LittleEndian.PutUint16(image[19:21], 2048)
+		binary.LittleEndian.PutUint32(image[39:43], 0xAF0EC9E6)
+		copy(image[43:54], "VFATLBL")
+		copy(image[54:62], "FAT16   ")
+	case "swap":
+		binary.LittleEndian.PutUint32(image[1024:1028], 1)
+		binary.LittleEndian.PutUint32(image[1028:1032], 7)
+		copy(image[1036:1052], []byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+			0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00})
+		copy(image[1052:1068], "swaplbl")
+		copy(image[4086:4096], "SWAPSPACE2")
+	}
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, image, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestBlkidTagsAndFormats(t *testing.T) {
+	dir := t.TempDir()
+	ext4 := blkidImage(t, dir, "ext4.img", "ext4")
+	vfat := blkidImage(t, dir, "vfat.img", "vfat")
+	swap := blkidImage(t, dir, "swap.img", "swap")
+
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"ext4", []string{ext4}, ext4 + `: LABEL="rescue" UUID="01020304-0506-0708-090a-0b0c0d0e0f10" BLOCK_SIZE="1024" TYPE="ext4"` + "\n"},
+		{"vfat", []string{vfat}, vfat + `: SEC_TYPE="msdos" LABEL_FATBOOT="VFATLBL" LABEL="VFATLBL" UUID="AF0E-C9E6" BLOCK_SIZE="512" TYPE="vfat"` + "\n"},
+		{"swap", []string{swap}, swap + `: LABEL="swaplbl" UUID="11223344-5566-7788-99aa-bbccddeeff00" TYPE="swap"` + "\n"},
+		{"one tag", []string{"-s", "TYPE", vfat}, vfat + `: TYPE="vfat"` + "\n"},
+		{"values", []string{"-o", "value", "-s", "LABEL", ext4}, "rescue\n"},
+		{"device", []string{"-o", "device", ext4}, ext4 + "\n"},
+		{"export", []string{"-o", "export", "-s", "TYPE", swap}, "DEVNAME=" + swap + "\nTYPE=swap\n"},
+		{"probe", []string{"-p", "-o", "value", "-s", "FSSIZE", ext4}, "4194304\n"},
+		{"probe swap size", []string{"-p", "-o", "value", "-s", "FSLASTBLOCK", swap}, "8\n"},
+		{"token match", []string{"-t", "TYPE=vfat", "-o", "device", ext4, vfat}, vfat + "\n"},
+		{"label search", []string{"-L", "rescue", ext4, vfat}, ext4 + "\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			status, stdout, stderr := captureApplet(t, cmdBlkid, tc.args, "")
+			if status != 0 || stdout != tc.want {
+				t.Fatalf("blkid %v = status %d, %q (stderr %q), want %q", tc.args, status, stdout, stderr, tc.want)
+			}
+		})
+	}
+}
+
+func TestBlkidExitStatuses(t *testing.T) {
+	dir := t.TempDir()
+	ext4 := blkidImage(t, dir, "ext4.img", "ext4")
+	empty := filepath.Join(dir, "empty.img")
+	if err := os.WriteFile(empty, make([]byte, 65536), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name   string
+		args   []string
+		status int
+		stderr string
+	}{
+		{"nothing found", []string{empty}, 2, ""},
+		{"no match", []string{"-t", "TYPE=xfs", ext4}, 2, ""},
+		{"bad token", []string{"-t", "bogus", ext4}, 4, "blkid: -t needs NAME=value pair\n"},
+		{"bad format", []string{"-o", "weird", ext4}, 4, "blkid: unsupported output format weird\n"},
+		{"lookup without token", []string{"-l", ext4}, 4, "blkid: The lookup option requires a search type specified using -t\n"},
+		{"unknown short", []string{"-Z", ext4}, 1, "blkid: invalid option -- 'Z'\n"},
+		{"unknown long", []string{"--nope", ext4}, 1, "blkid: unrecognized option '--nope'\n"},
+		{"missing argument", []string{"-s"}, 1, "blkid: option requires an argument -- 's'\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			status, _, stderr := captureApplet(t, cmdBlkid, tc.args, "")
+			if status != tc.status || !strings.HasPrefix(stderr, tc.stderr) {
+				t.Fatalf("blkid %v = status %d, stderr %q; want %d, prefix %q", tc.args, status, stderr, tc.status, tc.stderr)
+			}
+		})
 	}
 }

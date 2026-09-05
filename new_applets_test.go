@@ -736,7 +736,7 @@ func TestStorageHelpersAndEditorModel(t *testing.T) {
 	if err := os.WriteFile(device, image, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	kind, label, _, err := probeFilesystem(device)
+	kind, label, err := probeFilesystem(device)
 	if err != nil || kind != "ext4" || label != "rescue" {
 		t.Fatalf("probe = (%q, %q, %v)", kind, label, err)
 	}

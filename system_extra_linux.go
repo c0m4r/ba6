@@ -2372,55 +2372,344 @@ func linuxDeviceMajorMinor(dev uint64) (uint32, uint32) {
 	return major, minor
 }
 
-func cmdBlkid(args []string) int {
-	for _, arg := range args {
-		if len(arg) > 1 && arg[0] == '-' {
-			fatalf("blkid", "unrecognized option '%s'", arg)
-			fmt.Fprintln(os.Stderr, "Try 'blkid --help' for more information.")
-			return 1
-		}
-	}
-	devices := args
-	if len(devices) == 0 {
-		matches, _ := filepath.Glob("/dev/*")
-		for _, p := range matches {
-			if info, e := os.Stat(p); e == nil && info.Mode()&os.ModeDevice != 0 {
-				devices = append(devices, p)
-			}
-		}
-	}
-	status := 0
-	for _, path := range devices {
-		kind, label, uuid, err := probeFilesystem(path)
-		if err != nil || kind == "" {
-			status = 2
-			continue
-		}
-		fmt.Printf("%s:", path)
-		if label != "" {
-			fmt.Printf(" LABEL=%q", label)
-		}
-		if uuid != "" {
-			fmt.Printf(" UUID=%q", uuid)
-		}
-		fmt.Printf(" TYPE=%q\n", kind)
-	}
+// blkidTag is one NAME="value" pair, kept in the order the original prints
+// them for that filesystem.
+type blkidTag struct {
+	name  string
+	value string
+}
+
+// blkidUsage reports a command line mistake. Most of them are status 1, but
+// the original keeps 4 for the ones it treats as its own failure to make sense
+// of the arguments.
+func blkidUsage(status int, format string, a ...interface{}) int {
+	fatalf("blkid", format, a...)
+	fmt.Fprintln(os.Stderr, "Try 'blkid --help' for more information.")
 	return status
 }
-func probeFilesystem(path string) (string, string, string, error) {
+
+//nolint:gocyclo // one option table; splitting it would only scatter the command line.
+func cmdBlkid(args []string) int {
+	format := "full"
+	var wanted []string
+	matchName, matchValue, haveMatch := "", "", false
+	listOne, probe, topology := false, false, false
+	var devices []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		name, value, hasValue := arg, "", false
+		if strings.HasPrefix(arg, "--") {
+			if eq := strings.IndexByte(arg, '='); eq >= 0 {
+				name, value, hasValue = arg[:eq], arg[eq+1:], true
+			}
+		}
+		needValue := func() (string, bool) {
+			if hasValue {
+				return value, true
+			}
+			i++
+			if i >= len(args) {
+				blkidUsage(1, "option requires an argument -- '%s'", strings.TrimLeft(name, "-"))
+				return "", false
+			}
+			return args[i], true
+		}
+		switch name {
+		case "-o", "--output":
+			text, ok := needValue()
+			if !ok {
+				return 1
+			}
+			switch text {
+			case "full", "value", "device", "export":
+				format = text
+			default:
+				fatalf("blkid", "unsupported output format %s", text)
+				return 4
+			}
+		case "-s", "--match-tag":
+			text, ok := needValue()
+			if !ok {
+				return 1
+			}
+			wanted = append(wanted, strings.ToUpper(text))
+		case "-t", "--match-token":
+			text, ok := needValue()
+			if !ok {
+				return 1
+			}
+			tag, tagValue, found := strings.Cut(text, "=")
+			if !found {
+				return blkidUsage(4, "-t needs NAME=value pair")
+			}
+			matchName, matchValue, haveMatch = strings.ToUpper(tag), strings.Trim(tagValue, `"`), true
+		case "-L", "--label", "-U", "--uuid":
+			text, ok := needValue()
+			if !ok {
+				return 1
+			}
+			tag := "LABEL"
+			if name == "-U" || name == "--uuid" {
+				tag = "UUID"
+			}
+			// -L and -U answer with the device alone, which is the "device"
+			// format restricted to the first match.
+			matchName, matchValue, haveMatch = tag, text, true
+			format, listOne = "device", true
+		case "-l", "--list-one":
+			listOne = true
+		case "-p", "--probe":
+			probe = true
+		case "-i", "--info":
+			// I/O limits turn on the export format by themselves, and they
+			// only exist for real block devices.
+			topology, format = true, "export"
+		case "-d", "--no-encoding", "-g", "--garbage-collect", "--bytes":
+			// There is no cache to collect and no encoding to skip here.
+		case "-c", "--cache-file", "-H", "--hint", "-O", "--offset", "-S", "--size", "-u", "--usages", "-n", "--match-types":
+			if _, ok := needValue(); !ok {
+				return 1
+			}
+		case "-k", "--list-filesystems":
+			for _, kind := range []string{"btrfs", "crypto_LUKS", "ext2", "ext3", "ext4", "ntfs", "squashfs", "swap", "vfat", "xfs"} {
+				fmt.Println(kind)
+			}
+			return 0
+		default:
+			if len(arg) > 1 && arg[0] == '-' {
+				if strings.HasPrefix(arg, "--") {
+					return blkidUsage(1, "unrecognized option '%s'", arg)
+				}
+				return blkidUsage(1, "invalid option -- '%c'", arg[1])
+			}
+			devices = append(devices, arg)
+		}
+	}
+	if listOne && !haveMatch {
+		fatalf("blkid", "The lookup option requires a search type specified using -t")
+		return 4
+	}
+	if len(devices) == 0 {
+		devices = blkidPartitions()
+	}
+	found := false
+	for _, path := range devices {
+		var tags []blkidTag
+		var err error
+		if !topology || probe {
+			if tags, err = probeDevice(path, probe); err != nil {
+				continue
+			}
+		}
+		if topology {
+			limits := probeTopology(path)
+			if len(limits) == 0 {
+				// The topology probe failing takes the whole device with it,
+				// which is why a regular file reports nothing at all.
+				continue
+			}
+			tags = append(tags, limits...)
+		}
+		if len(tags) == 0 {
+			continue
+		}
+		if haveMatch && !blkidMatches(tags, matchName, matchValue) {
+			continue
+		}
+		blkidPrint(path, tags, format, wanted, !found)
+		found = true
+		if listOne {
+			break
+		}
+	}
+	if !found {
+		return 2
+	}
+	return 0
+}
+
+// probeTopology reads the I/O limits the kernel publishes for a block device.
+// A partition carries its own alignment but shares the queue settings with the
+// disk it sits on.
+func probeTopology(path string) []blkidTag {
+	info, err := os.Stat(path)
+	if err != nil || info.Mode()&os.ModeDevice == 0 {
+		return nil
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return nil
+	}
+	major, minor := linuxDeviceMajorMinor(stat.Rdev)
+	dir := fmt.Sprintf("/sys/dev/block/%d:%d", major, minor)
+	read := func(name string) string {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			data, err = os.ReadFile(filepath.Join(dir, "..", name))
+			if err != nil {
+				return ""
+			}
+		}
+		return strings.TrimSpace(string(data))
+	}
+	var tags []blkidTag
+	for _, entry := range []struct{ name, file string }{
+		{"ALIGNMENT_OFFSET", "alignment_offset"},
+		{"MINIMUM_IO_SIZE", "queue/minimum_io_size"},
+		{"OPTIMAL_IO_SIZE", "queue/optimal_io_size"},
+		{"LOGICAL_SECTOR_SIZE", "queue/logical_block_size"},
+		{"PHYSICAL_SECTOR_SIZE", "queue/physical_block_size"},
+	} {
+		if value := read(entry.file); value != "" {
+			tags = append(tags, blkidTag{entry.name, value})
+		}
+	}
+	return tags
+}
+
+// blkidPartitions lists the block devices to look at when none were named.
+// The kernel's partition table is the safe enumeration: it names only block
+// devices, so nothing here opens a tape or a terminal.
+func blkidPartitions() []string {
+	data, err := os.ReadFile("/proc/partitions")
+	if err != nil {
+		return nil
+	}
+	var devices []string
+	for _, line := range strings.Split(string(data), "\n")[2:] {
+		fields := strings.Fields(line)
+		if len(fields) != 4 {
+			continue
+		}
+		path := "/dev/" + fields[3]
+		if info, err := os.Stat(path); err == nil && info.Mode()&os.ModeDevice != 0 {
+			devices = append(devices, path)
+		}
+	}
+	return devices
+}
+
+// blkidMatches reports whether a device carries the tag -t asked for.
+func blkidMatches(tags []blkidTag, name, value string) bool {
+	for _, tag := range tags {
+		if tag.name == name && tag.value == value {
+			return true
+		}
+	}
+	return false
+}
+
+// blkidPrint writes one device's tags in the chosen format, keeping only the
+// tags -s named when it was given.
+func blkidPrint(path string, tags []blkidTag, format string, wanted []string, first bool) {
+	keep := func(name string) bool {
+		if len(wanted) == 0 {
+			return true
+		}
+		for _, want := range wanted {
+			if want == name {
+				return true
+			}
+		}
+		return false
+	}
+	switch format {
+	case "device":
+		fmt.Println(path)
+	case "value":
+		for _, tag := range tags {
+			if keep(tag.name) {
+				fmt.Println(tag.value)
+			}
+		}
+	case "export":
+		// A blank line separates devices, but does not follow the last one.
+		if !first {
+			fmt.Println()
+		}
+		fmt.Printf("DEVNAME=%s\n", path)
+		for _, tag := range tags {
+			if keep(tag.name) {
+				fmt.Printf("%s=%s\n", tag.name, tag.value)
+			}
+		}
+	default:
+		var line strings.Builder
+		fmt.Fprintf(&line, "%s:", path)
+		for _, tag := range tags {
+			if keep(tag.name) {
+				fmt.Fprintf(&line, " %s=%q", tag.name, tag.value)
+			}
+		}
+		fmt.Println(line.String())
+	}
+}
+
+// probeHeaders reads the two windows every superblock check here needs: the
+// first 4 KiB and the 4 KiB at 64 KiB, where btrfs hides so that a boot loader
+// can live in front of it.
+func probeHeaders(f *os.File) (head, super []byte) {
+	head = make([]byte, 4096)
+	if _, e := f.ReadAt(head, 0); e != nil && e != io.EOF {
+		head = nil
+	}
+	super = make([]byte, 4096)
+	if _, e := f.ReadAt(super, 65536); e != nil {
+		super = nil
+	}
+	return head, super
+}
+
+// probeFilesystem names the filesystem on a device along with its label. It is
+// the short answer to probeDevice's full tag list.
+func probeFilesystem(path string) (string, string, error) {
+	tags, e := probeDevice(path, false)
+	if e != nil || len(tags) == 0 {
+		return "", "", e
+	}
+	kind, label := "", ""
+	for _, tag := range tags {
+		switch tag.name {
+		case "TYPE":
+			kind = tag.value
+		case "LABEL":
+			label = tag.value
+		}
+	}
+	return kind, label, nil
+}
+
+// probeDevice reads one device's superblock and returns the tags the original
+// prints for that filesystem, in its order: what identifies the volume first,
+// then the block size, then the type. Low-level probing adds the geometry and
+// usage tags the cache never stores.
+//
+//nolint:gocyclo // one superblock table; every branch is a different layout.
+func probeDevice(path string, probe bool) ([]blkidTag, error) {
 	f, e := os.Open(path)
 	if e != nil {
-		return "", "", "", e
+		return nil, e
 	}
 	defer f.Close()
-	buf := make([]byte, 4096)
-	_, e = f.ReadAt(buf, 0)
-	if e != nil && len(buf) == 0 {
-		return "", "", "", e
+	buf, super := probeHeaders(f)
+	if len(buf) < 4096 {
+		return nil, nil
 	}
-	if len(buf) >= 1160 && buf[1080] == 0x53 && buf[1081] == 0xef {
-		uuid := formatUUID(buf[1128:1144])
-		label := strings.TrimRight(string(buf[1144:1160]), "\x00 ")
+	var tags []blkidTag
+	add := func(name, value string) {
+		if value != "" {
+			tags = append(tags, blkidTag{name, value})
+		}
+	}
+	deep := func(name, value string) {
+		if probe {
+			add(name, value)
+		}
+	}
+	sectorSize := uint64(binary.LittleEndian.Uint16(buf[11:13]))
+
+	switch {
+	case buf[1080] == 0x53 && buf[1081] == 0xef:
 		compat := binary.LittleEndian.Uint32(buf[1116:1120])
 		incompat := binary.LittleEndian.Uint32(buf[1120:1124])
 		kind := "ext2"
@@ -2430,34 +2719,137 @@ func probeFilesystem(path string) (string, string, string, error) {
 		if incompat&0x40 != 0 {
 			kind = "ext4"
 		}
-		return kind, label, uuid, nil
+		block := uint64(1024) << binary.LittleEndian.Uint32(buf[1048:1052])
+		blocks := uint64(binary.LittleEndian.Uint32(buf[1028:1032]))
+		add("LABEL", strings.TrimRight(string(buf[1144:1160]), "\x00 "))
+		add("UUID", formatUUID(buf[1128:1144]))
+		deep("VERSION", fmt.Sprintf("%d.%d", binary.LittleEndian.Uint32(buf[1100:1104]),
+			binary.LittleEndian.Uint16(buf[1086:1088])))
+		deep("FSBLOCKSIZE", probeSize(block))
+		add("BLOCK_SIZE", probeSize(block))
+		deep("FSLASTBLOCK", probeSize(blocks))
+		deep("FSSIZE", probeSize(blocks*block))
+		add("TYPE", kind)
+		deep("USAGE", "filesystem")
+	case string(buf[:4]) == "XFSB":
+		add("LABEL", strings.TrimRight(string(buf[0x6c:0x78]), "\x00 "))
+		add("UUID", formatUUID(buf[32:48]))
+		add("BLOCK_SIZE", probeSize(uint64(binary.BigEndian.Uint32(buf[4:8]))))
+		add("TYPE", "xfs")
+		deep("USAGE", "filesystem")
+	case len(super) >= 555 && string(super[64:72]) == "_BHRfS_M":
+		block := uint64(binary.LittleEndian.Uint32(super[144:148]))
+		total := binary.LittleEndian.Uint64(super[112:120])
+		add("LABEL", strings.TrimRight(string(super[299:555]), "\x00 "))
+		add("UUID", formatUUID(super[32:48]))
+		// UUID_SUB is the per-device UUID inside the superblock's dev_item,
+		// which is what tells the members of a multi-device volume apart.
+		add("UUID_SUB", formatUUID(super[267:283]))
+		deep("FSBLOCKSIZE", probeSize(block))
+		add("BLOCK_SIZE", probeSize(block))
+		if block != 0 {
+			deep("FSLASTBLOCK", probeSize(total/block))
+		}
+		deep("FSSIZE", probeSize(total))
+		add("TYPE", "btrfs")
+		deep("USAGE", "filesystem")
+	case string(buf[3:11]) == "NTFS    ":
+		// NTFS has an eight byte serial rather than a UUID, and the original
+		// prints it as one uppercase hex run.
+		add("UUID", fmt.Sprintf("%016X", binary.LittleEndian.Uint64(buf[0x48:0x50])))
+		add("BLOCK_SIZE", probeSize(sectorSize))
+		add("TYPE", "ntfs")
+		deep("USAGE", "filesystem")
+	case probeIsVFAT(buf):
+		label, uuid, version := probeVFAT(buf)
+		total := uint64(binary.LittleEndian.Uint16(buf[19:21]))
+		if total == 0 {
+			total = uint64(binary.LittleEndian.Uint32(buf[32:36]))
+		}
+		// SEC_TYPE only appears for the FAT12/16 layout, and the label is
+		// reported twice: once as it stands in the boot sector.
+		if version != "FAT32" {
+			add("SEC_TYPE", "msdos")
+		}
+		add("LABEL_FATBOOT", label)
+		add("LABEL", label)
+		add("UUID", uuid)
+		deep("VERSION", version)
+		deep("FSBLOCKSIZE", probeSize(uint64(buf[13])*sectorSize))
+		add("BLOCK_SIZE", probeSize(sectorSize))
+		deep("FSSIZE", probeSize(total*sectorSize))
+		add("TYPE", "vfat")
+		deep("USAGE", "filesystem")
+	case string(buf[:6]) == "LUKS\xba\xbe":
+		// LUKS1 keeps its UUID as text; LUKS2 puts a label in front of it.
+		if binary.BigEndian.Uint16(buf[6:8]) != 1 {
+			add("LABEL", strings.TrimRight(string(buf[24:72]), "\x00"))
+		}
+		add("UUID", strings.TrimRight(string(buf[168:208]), "\x00"))
+		add("TYPE", "crypto_LUKS")
+		deep("USAGE", "crypto")
+	case probeSwapPageSize(f) != 0:
+		// The swap header follows the 1 KiB the boot loader is promised, and
+		// its last page number is one past the usable area.
+		page := probeSwapPageSize(f)
+		last := uint64(binary.LittleEndian.Uint32(buf[1028:1032]))
+		deep("ENDIANNESS", "LITTLE")
+		deep("FSBLOCKSIZE", probeSize(page))
+		deep("FSSIZE", probeSize(last*page))
+		deep("FSLASTBLOCK", probeSize(last+1))
+		add("LABEL", strings.TrimRight(string(buf[1052:1068]), "\x00 "))
+		add("UUID", formatUUID(buf[1036:1052]))
+		deep("VERSION", probeSize(uint64(binary.LittleEndian.Uint32(buf[1024:1028]))))
+		add("TYPE", "swap")
+		deep("USAGE", "other")
 	}
-	if string(buf[:4]) == "XFSB" {
-		return "xfs", strings.TrimRight(string(buf[0x6c:0x78]), "\x00 "), formatUUID(buf[32:48]), nil
+	return tags, nil
+}
+
+func probeSize(size uint64) string {
+	if size == 0 {
+		return ""
 	}
-	// btrfs keeps its superblock at 64 KiB so that a boot loader can live
-	// in front of it, so it needs a second read.
-	super := make([]byte, 4096)
-	if _, e := f.ReadAt(super, 65536); e == nil && string(super[64:72]) == "_BHRfS_M" {
-		return "btrfs", strings.TrimRight(string(super[299:555]), "\x00 "), formatUUID(super[32:48]), nil
+	return strconv.FormatUint(size, 10)
+}
+
+func probeIsVFAT(buf []byte) bool {
+	return string(buf[82:90]) == "FAT32   " || string(buf[54:62]) == "FAT12   " ||
+		string(buf[54:62]) == "FAT16   " || string(buf[54:59]) == "FAT  "
+}
+
+// probeVFAT reads a FAT boot sector. The label and serial sit at different
+// offsets in the FAT12/16 and FAT32 layouts, and the FAT width is the file
+// system type string the formatter wrote there.
+func probeVFAT(buf []byte) (label, uuid, version string) {
+	base, version := 39, strings.TrimRight(string(buf[54:62]), " ")
+	if string(buf[82:90]) == "FAT32   " {
+		base, version = 67, "FAT32"
 	}
-	if string(buf[3:11]) == "NTFS    " {
-		return "ntfs", "", "", nil
+	serial := binary.LittleEndian.Uint32(buf[base : base+4])
+	uuid = fmt.Sprintf("%04X-%04X", serial>>16, serial&0xffff)
+	label = strings.TrimRight(string(buf[base+4:base+15]), "\x00 ")
+	if label == "NO NAME" {
+		label = ""
 	}
-	if string(buf[54:62]) == "FAT16   " || string(buf[82:90]) == "FAT32   " {
-		return "vfat", "", "", nil
-	}
-	if len(buf) >= 10 && string(buf[:6]) == "LUKS\xba\xbe" {
-		return "crypto_LUKS", "", "", nil
-	}
-	tail := make([]byte, 10)
-	if st, e := f.Stat(); e == nil && st.Size() >= 10 {
-		_, _ = f.ReadAt(tail, st.Size()-10)
-		if string(tail) == "SWAPSPACE2" {
-			return "swap", "", "", nil
+	return label, uuid, version
+}
+
+// probeSwapPageSize looks for the swap signature, which sits at the end of the
+// first page rather than at the end of the device, so finding it also says
+// which page size the area was written with. It returns zero when there is no
+// swap area here.
+func probeSwapPageSize(f *os.File) uint64 {
+	for _, page := range []int64{4096, 8192, 16384, 32768, 65536} {
+		magic := make([]byte, 10)
+		if _, e := f.ReadAt(magic, page-10); e != nil {
+			continue
+		}
+		if string(magic) == "SWAPSPACE2" || string(magic) == "SWAP-SPACE" {
+			return uint64(page) //nolint:gosec // the page sizes are the positive constants above.
 		}
 	}
-	return "", "", "", nil
+	return 0
 }
 func formatUUID(b []byte) string {
 	if len(b) < 16 {

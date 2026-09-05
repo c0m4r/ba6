@@ -12,7 +12,7 @@ measured against its original; nothing is left under
 [Not yet assessed](#not-yet-assessed).
 
 **Short answer to "which are 1:1?"** — of the 170, 29 are genuine drop-ins,
-82 more are near-complete, 50 are partial in ways that stay invisible until a
+83 more are near-complete, 49 are partial in ways that stay invisible until a
 script reaches for a flag, none are so narrow that they should not be treated as
 a replacement at all, and 9 have no upstream counterpart to compare
 against; see the [verdict table](#verdict-in-one-table). `netstat`, `ps aux`/
@@ -32,8 +32,8 @@ options listed per applet below.
 | Tier | Meaning | Applets |
 |---|---|---|
 | **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `base64` `basename` `cksum` `comm` `cut` `dirname` `echo` `expand` `false` `fold` `join` `mknod` `nice` `nl` `paste` `pivot_root` `printenv` `pwd` `seq` `sleep` `split` `tac` `touch` `tr` `true` `tty` `uname` `unexpand` `whoami` |
-| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `date` `dd` `df` `du` `env` `expr` `find` `free` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `insmod` `kill` `ln` `losetup` `ls` `lsmod` `lspci` `lsusb` `md5sum` `mkdir` `mktemp` `modprobe` `mount` `mv` `nohup` `od` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `rmmod` `sed` `setsid` `sha1sum` `sha256sum` `sha512sum` `sort` `stat` `strings` `swapoff` `swapon` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `umount` `uniq` `unzip` `uptime` `wc` `which` `xargs` `zip` |
-| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `blkid` `cfdisk` `cpio` `curl` `diff` `dig` `dmesg` `fdisk` `file` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `getty` `iftop` `ip` `iptables` `less` `login` `lsblk` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkswap` `mtr` `nano` `nc` `ncdu` `netstat` `nslookup` `passwd` `ping` `sfdisk` `sh` `ss` `traceroute` `tree` `unxz` `unzstd` `useradd` `watch` `wget` `xz` `zstd` |
+| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blkid` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `date` `dd` `df` `du` `env` `expr` `find` `free` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `insmod` `kill` `ln` `losetup` `ls` `lsmod` `lspci` `lsusb` `md5sum` `mkdir` `mktemp` `modprobe` `mount` `mv` `nohup` `od` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `rmmod` `sed` `setsid` `sha1sum` `sha256sum` `sha512sum` `sort` `stat` `strings` `swapoff` `swapon` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `umount` `uniq` `unzip` `uptime` `wc` `which` `xargs` `zip` |
+| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `cfdisk` `cpio` `curl` `diff` `dig` `dmesg` `fdisk` `file` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `getty` `iftop` `ip` `iptables` `less` `login` `lsblk` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mkswap` `mtr` `nano` `nc` `ncdu` `netstat` `nslookup` `passwd` `ping` `sfdisk` `sh` `ss` `traceroute` `tree` `unxz` `unzstd` `useradd` `watch` `wget` `xz` `zstd` |
 | **D — narrow subset** | A slice of the original; do not treat as a replacement | _(none)_ |
 | **N/A** | ba6-specific, no upstream counterpart | `completion` `halt` `help` `init` `man` `poweroff` `reboot` `switch_root` `udhcpc` |
 
@@ -287,8 +287,19 @@ files).
 padding and sizes round differently (`115M` vs `114,6M`); ordering differs. Missing
 `-f -p -l -J -P -T -d -e -i -m -r -s -t -x -S -N -O`.
 
-**`blkid`** — output matched the real tool on this system _(run)_; no options at all
-(missing `-o -s -t -L -U -p -i -k -c`).
+**`blkid`** — 13/16 _(run)_. `-s -t -L -U -o -p -i -l -k -d -g -c --bytes` present.
+The superblock probes cover ext2/3/4, xfs, btrfs, ntfs, vfat, LUKS and swap, and
+each prints the tags the original does in its order, including `SEC_TYPE` and
+`LABEL_FATBOOT` for FAT12/16, `UUID_SUB` for btrfs and `BLOCK_SIZE` everywhere it
+applies; swap is found by the signature at the end of the first page. All four
+output formats, `-p`\'s extra `VERSION`/`FSBLOCKSIZE`/`FSSIZE`/`FSLASTBLOCK`/
+`USAGE` tags and the exit statuses (0, 2 for nothing found, 4 for an unusable
+argument or `-l` without `-t`) matched byte for byte over ext4, vfat, FAT16, swap and btrfs images.
+Divergences: `-k` lists only the ten filesystems this build probes, alphabetically,
+rather than libblkid\'s eighty-odd in registration order; there is no cache, so
+`-c`, `-g` and `-d` are accepted and ignored; `-i`\'s I/O limits are read straight
+from sysfs and could not be checked against a block device here. Missing
+`-n -u -O -S -H` and the RAID, LVM and partition-table probes.
 
 **`mkswap`** — 2/13 _(src)_. `-f -L` present. Missing `-U -p -c -s -v -o --lock`.
 

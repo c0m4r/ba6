@@ -395,8 +395,27 @@ Obtain one IPv4 DHCP lease, configure the address and default route, update
 changing interface or resolver configuration.`,
 	"base64": `Usage: base64 [-d] [-w COLS] [FILE]
 Encode or decode base64 data.`,
-	"blkid": `Usage: blkid [DEVICE]...
-Probe common filesystem signatures, labels, and UUIDs.`,
+	"blkid": `Usage: blkid [OPTION]... [DEVICE]...
+Print the filesystem signature, label and UUID of each device. With no device
+the block devices the kernel knows about are probed.
+
+Options:
+  -s, --match-tag TAG      print only this tag; repeatable
+  -t, --match-token NAME=VALUE
+                           print only devices carrying this tag
+  -L, --label LABEL        print the name of the device with this label
+  -U, --uuid UUID          print the name of the device with this UUID
+  -o, --output FORMAT      full, value, device or export
+  -p, --probe              low-level probe; adds the version, geometry and
+                           usage tags the cache never stores
+  -i, --info               print the I/O limits instead, in export format
+  -l, --list-one           stop after the first matching device
+  -k, --list-filesystems   list the filesystems this build recognises
+  -d, -g, -c, --bytes      accepted and ignored; there is no cache here
+  --help                   show this help
+
+Exit status is 0 when something was found, 2 when nothing was, and 4 when an
+argument could not be made sense of.`,
 	"cmp": `Usage: cmp [-s] FILE1 FILE2
 Report the offset and line number where two files first differ.
 
