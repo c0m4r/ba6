@@ -8,6 +8,7 @@ package main
 import (
 	"bufio"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -1457,61 +1458,513 @@ func procMatchPIDs(options *procMatch, p processInfo) []int {
 	return []int{p.pid}
 }
 
-func cmdMount(args []string) int {
-	fstype, options := "", ""
-	flags := uintptr(0)
-	operands := []string{}
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "-t":
-			i++
-			if i >= len(args) {
-				return 1
-			}
-			fstype = args[i]
-		case "-o":
-			i++
-			if i >= len(args) {
-				return 1
-			}
-			options = args[i]
-		case "-r":
-			flags |= syscall.MS_RDONLY
-		case "--":
-			operands = append(operands, args[i+1:]...)
-			i = len(args)
-		default:
-			if strings.HasPrefix(args[i], "-") {
-				fatalf("mount", "unsupported option %q", args[i])
-				return 1
-			}
-			operands = append(operands, args[i])
-		}
-	}
-	if len(operands) == 0 {
-		return listMounts()
-	}
-	if len(operands) != 2 {
-		fatalf("mount", "expected DEVICE DIRECTORY")
-		return 1
-	}
-	optionFlags, data := parseMountOptions(options)
-	flags |= optionFlags
-	if err := syscall.Mount(operands[0], operands[1], fstype, flags, data); err != nil {
-		fatalf("mount", "%v", err)
-		return 1
-	}
-	return 0
-}
-
 // MS_NOSYMFOLLOW is available in Linux, but syscall does not expose it on all
 // supported Go architectures.
 const msNoSymFollow = uintptr(0x100)
 
-// parseMountOptions separates VFS mount flags from filesystem-specific data.
-// Only valueless, recognized flag options are consumed; options with values
-// remain filesystem data verbatim so a future filesystem option cannot be
-// mistaken for a mount flag.
+// mountEntry is one line of the kernel's mount table.
+type mountEntry struct {
+	source  string
+	target  string
+	fstype  string
+	options string
+}
+
+// readMountTable parses /proc/self/mounts, decoding the escapes the kernel
+// writes for spaces and tabs in a path.
+func readMountTable() ([]mountEntry, error) {
+	data, err := os.ReadFile("/proc/self/mounts")
+	if err != nil {
+		return nil, err
+	}
+	var entries []mountEntry
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		entries = append(entries, mountEntry{
+			source:  decodeMountField(fields[0]),
+			target:  decodeMountField(fields[1]),
+			fstype:  fields[2],
+			options: decodeMountField(fields[3]),
+		})
+	}
+	return entries, nil
+}
+
+// readUserMountOptions reads the options only userspace knows about, which the
+// mount helpers record in /run/mount/utab under the target they belong to.
+func readUserMountOptions() map[string]string {
+	options := map[string]string{}
+	data, err := os.ReadFile("/run/mount/utab")
+	if err != nil {
+		return options
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		target, extra := "", ""
+		for _, field := range strings.Fields(line) {
+			if value, found := strings.CutPrefix(field, "TARGET="); found {
+				target = decodeMountField(value)
+			}
+			if value, found := strings.CutPrefix(field, "OPTS="); found {
+				extra = decodeMountField(value)
+			}
+		}
+		if target != "" && extra != "" {
+			options[target] = extra
+		}
+	}
+	return options
+}
+
+// loopBackingFile is the file a loop device stands for, which the original
+// shows in place of the device node itself.
+func loopBackingFile(device string) string {
+	name, found := strings.CutPrefix(device, "/dev/")
+	if !found || !strings.HasPrefix(name, "loop") {
+		return device
+	}
+	data, err := os.ReadFile("/sys/block/" + name + "/loop/backing_file")
+	if err != nil {
+		return device
+	}
+	backing := strings.TrimSuffix(strings.TrimSpace(string(data)), " (deleted)")
+	if backing == "" {
+		return device
+	}
+	return backing
+}
+
+// fstabEntry is one line of /etc/fstab.
+type fstabEntry struct {
+	source  string
+	target  string
+	fstype  string
+	options string
+}
+
+func readFstab(path string) ([]fstabEntry, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var entries []fstabEntry
+	for _, line := range strings.Split(string(data), "\n") {
+		if cut := strings.IndexByte(line, '#'); cut >= 0 {
+			line = line[:cut]
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		entry := fstabEntry{
+			source: decodeMountField(fields[0]),
+			target: decodeMountField(fields[1]),
+			fstype: fields[2],
+		}
+		if len(fields) > 3 {
+			entry.options = fields[3]
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
+}
+
+// resolveMountSource turns the LABEL= and UUID= spellings fstab uses, and the
+// -L and -U options, into the device they name.
+func resolveMountSource(source string) string {
+	for _, form := range []struct{ prefix, directory string }{
+		{"LABEL=", "/dev/disk/by-label/"},
+		{"UUID=", "/dev/disk/by-uuid/"},
+		{"PARTLABEL=", "/dev/disk/by-partlabel/"},
+		{"PARTUUID=", "/dev/disk/by-partuuid/"},
+	} {
+		if value, found := strings.CutPrefix(source, form.prefix); found {
+			if resolved, err := filepath.EvalSymlinks(form.directory + value); err == nil {
+				return resolved
+			}
+			return form.directory + value
+		}
+	}
+	return source
+}
+
+// mountOptions is one mount(8) command line.
+type mountOptions struct {
+	fstype       string
+	options      string
+	flags        uintptr
+	all          bool
+	verbose      bool
+	fake         bool
+	filterTypes  string
+	filterOpts   string
+	fstab        string
+	source       string
+	target       string
+	haveSource   bool
+	haveTarget   bool
+	showLabels   bool
+	propagations uintptr
+	// sourceSpec is how -L or -U named the device, which the original quotes
+	// back when nothing carries that label.
+	sourceSpec string
+}
+
+// mountUsage reports a command-line mistake the way util-linux does.
+func mountUsage(format string, a ...interface{}) int {
+	fatalf("mount", format, a...)
+	fmt.Fprintln(os.Stderr, "Try 'mount --help' for more information.")
+	return 1
+}
+
+//nolint:gocyclo // one option table; splitting it would only scatter the command line.
+func cmdMount(args []string) int {
+	options := mountOptions{fstab: "/etc/fstab"}
+	operands := []string{}
+	parsing := true
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !parsing || !strings.HasPrefix(arg, "-") || arg == "-" {
+			operands = append(operands, arg)
+			continue
+		}
+		if arg == "--" {
+			parsing = false
+			continue
+		}
+		name, value, hasValue := arg, "", false
+		if strings.HasPrefix(arg, "--") {
+			if eq := strings.IndexByte(arg, '='); eq >= 0 {
+				name, value, hasValue = arg[:eq], arg[eq+1:], true
+			}
+		}
+		needValue := func(what string) (string, bool) {
+			if hasValue {
+				return value, true
+			}
+			i++
+			if i >= len(args) {
+				mountUsage("option '%s' requires an argument", what)
+				return "", false
+			}
+			return args[i], true
+		}
+		switch name {
+		case "-t", "--types":
+			text, ok := needValue(name)
+			if !ok {
+				return 1
+			}
+			options.fstype = text
+		case "-o", "--options":
+			text, ok := needValue(name)
+			if !ok {
+				return 1
+			}
+			if options.options == "" {
+				options.options = text
+			} else {
+				options.options += "," + text
+			}
+		case "-r", "--read-only":
+			options.flags |= syscall.MS_RDONLY
+		case "-w", "--rw", "--read-write":
+			options.flags &^= syscall.MS_RDONLY
+		case "-a", "--all":
+			options.all = true
+		case "-v", "--verbose":
+			options.verbose = true
+		case "-n", "--no-mtab":
+			// There is no mtab to write; the kernel table is the only one.
+		case "-l", "--show-labels":
+			options.showLabels = true
+		case "-B", "--bind":
+			options.flags |= syscall.MS_BIND
+		case "-R", "--rbind":
+			options.flags |= syscall.MS_BIND | syscall.MS_REC
+		case "-M", "--move":
+			options.flags |= syscall.MS_MOVE
+		case "--make-shared":
+			options.propagations = syscall.MS_SHARED
+		case "--make-private":
+			options.propagations = syscall.MS_PRIVATE
+		case "--make-slave":
+			options.propagations = syscall.MS_SLAVE
+		case "--make-unbindable":
+			options.propagations = syscall.MS_UNBINDABLE
+		case "--make-rshared":
+			options.propagations = syscall.MS_SHARED | syscall.MS_REC
+		case "--make-rprivate":
+			options.propagations = syscall.MS_PRIVATE | syscall.MS_REC
+		case "--make-rslave":
+			options.propagations = syscall.MS_SLAVE | syscall.MS_REC
+		case "--make-runbindable":
+			options.propagations = syscall.MS_UNBINDABLE | syscall.MS_REC
+		case "-f", "--fake":
+			options.fake = true
+		case "-L", "--label", "-U", "--uuid":
+			text, ok := needValue(name)
+			if !ok {
+				return 1
+			}
+			kind := "LABEL"
+			if name == "-U" || name == "--uuid" {
+				kind = "UUID"
+			}
+			options.source, options.haveSource = resolveMountSource(kind+"="+text), true
+			options.sourceSpec = kind + `="` + text + `"`
+		case "--source":
+			text, ok := needValue(name)
+			if !ok {
+				return 1
+			}
+			options.source, options.haveSource = text, true
+		case "--target":
+			text, ok := needValue(name)
+			if !ok {
+				return 1
+			}
+			options.target, options.haveTarget = text, true
+		case "-T", "--fstab":
+			text, ok := needValue(name)
+			if !ok {
+				return 1
+			}
+			options.fstab = text
+		case "-O", "--test-opts":
+			text, ok := needValue(name)
+			if !ok {
+				return 1
+			}
+			options.filterOpts = text
+		default:
+			if strings.HasPrefix(arg, "--") {
+				return mountUsage("unrecognized option '%s'", arg)
+			}
+			return mountUsage("invalid option -- '%c'", arg[1])
+		}
+	}
+	switch {
+	case options.haveSource && !options.haveTarget && len(operands) == 1:
+		options.target, options.haveTarget = operands[0], true
+		operands = nil
+	case options.haveTarget && !options.haveSource && len(operands) == 1:
+		options.source, options.haveSource = operands[0], true
+		operands = nil
+	}
+	options.filterTypes = options.fstype
+
+	if options.all {
+		return mountAll(&options)
+	}
+	if len(operands) == 0 && !options.haveTarget && !options.haveSource {
+		return listMounts(options.filterTypes)
+	}
+	switch len(operands) {
+	case 0:
+	case 1:
+		// One operand names either the device or the mount point; which one it
+		// is comes from fstab, as it does in the original.
+		if !options.haveTarget && !options.haveSource {
+			return mountFromFstab(&options, operands[0])
+		}
+		if options.haveTarget {
+			options.source, options.haveSource = operands[0], true
+		} else {
+			options.target, options.haveTarget = operands[0], true
+		}
+	case 2:
+		options.source, options.haveSource = operands[0], true
+		options.target, options.haveTarget = operands[1], true
+	default:
+		return mountUsage("only root can use \"--options\" option (effective UID is %d)", os.Geteuid())
+	}
+	return mountOne(&options, options.source, options.target, options.fstype, options.options)
+}
+
+// mountFromFstab handles the one-operand form: the operand is looked up in
+// fstab as either a mount point or a device, and the entry supplies the rest.
+func mountFromFstab(options *mountOptions, operand string) int {
+	entries, err := readFstab(options.fstab)
+	if err != nil {
+		fatalf("mount", "%s: %s", options.fstab, errText(err))
+		return 32
+	}
+	// The operand may be written relative to the current directory while fstab
+	// spells everything absolutely, so both sides are made absolute first.
+	clean := mountAbsolute(operand)
+	for _, entry := range entries {
+		if mountAbsolute(entry.target) != clean && mountAbsolute(entry.source) != clean {
+			continue
+		}
+		combined := entry.options
+		if options.options != "" {
+			combined = strings.TrimPrefix(combined+","+options.options, ",")
+		}
+		fstype := entry.fstype
+		if options.fstype != "" {
+			fstype = options.fstype
+		}
+		return mountOne(options, resolveMountSource(entry.source), entry.target, fstype, combined)
+	}
+	fatalf("mount", "%s: can't find in %s.", operand, options.fstab)
+	return 1
+}
+
+// mountAbsolute is a path made absolute without resolving anything, which is
+// enough to compare an operand against an fstab entry.
+func mountAbsolute(path string) string {
+	if absolute, err := filepath.Abs(path); err == nil {
+		return absolute
+	}
+	return filepath.Clean(path)
+}
+
+// mountAll mounts every fstab entry that is not already mounted, honouring the
+// -t and -O filters and skipping the ones marked noauto.
+func mountAll(options *mountOptions) int {
+	entries, err := readFstab(options.fstab)
+	if err != nil {
+		fatalf("mount", "%s: %s", options.fstab, errText(err))
+		return 32
+	}
+	mounted := map[string]bool{}
+	if table, tableErr := readMountTable(); tableErr == nil {
+		for _, entry := range table {
+			mounted[filepath.Clean(entry.target)] = true
+		}
+	}
+	status := 0
+	for _, entry := range entries {
+		switch {
+		case entry.fstype == "swap" || entry.target == "none":
+			continue
+		case mounted[filepath.Clean(entry.target)]:
+			continue
+		case mountHasOption(entry.options, "noauto"):
+			continue
+		case !mountTypeSelected(options.filterTypes, entry.fstype):
+			continue
+		case options.filterOpts != "" && !mountOptionsSelected(options.filterOpts, entry.options):
+			continue
+		}
+		combined := entry.options
+		if options.options != "" {
+			combined = strings.TrimPrefix(combined+","+options.options, ",")
+		}
+		if code := mountOne(options, resolveMountSource(entry.source), entry.target, entry.fstype, combined); code != 0 {
+			status = code
+		}
+	}
+	return status
+}
+
+// mountOne performs one mount, or one propagation change, and reports the
+// failure the way the original does — including its exit status 32.
+func mountOne(options *mountOptions, source, target, fstype, optionText string) int {
+	flags, data := parseMountOptions(optionText)
+	flags |= options.flags
+	if options.propagations != 0 {
+		if err := syscall.Mount("", target, "", options.propagations, ""); err != nil {
+			fatalf("mount", "%s: %s.", target, errText(err))
+			return 32
+		}
+		return 0
+	}
+	if options.fake {
+		if options.verbose {
+			fmt.Printf("mount: %s would be mounted on %s\n", source, target)
+		}
+		return 0
+	}
+	// A device named by label or uuid that nothing answers to is reported
+	// against the target, before privilege comes into it.
+	if options.sourceSpec != "" {
+		if _, err := os.Stat(source); err != nil {
+			fatalf("mount", "%s: can't find %s.", target, options.sourceSpec)
+			return 1
+		}
+	}
+	// The original checks the caller's privilege before the kernel gets a say,
+	// so an unprivileged mount is refused by that name whatever else is wrong.
+	if os.Geteuid() != 0 {
+		fatalf("mount", "%s: must be superuser to use mount.", target)
+		fmt.Fprintln(os.Stderr, "       dmesg(1) may have more information after failed mount system call.")
+		return 32
+	}
+	if err := syscall.Mount(source, target, fstype, flags, data); err != nil {
+		fatalf("mount", "%s: %s.", target, errText(err))
+		fmt.Fprintln(os.Stderr, "       dmesg(1) may have more information after failed mount system call.")
+		return 32
+	}
+	// A bind mount cannot carry its own flags in one call, so read-only and
+	// the other per-mount flags are applied in the remount the original makes
+	// for exactly this reason.
+	const perMount = syscall.MS_RDONLY | syscall.MS_NOSUID | syscall.MS_NODEV |
+		syscall.MS_NOEXEC | syscall.MS_NOATIME | syscall.MS_NODIRATIME | syscall.MS_RELATIME
+	if flags&syscall.MS_BIND != 0 && flags&perMount != 0 {
+		remount := flags&^uintptr(syscall.MS_REC) | syscall.MS_REMOUNT | syscall.MS_BIND
+		if err := syscall.Mount("", target, "", remount, ""); err != nil {
+			fatalf("mount", "%s: %s.", target, errText(err))
+			return 32
+		}
+	}
+	if options.verbose {
+		fmt.Printf("mount: %s mounted on %s.\n", source, target)
+	}
+	return 0
+}
+
+// mountHasOption reports whether a comma-separated option list contains name.
+func mountHasOption(options, name string) bool {
+	for _, option := range strings.Split(options, ",") {
+		if key, _, _ := strings.Cut(option, "="); key == name {
+			return true
+		}
+	}
+	return false
+}
+
+// mountTypeSelected applies a -t filter, which may be a comma-separated list
+// and may be negated as a whole with "no".
+func mountTypeSelected(filter, fstype string) bool {
+	if filter == "" {
+		return true
+	}
+	if negated, found := strings.CutPrefix(filter, "no"); found {
+		for _, name := range strings.Split(negated, ",") {
+			if name == fstype {
+				return false
+			}
+		}
+		return true
+	}
+	for _, name := range strings.Split(filter, ",") {
+		if name == fstype {
+			return true
+		}
+	}
+	return false
+}
+
+// mountOptionsSelected applies a -O filter the same way.
+func mountOptionsSelected(filter, options string) bool {
+	for _, name := range strings.Split(filter, ",") {
+		if negated, found := strings.CutPrefix(name, "no"); found {
+			if mountHasOption(options, negated) {
+				return false
+			}
+			continue
+		}
+		if !mountHasOption(options, name) {
+			return false
+		}
+	}
+	return true
+}
+
 func parseMountOptions(options string) (uintptr, string) {
 	flags := uintptr(0)
 	data := []string{}
@@ -1588,89 +2041,271 @@ func parseMountOptions(options string) (uintptr, string) {
 	return flags, strings.Join(data, ",")
 }
 
-func listMounts() int {
-	data, err := os.ReadFile("/proc/self/mounts")
+// listMounts prints the mount table in the original's own form rather than
+// the kernel's: "SOURCE on TARGET type FSTYPE (options)".
+func listMounts(filterTypes string) int {
+	entries, err := readMountTable()
 	if err != nil {
 		fatalf("mount", "%v", err)
 		return 1
 	}
-	os.Stdout.Write(data)
+	userOptions := readUserMountOptions()
+	out := bufio.NewWriter(os.Stdout)
+	defer out.Flush() //nolint:errcheck // a sticky write error is reported by the final Flush.
+	for _, entry := range entries {
+		if !mountTypeSelected(filterTypes, entry.fstype) {
+			continue
+		}
+		options := entry.options
+		if extra := userOptions[entry.target]; extra != "" {
+			options += "," + extra
+		}
+		fmt.Fprintf(out, "%s on %s type %s (%s)\n",
+			loopBackingFile(entry.source), entry.target, entry.fstype, options)
+	}
 	return 0
 }
+
+// umountOptions is one umount(8) command line.
+type umountOptions struct {
+	flags       int
+	all         bool
+	allTargets  bool
+	recursive   bool
+	readOnly    bool
+	verbose     bool
+	quiet       bool
+	fake        bool
+	filterTypes string
+	filterOpts  string
+}
+
+func umountUsage(format string, a ...interface{}) int {
+	fatalf("umount", format, a...)
+	fmt.Fprintln(os.Stderr, "Try 'umount --help' for more information.")
+	return 1
+}
+
+//nolint:gocyclo // one option table; splitting it would only scatter the command line.
 func cmdUmount(args []string) int {
-	flags, all, remountReadonly := 0, false, false
+	options := umountOptions{}
 	targets := []string{}
-	for _, a := range args {
-		switch a {
-		case "-l", "--lazy":
-			flags |= syscall.MNT_DETACH
-		case "-f", "--force":
-			flags |= syscall.MNT_FORCE
-		case "-a", "--all":
-			all = true
-		case "-r", "--read-only":
-			remountReadonly = true
-		default:
-			if strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") {
-				for _, option := range strings.TrimPrefix(a, "-") {
-					switch option {
-					case 'l':
-						flags |= syscall.MNT_DETACH
-					case 'f':
-						flags |= syscall.MNT_FORCE
-					case 'a':
-						all = true
-					case 'r':
-						remountReadonly = true
-					default:
-						fatalf("umount", "unsupported option -%c", option)
-						return 1
-					}
+	parsing := true
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !parsing || !strings.HasPrefix(arg, "-") || arg == "-" {
+			targets = append(targets, arg)
+			continue
+		}
+		if arg == "--" {
+			parsing = false
+			continue
+		}
+		name, value, hasValue := arg, "", false
+		if strings.HasPrefix(arg, "--") {
+			if eq := strings.IndexByte(arg, '='); eq >= 0 {
+				name, value, hasValue = arg[:eq], arg[eq+1:], true
+			}
+		}
+		needValue := func() (string, bool) {
+			if hasValue {
+				return value, true
+			}
+			i++
+			if i >= len(args) {
+				umountUsage("option '%s' requires an argument", name)
+				return "", false
+			}
+			return args[i], true
+		}
+		// The short options cluster, so each letter is handled on its own.
+		letters := []string{name}
+		if !strings.HasPrefix(arg, "--") && len(arg) > 2 {
+			letters = nil
+			for _, letter := range arg[1:] {
+				letters = append(letters, "-"+string(letter))
+			}
+		}
+		for _, letter := range letters {
+			switch letter {
+			case "-l", "--lazy":
+				options.flags |= syscall.MNT_DETACH
+			case "-f", "--force":
+				options.flags |= syscall.MNT_FORCE
+			case "-a", "--all":
+				options.all = true
+			case "-A", "--all-targets":
+				options.allTargets = true
+			case "-R", "--recursive":
+				options.recursive = true
+			case "-r", "--read-only":
+				options.readOnly = true
+			case "-v", "--verbose":
+				options.verbose = true
+			case "-q", "--quiet":
+				options.quiet = true
+			case "--fake":
+				options.fake = true
+			case "-n", "--no-mtab", "-c", "--no-canonicalize", "-d", "--detach-loop", "-i", "--internal-only":
+				// There is no mtab and no helper to call; a loop device is
+				// freed by the kernel when its last mount goes.
+			case "-t", "--types":
+				text, ok := needValue()
+				if !ok {
+					return 1
 				}
-				continue
+				options.filterTypes = text
+			case "-O", "--test-opts":
+				text, ok := needValue()
+				if !ok {
+					return 1
+				}
+				options.filterOpts = text
+			default:
+				if strings.HasPrefix(letter, "--") {
+					return umountUsage("unrecognized option '%s'", letter)
+				}
+				return umountUsage("invalid option -- '%c'", letter[1])
 			}
-			if strings.HasPrefix(a, "-") {
-				fatalf("umount", "unsupported option %q", a)
-				return 1
-			}
-			targets = append(targets, a)
 		}
 	}
-	if all {
-		data, err := os.ReadFile("/proc/self/mounts")
-		if err != nil {
-			fatalf("umount", "%v", err)
-			return 1
-		}
-		for _, line := range strings.Split(string(data), "\n") {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 && fields[1] != "/" {
-				targets = append(targets, decodeMountField(fields[1]))
+
+	table, err := readMountTable()
+	if err != nil {
+		fatalf("umount", "%v", err)
+		return 1
+	}
+	if options.all {
+		// Everything but the root, deepest first, so a mount point is free by
+		// the time its parent is unmounted.
+		for _, entry := range table {
+			if entry.target == "/" || !mountTypeSelected(options.filterTypes, entry.fstype) {
+				continue
 			}
+			if options.filterOpts != "" && !mountOptionsSelected(options.filterOpts, entry.options) {
+				continue
+			}
+			targets = append(targets, entry.target)
 		}
 		sort.SliceStable(targets, func(i, j int) bool { return len(targets[i]) > len(targets[j]) })
 	}
 	if len(targets) == 0 {
-		fatalf("umount", "missing operand")
+		fatalf("umount", "bad usage")
+		fmt.Fprintln(os.Stderr, "Try 'umount --help' for more information.")
 		return 1
 	}
+
+	var resolved []string
+	for _, target := range targets {
+		found, ok := umountResolve(&options, table, target)
+		if !ok {
+			return 1
+		}
+		resolved = append(resolved, found...)
+	}
 	status := 0
-	for _, t := range targets {
-		if err := syscall.Unmount(t, flags); err != nil {
-			if remountReadonly && syscall.Mount("", t, "", syscall.MS_REMOUNT|syscall.MS_RDONLY, "") == nil {
-				continue
-			}
-			fatalf("umount", "%s: %v", t, err)
-			status = 1
+	for _, target := range resolved {
+		if code := umountOne(&options, target); code != 0 {
+			status = code
 		}
 	}
-	if all && remountReadonly {
+	if options.all && options.readOnly {
 		if err := syscall.Mount("", "/", "", syscall.MS_REMOUNT|syscall.MS_RDONLY, ""); err != nil {
-			fatalf("umount", "/: %v", err)
-			status = 1
+			fatalf("umount", "/: %s", errText(err))
+			status = 32
 		}
 	}
 	return status
+}
+
+// umountResolve turns one operand into the mount points it names. The original
+// resolves it against the mount table before the kernel sees it, so a path that
+// carries no mount — or a device whose mount point it is — is reported from
+// there rather than as an errno. -R adds everything mounted beneath it.
+func umountResolve(options *umountOptions, table []mountEntry, target string) ([]string, bool) {
+	canonical := target
+	if absolute, err := filepath.Abs(target); err == nil {
+		canonical = absolute
+	}
+	if evaluated, err := filepath.EvalSymlinks(canonical); err == nil {
+		canonical = evaluated
+	}
+	var found []string
+	for _, entry := range table {
+		switch {
+		case entry.target == canonical:
+			found = append(found, entry.target)
+		case entry.source == canonical || loopBackingFile(entry.source) == canonical:
+			// A device names every mount point it is mounted at, though only
+			// -A asks for more than the first.
+			found = append(found, entry.target)
+		}
+	}
+	if len(found) > 1 && !options.allTargets {
+		found = found[:1]
+	}
+	if options.recursive {
+		for _, entry := range table {
+			if strings.HasPrefix(entry.target, canonical+"/") {
+				found = append(found, entry.target)
+			}
+		}
+		// The deepest mounts have to go first, or their parents are busy.
+		sort.SliceStable(found, func(i, j int) bool { return len(found[i]) > len(found[j]) })
+	}
+	if len(found) == 0 {
+		if options.quiet {
+			return nil, true
+		}
+		if _, err := os.Lstat(canonical); err != nil {
+			fatalf("umount", "%s: %s", target, errText(err))
+			return nil, false
+		}
+		fatalf("umount", "%s: not mounted.", canonical)
+		return nil, false
+	}
+	return found, true
+}
+
+// umountOne unmounts one target and reports the failure the way the original
+// does, including which of its exit statuses the failure earns.
+func umountOne(options *umountOptions, target string) int {
+	if options.fake {
+		if options.verbose {
+			fmt.Printf("umount: %s (fake)\n", target)
+		}
+		return 0
+	}
+	if err := syscall.Unmount(target, options.flags); err != nil {
+		if options.readOnly && syscall.Mount("", target, "", syscall.MS_REMOUNT|syscall.MS_RDONLY, "") == nil {
+			if options.verbose {
+				fmt.Printf("umount: %s busy - remounted read-only\n", target)
+			}
+			return 0
+		}
+		if options.quiet {
+			return 32
+		}
+		// The original keeps status 32 for an unmount the kernel refused
+		// rather than one the caller got wrong.
+		switch {
+		case errors.Is(err, syscall.EPERM) && os.Geteuid() != 0:
+			fatalf("umount", "%s: must be superuser to unmount.", target)
+		case errors.Is(err, syscall.EINVAL):
+			fatalf("umount", "%s: not mounted.", target)
+			return 1
+		case errors.Is(err, syscall.ENOENT), errors.Is(err, syscall.ENOTDIR):
+			fatalf("umount", "%s: %s", target, errText(err))
+			return 1
+		default:
+			fatalf("umount", "%s: %s", target, errText(err))
+		}
+		return 32
+	}
+	if options.verbose {
+		fmt.Printf("umount: %s unmounted\n", target)
+	}
+	return 0
 }
 
 func cmdMknod(args []string) int {

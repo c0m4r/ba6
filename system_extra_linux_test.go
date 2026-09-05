@@ -346,3 +346,101 @@ func TestPkillSignalsMatches(t *testing.T) {
 		t.Fatalf("pkill on a dead pid = (%d, %q)", status, out)
 	}
 }
+
+// TestMountTableFormatting pins the listing form and the filters mount grew,
+// which are what a run with no operands produces.
+func TestMountTableFormatting(t *testing.T) {
+	// The kernel's own table is the input, so the test asserts the shape of
+	// each line rather than its contents.
+	status, out, errOut := captureApplet(t, cmdMount, nil, "")
+	if status != 0 || out == "" {
+		t.Fatalf("mount = (%d, %q, %q)", status, out, errOut)
+	}
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 5 || fields[1] != "on" || fields[3] != "type" ||
+			!strings.HasPrefix(fields[len(fields)-1], "(") || !strings.HasSuffix(line, ")") {
+			t.Fatalf("mount printed %q", line)
+		}
+	}
+	// -t keeps only that type, and the "no" prefix drops it instead.
+	_, only, _ := captureApplet(t, cmdMount, []string{"-t", "proc"}, "")
+	for _, line := range strings.Split(strings.TrimRight(only, "\n"), "\n") {
+		if line != "" && !strings.Contains(line, " type proc ") {
+			t.Fatalf("mount -t proc printed %q", line)
+		}
+	}
+	if _, without, _ := captureApplet(t, cmdMount, []string{"-t", "noproc"}, ""); strings.Contains(without, " type proc ") {
+		t.Fatalf("mount -t noproc kept a proc mount: %q", without)
+	}
+	// An unknown option is refused the way util-linux refuses it.
+	status, out, errOut = captureApplet(t, cmdMount, []string{"--nosuch"}, "")
+	if status != 1 || out != "" || !strings.Contains(errOut, "unrecognized option '--nosuch'") ||
+		!strings.Contains(errOut, "Try 'mount --help'") {
+		t.Fatalf("mount --nosuch = (%d, %q, %q)", status, out, errOut)
+	}
+}
+
+// TestUmountTargetResolution covers the lookup umount does before it calls the
+// kernel: a path with no mount on it, and one that is not there at all, are
+// told apart, and each carries the original's own exit status.
+func TestUmountTargetResolution(t *testing.T) {
+	dir := t.TempDir()
+	status, out, errOut := captureApplet(t, cmdUmount, []string{dir}, "")
+	if status != 1 || out != "" || !strings.Contains(errOut, "not mounted.") {
+		t.Fatalf("umount on a plain directory = (%d, %q, %q)", status, out, errOut)
+	}
+	missing := filepath.Join(dir, "absent")
+	if status, _, errOut = captureApplet(t, cmdUmount, []string{missing}, ""); status != 1 ||
+		!strings.Contains(errOut, "No such file or directory") {
+		t.Fatalf("umount on a missing path = (%d, %q)", status, errOut)
+	}
+	// -q says nothing about either.
+	if status, _, errOut = captureApplet(t, cmdUmount, []string{"-q", dir}, ""); status != 0 || errOut != "" {
+		t.Fatalf("umount -q = (%d, %q)", status, errOut)
+	}
+	// No operand at all is the original's usage failure.
+	status, _, errOut = captureApplet(t, cmdUmount, nil, "")
+	if status != 1 || !strings.Contains(errOut, "bad usage") || !strings.Contains(errOut, "Try 'umount --help'") {
+		t.Fatalf("umount with no operand = (%d, %q)", status, errOut)
+	}
+	// The option letters cluster, and an unknown one is refused by name.
+	if status, _, errOut = captureApplet(t, cmdUmount, []string{"-lfZ", dir}, ""); status != 1 ||
+		!strings.Contains(errOut, "invalid option -- 'Z'") {
+		t.Fatalf("umount -lfZ = (%d, %q)", status, errOut)
+	}
+}
+
+// TestMountOptionFilters pins the -t and -O list matching, which -a and the
+// listing share.
+func TestMountOptionFilters(t *testing.T) {
+	for _, c := range []struct {
+		filter, fstype string
+		want           bool
+	}{
+		{"", "ext4", true},
+		{"ext4", "ext4", true},
+		{"ext4,xfs", "xfs", true},
+		{"ext4", "xfs", false},
+		{"noext4", "ext4", false},
+		{"noext4,xfs", "btrfs", true},
+	} {
+		if got := mountTypeSelected(c.filter, c.fstype); got != c.want {
+			t.Fatalf("mountTypeSelected(%q, %q) = %v", c.filter, c.fstype, got)
+		}
+	}
+	for _, c := range []struct {
+		filter, options string
+		want            bool
+	}{
+		{"ro", "rw,noatime", false},
+		{"rw", "rw,noatime", true},
+		{"rw,noatime", "rw,noatime", true},
+		{"noro", "rw,noatime", true},
+		{"nonoatime", "rw,noatime", false},
+	} {
+		if got := mountOptionsSelected(c.filter, c.options); got != c.want {
+			t.Fatalf("mountOptionsSelected(%q, %q) = %v", c.filter, c.options, got)
+		}
+	}
+}

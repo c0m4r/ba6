@@ -415,8 +415,40 @@ and reboots, SIGUSR1 halts, SIGUSR2 powers off, SIGTERM reboots, and SIGPWR runs
 power-failure actions before powering off.`,
 	"mknod": `Usage: mknod [-m MODE] NAME TYPE [MAJOR MINOR]
 Create a FIFO, block device, or character device.`,
-	"mount": `Usage: mount [-t TYPE] [-o OPTIONS] DEVICE DIRECTORY
-Mount a filesystem, or list mounts with no operands.`,
+	"mount": `Usage: mount [OPTION]... [DEVICE] [DIRECTORY]
+       mount [OPTION]... -a
+With no operands, list the mounted filesystems as "SOURCE on TARGET type TYPE
+(options)". With one, the device or mount point is looked up in fstab and its
+entry supplies the rest.
+
+Options:
+  -t, --types=TYPE       filesystem type, or a comma-separated list to filter
+                         the listing and -a; "no" in front negates the list
+  -o, --options=LIST     mount options, accumulating across several -o
+  -r, --read-only        mount read-only        -w, --rw  mount read-write
+  -a, --all              mount every fstab entry that is not mounted yet,
+                         skipping the ones marked noauto
+  -O, --test-opts=LIST   with -a, only the entries carrying these options
+  -T, --fstab=FILE       read FILE instead of /etc/fstab
+  -L, --label=LABEL      name the device by its label
+  -U, --uuid=UUID        name the device by its uuid
+  --source=DEV, --target=DIR
+                         name either half explicitly
+  -B, --bind             bind an existing tree elsewhere
+  -R, --rbind            as --bind, with everything mounted underneath
+  -M, --move             move a mount to another place
+  --make-shared, --make-private, --make-slave, --make-unbindable
+  --make-rshared, --make-rprivate, --make-rslave, --make-runbindable
+                         change a mount's propagation
+  -f, --fake             go through the motions without mounting
+  -v, --verbose          say what is being done
+  -n, --no-mtab          accepted; the kernel table is the only one there is
+  -l, --show-labels      accepted
+  --help                 show this help
+
+A read-only bind mount is made in two steps, as the original makes it: the bind
+first, then the remount that applies the flag. Exit status is 32 when a mount
+fails, and 1 for a command line the tool could not use.`,
 	"less": `Usage: less [-eEFiImMnNqQrRsSXz] [-p PATTERN] [-x TABS] [-z LINES]
             [+COMMAND] [FILE]...
 Page through files on a full screen. Each file is read into memory, so both
@@ -681,9 +713,28 @@ Options:
   --help                    show this help`,
 	"sync": `Usage: sync
 Flush filesystem buffers.`,
-	"umount": `Usage: umount [-aflr] [TARGET]...
-Unmount filesystems. -a processes all mounted filesystems and -r remounts
-busy filesystems read-only.`,
+	"umount": `Usage: umount [OPTION]... [TARGET]...
+Unmount filesystems. A target may be a mount point or the device mounted there;
+it is resolved against the kernel's mount table before the unmount is tried, so
+a path carrying no mount is reported as "not mounted" rather than as an errno.
+
+Options:
+  -a, --all              unmount everything but the root, deepest first
+  -A, --all-targets      unmount every mount point a device is mounted at
+  -R, --recursive        unmount a target and everything beneath it
+  -t, --types=LIST       with -a, only these filesystem types
+  -O, --test-opts=LIST   with -a, only the mounts carrying these options
+  -f, --force            force the unmount
+  -l, --lazy             detach now and clean up when the last user leaves
+  -r, --read-only        remount read-only when the unmount fails
+  -q, --quiet            do not complain about a target that is not mounted
+  --fake                 go through the motions without unmounting
+  -v, --verbose          say what is being done
+  -n, -c, -d, -i         accepted; there is no mtab and no helper to call
+  --help                 show this help
+
+Exit status is 32 when an unmount fails, and 1 for a target the tool could not
+use.`,
 	"uptime": `Usage: uptime [-p] [-s] [-r] [-c]
 Display system uptime and load averages.
 
