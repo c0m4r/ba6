@@ -141,9 +141,28 @@ Create a single-device btrfs with 16 KiB nodes, 4 KiB sectors, and unmirrored
 system, metadata, and data block groups. Checksums are CRC32C and the free
 space tree, quotas, and block group tree are off. The minimum size is 128 MiB.
 BLOCKS is expressed in 1 KiB units. -f is required for regular files.`,
-	"mkswap": `Usage: mkswap [-f] [-L LABEL] DEVICE_OR_FILE
-Write a Linux version-1 swap header after validating the target and its size.
-Mounted targets and active swap are rejected unless explicitly forced.`,
+	"mkswap": `Usage: mkswap [OPTION]... DEVICE [SIZE]
+Set up a Linux swap area on a device or in a file. SIZE is in 1024 byte blocks
+and defaults to the whole device.
+
+Options:
+  -c, --check           read the area first and record the pages that fail
+  -f, --force           go ahead even when the area is in use or too small
+  -q, --quiet           print neither the summary nor the warnings
+  -p, --pagesize SIZE   use this page size instead of the kernel's
+  -L, --label LABEL     store a label; anything past fifteen bytes is cut
+  -v, --swapversion NUM only version 1 exists
+  -U, --uuid UUID       store this UUID, or one of clear, random and time
+  -e, --endianness NAME write the header native, little or big endian
+  -o, --offset OFFSET   put the swap area this far into the device
+  -s, --size SIZE       the size of the swap file to create, with -F
+  -F, --file            make the file private to its owner, and create it
+                        when a size was given
+      --verbose         verbose output
+      --lock[=MODE]     take a BSD lock: yes, no or nonblock
+      --help            show this help
+
+An old filesystem signature in the way is reported and erased.`,
 	"mtr": `Usage: mtr [OPTION]... HOST
 Probe every hop on the route to HOST and keep loss and latency statistics for
 each one. On a terminal the display refreshes continuously like the original

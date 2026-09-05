@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -1556,90 +1557,531 @@ func validateRootDirectory(block []byte) error {
 	return nil
 }
 
-func cmdMkswap(args []string) int {
-	force := false
-	label := ""
-	var operands []string
-	for index := 0; index < len(args); index++ {
-		switch args[index] {
-		case "-f", "--force":
-			force = true
-		case "-L", "--label":
-			index++
-			if index >= len(args) {
-				fatalf("mkswap", "-L requires a label")
-				return 1
-			}
-			label = args[index]
-		default:
-			if strings.HasPrefix(args[index], "-") {
-				fatalf("mkswap", "unsupported option %q", args[index])
-				return 1
-			}
-			operands = append(operands, args[index])
+// mkswapOptions is the command line of mkswap.
+type mkswapOptions struct {
+	check     bool
+	force     bool
+	quiet     bool
+	verbose   bool
+	makeFile  bool
+	label     string
+	pageSize  uint64
+	userPage  bool
+	uuidSpec  string
+	endian    string
+	offset    uint64
+	fileSize  uint64
+	haveSize  bool
+	lock      string
+	device    string
+	blocks    uint64
+	haveBlock bool
+}
+
+func mkswapUsage(format string, a ...interface{}) int {
+	fatalf("mkswap", format, a...)
+	fmt.Fprintln(os.Stderr, "Try 'mkswap --help' for more information.")
+	return 1
+}
+
+// mkswapHumanSize is util-linux's size_to_human_string with a space and the
+// three letter suffix: the value is rounded to the nearest tenth rather than
+// up, and a whole number loses its decimal.
+func mkswapHumanSize(bytes uint64) string {
+	suffixes := []string{"B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"}
+	exp := 0
+	for index := 1; index < len(suffixes); index++ {
+		if bytes < uint64(1)<<(10*index) {
+			break
+		}
+		exp = 10 * index
+	}
+	whole, frac := bytes>>exp, bytes&(uint64(1)<<exp-1)
+	if frac != 0 {
+		if frac >= ^uint64(0)/1000 {
+			frac = frac / 1024 * 1000 >> (exp - 10)
+		} else {
+			frac = frac * 1000 >> exp
+		}
+		frac = (frac + 50) / 100
+		if frac == 10 {
+			whole, frac = whole+1, 0
 		}
 	}
-	if len(operands) != 1 {
-		fatalf("mkswap", "expected exactly one device or file")
-		return 1
+	if frac != 0 {
+		return fmt.Sprintf("%d.%d %s", whole, frac, suffixes[exp/10])
 	}
-	if len(label) > 16 || strings.IndexByte(label, 0) >= 0 {
-		fatalf("mkswap", "label must contain at most 16 non-NUL bytes")
-		return 1
+	return fmt.Sprintf("%d %s", whole, suffixes[exp/10])
+}
+
+// mkswapSize parses util-linux's size arguments: a number with an optional
+// binary suffix, where the "iB" is decoration and a bare "KB" means a thousand.
+func mkswapSize(text string) (uint64, bool) {
+	digits := 0
+	for digits < len(text) && text[digits] >= '0' && text[digits] <= '9' {
+		digits++
 	}
-	path := operands[0]
-	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	if digits == 0 {
+		return 0, false
+	}
+	value, err := strconv.ParseUint(text[:digits], 10, 64)
 	if err != nil {
-		fatalf("mkswap", "%s: %v", path, err)
+		return 0, false
+	}
+	suffix := strings.TrimSpace(text[digits:])
+	if suffix == "" {
+		return value, true
+	}
+	base := uint64(1024)
+	if len(suffix) == 2 && (suffix[1] == 'B' || suffix[1] == 'b') {
+		base = 1000
+	} else if len(suffix) == 3 && strings.EqualFold(suffix[1:], "ib") {
+		suffix = suffix[:1]
+	} else if len(suffix) != 1 {
+		return 0, false
+	}
+	power := strings.IndexByte("KMGTPEZY", upperASCII(suffix[0]))
+	if power < 0 {
+		return 0, false
+	}
+	for step := 0; step <= power; step++ {
+		if value > ^uint64(0)/base {
+			return 0, false
+		}
+		value *= base
+	}
+	return value, true
+}
+
+// upperASCII folds one byte to upper case, which is all a size suffix needs.
+func upperASCII(b byte) byte {
+	if b >= 'a' && b <= 'z' {
+		return b - 'a' + 'A'
+	}
+	return b
+}
+
+// mkswapUUID turns the -U argument into the sixteen bytes to store. The three
+// keywords stand for an empty UUID, a random one and a time based one.
+func mkswapUUID(spec string) ([]byte, bool) {
+	uuid := make([]byte, 16)
+	switch spec {
+	case "", "random":
+		if _, err := rand.Read(uuid); err != nil {
+			return nil, false
+		}
+		uuid[6] = uuid[6]&0x0f | 0x40
+		uuid[8] = uuid[8]&0x3f | 0x80
+		return uuid, true
+	case "clear":
+		return uuid, true
+	case "time":
+		// Version 1: the count of hundreds of nanoseconds since 1582 split
+		// across three fields, then a random clock sequence and node.
+		const gregorian = 12219292800 * 10000000
+		stamp := uint64(time.Now().UnixNano()/100) + gregorian
+		binary.BigEndian.PutUint32(uuid[0:4], uint32(stamp))     //nolint:gosec // The low half of the timestamp is what this field holds.
+		binary.BigEndian.PutUint16(uuid[4:6], uint16(stamp>>32)) //nolint:gosec // As above, the middle sixteen bits.
+		binary.BigEndian.PutUint16(uuid[6:8], uint16(stamp>>48)) //nolint:gosec // As above, the high bits and the version.
+		if _, err := rand.Read(uuid[8:]); err != nil {
+			return nil, false
+		}
+		uuid[6] = uuid[6]&0x0f | 0x10
+		uuid[8] = uuid[8]&0x3f | 0x80
+		return uuid, true
+	}
+	text := strings.ReplaceAll(spec, "-", "")
+	if len(text) != 32 || len(strings.Split(spec, "-")) != 5 {
+		return nil, false
+	}
+	decoded, err := hex.DecodeString(text)
+	if err != nil {
+		return nil, false
+	}
+	return decoded, true
+}
+
+//nolint:gocyclo // one option table; splitting it would only scatter the command line.
+func parseMkswapOptions(args []string) (mkswapOptions, int, bool) {
+	opts := mkswapOptions{endian: "native", uuidSpec: ""}
+	var operands []string
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		name, value, hasValue := arg, "", false
+		if strings.HasPrefix(arg, "--") {
+			if eq := strings.IndexByte(arg, '='); eq >= 0 {
+				name, value, hasValue = arg[:eq], arg[eq+1:], true
+			}
+		}
+		needValue := func(letter string) (string, bool) {
+			if hasValue {
+				return value, true
+			}
+			index++
+			if index >= len(args) {
+				mkswapUsage("option requires an argument -- '%s'", letter)
+				return "", false
+			}
+			return args[index], true
+		}
+		switch name {
+		case "-c", "--check":
+			opts.check = true
+		case "-f", "--force":
+			opts.force = true
+		case "-q", "--quiet":
+			opts.quiet = true
+		case "--verbose":
+			opts.verbose = true
+		case "-F", "--file":
+			opts.makeFile = true
+		case "-L", "--label":
+			text, ok := needValue("L")
+			if !ok {
+				return opts, 1, false
+			}
+			opts.label = text
+		case "-p", "--pagesize":
+			text, ok := needValue("p")
+			if !ok {
+				return opts, 1, false
+			}
+			size, valid := mkswapSize(text)
+			if !valid || size == 0 || size&(size-1) != 0 || size < 1024 {
+				fatalf("mkswap", "Bad user-specified page size %s", text)
+				return opts, 1, false
+			}
+			opts.pageSize, opts.userPage = size, true
+		case "-U", "--uuid":
+			text, ok := needValue("U")
+			if !ok {
+				return opts, 1, false
+			}
+			opts.uuidSpec = text
+		case "-v", "--swapversion":
+			text, ok := needValue("v")
+			if !ok {
+				return opts, 1, false
+			}
+			if text != "1" {
+				fatalf("mkswap", "swapspace version %s is not supported", text)
+				return opts, 1, false
+			}
+		case "-e", "--endianness":
+			text, ok := needValue("e")
+			if !ok {
+				return opts, 1, false
+			}
+			if text != "native" && text != "little" && text != "big" {
+				fatalf("mkswap", "invalid endianness %s is not supported", text)
+				return opts, 1, false
+			}
+			opts.endian = text
+		case "-o", "--offset":
+			text, ok := needValue("o")
+			if !ok {
+				return opts, 1, false
+			}
+			size, valid := mkswapSize(text)
+			if !valid {
+				fatalf("mkswap", "invalid offset: '%s': Invalid argument", text)
+				return opts, 1, false
+			}
+			opts.offset = size
+		case "-s", "--size":
+			text, ok := needValue("s")
+			if !ok {
+				return opts, 1, false
+			}
+			size, valid := mkswapSize(text)
+			if !valid {
+				fatalf("mkswap", "invalid size: '%s': Invalid argument", text)
+				return opts, 1, false
+			}
+			opts.fileSize, opts.haveSize = size, true
+		case "--lock":
+			opts.lock = "yes"
+			if hasValue {
+				opts.lock = value
+			}
+		default:
+			if len(arg) > 1 && arg[0] == '-' {
+				if strings.HasPrefix(arg, "--") {
+					return opts, mkswapUsage("unrecognized option '%s'", arg), false
+				}
+				return opts, mkswapUsage("invalid option -- '%c'", arg[1]), false
+			}
+			operands = append(operands, arg)
+		}
+	}
+	switch {
+	case len(operands) == 0:
+		return opts, mkswapUsage("error: Nowhere to set up swap on?"), false
+	case len(operands) > 2:
+		return opts, mkswapUsage("only one device argument is currently supported"), false
+	}
+	opts.device = operands[0]
+	if len(operands) == 2 {
+		blocks, err := strconv.ParseUint(operands[1], 10, 64)
+		if err != nil {
+			fatalf("mkswap", "invalid block count argument: '%s'", operands[1])
+			return opts, 1, false
+		}
+		opts.blocks, opts.haveBlock = blocks, true
+	}
+	if opts.pageSize == 0 {
+		opts.pageSize = uint64(os.Getpagesize()) //nolint:gosec // The page size is positive.
+	}
+	return opts, 0, true
+}
+
+// mkswapLock takes the BSD lock --lock asks for.
+func mkswapLock(file *os.File, mode string) error {
+	how := syscall.LOCK_EX
+	switch mode {
+	case "", "no", "0":
+		return nil
+	case "nonblock":
+		how |= syscall.LOCK_NB
+	case "yes", "1":
+	default:
+		return fmt.Errorf("unsupported lock mode %s", mode)
+	}
+	return syscall.Flock(int(file.Fd()), how) //nolint:gosec // A file descriptor is small and positive.
+}
+
+// mkswapBadPages reads the area a page at a time and returns the pages that
+// could not be read, which is what -c looks for.
+func mkswapBadPages(file *os.File, offset, pageSize, pages uint64) []uint32 {
+	var bad []uint32
+	buffer := make([]byte, pageSize)
+	for page := uint64(1); page < pages; page++ {
+		at := offset + page*pageSize
+		if _, err := file.ReadAt(buffer, int64(at)); err != nil && err != io.EOF { //nolint:gosec // The area was bounded by the device size.
+			bad = append(bad, uint32(page)) //nolint:gosec // Page counts were bounded to uint32 above.
+		}
+	}
+	return bad
+}
+
+//nolint:gocyclo // the original's own sequence of warnings, checks and writes.
+func cmdMkswap(args []string) int {
+	opts, status, ok := parseMkswapOptions(args)
+	if !ok {
+		return status
+	}
+	warn := func(format string, a ...interface{}) {
+		if !opts.quiet {
+			fatalf("mkswap", format, a...)
+		}
+	}
+	label := opts.label
+	if len(label) > 15 {
+		label = label[:15]
+	}
+	uuid, valid := mkswapUUID(opts.uuidSpec)
+	if !valid {
+		fatalf("mkswap", "error: parsing UUID failed")
+		return 1
+	}
+	if opts.userPage && opts.pageSize != uint64(os.Getpagesize()) { //nolint:gosec // The page size is positive.
+		warn("Using user-specified page size %d, instead of the system value %d",
+			opts.pageSize, os.Getpagesize())
+	}
+
+	// A swap file of a given size is created here rather than found;
+	// everything else has to exist already, -F or not.
+	if opts.makeFile && opts.haveSize {
+		if err := mkswapCreateFile(opts.device, opts.fileSize); err != nil {
+			fatalf("mkswap", "%s: %v", opts.device, errText(err))
+			return 1
+		}
+	}
+	file, err := os.OpenFile(opts.device, os.O_RDWR, 0)
+	if err != nil {
+		if probe, probeErr := os.Open(opts.device); probeErr == nil {
+			// A directory opens read-only but has no size to speak of, which
+			// is the error the original reports for it.
+			probe.Close()
+			fatalf("mkswap", "cannot determine size of %s: %v", opts.device, errText(syscall.ENOTBLK))
+			return 1
+		}
+		fatalf("mkswap", "cannot open %s: %v", opts.device, errText(err))
 		return 1
 	}
 	defer file.Close()
+	if err := mkswapLock(file, opts.lock); err != nil {
+		fatalf("mkswap", "%s: %v", opts.device, errText(err))
+		return 1
+	}
 	info, err := file.Stat()
 	if err != nil {
-		fatalf("mkswap", "%s: %v", path, err)
+		fatalf("mkswap", "%s: %v", opts.device, errText(err))
 		return 1
 	}
 	if !info.Mode().IsRegular() && !isBlockDevice(info.Mode()) {
-		fatalf("mkswap", "%s is not a regular file or block device", path)
+		fatalf("mkswap", "cannot determine size of %s: %v", opts.device, errText(syscall.ENOTBLK))
 		return 1
 	}
-	if !force {
-		mounted, mountErr := pathIsInUse(path)
+	if !opts.force {
+		mounted, mountErr := pathIsInUse(opts.device)
 		if mountErr != nil {
 			fatalf("mkswap", "cannot verify mount status: %v", mountErr)
 			return 1
 		}
 		if mounted {
-			fatalf("mkswap", "%s is mounted or active swap", path)
+			fatalf("mkswap", "%s is mounted or active swap", opts.device)
 			return 1
 		}
 	}
-	size, err := deviceSize(file)
-	if err != nil || size < 2*4096 || size/4096-1 > uint64(^uint32(0)) {
-		fatalf("mkswap", "%s has an unsupported size", path)
+
+	total, err := deviceSize(file)
+	if err != nil {
+		fatalf("mkswap", "cannot determine size of %s: %v", opts.device, errText(err))
 		return 1
 	}
-	header := make([]byte, 4096)
-	binary.LittleEndian.PutUint32(header[1024:1028], 1)
-	binary.LittleEndian.PutUint32(header[1028:1032], uint32(size/4096-1)) //nolint:gosec // Size was bounded to uint32 pages above.
-	uuid := header[1036:1052]
-	if _, err := rand.Read(uuid); err != nil {
-		fatalf("mkswap", "generate UUID: %v", err)
+	if total < opts.offset {
+		total = 0
+	} else {
+		total -= opts.offset
+	}
+	pages := total / opts.pageSize
+	if opts.haveBlock {
+		// The block count is in 1024 byte units and is rounded down to whole
+		// pages before it is compared with the device.
+		asked := opts.blocks * 1024 / opts.pageSize
+		if asked > pages && !opts.force {
+			fatalf("mkswap", "error: size %d KiB is larger than device size %d KiB",
+				asked*opts.pageSize/1024, pages*opts.pageSize/1024)
+			return 1
+		}
+		pages = asked
+	}
+	if pages < 10 {
+		fatalf("mkswap", "error: swap area needs to be at least %d KiB", 10*opts.pageSize/1024)
 		return 1
 	}
-	uuid[6] = uuid[6]&0x0f | 0x40
-	uuid[8] = uuid[8]&0x3f | 0x80
+	if pages-1 > uint64(^uint32(0)) {
+		pages = uint64(^uint32(0)) + 1
+	}
+
+	// The warnings about the area itself only appear once its size has been
+	// found to be usable at all.
+	if opts.check {
+		if info.Mode().IsRegular() {
+			warn("warning: checking bad blocks from swap file is not supported: %s", opts.device)
+			opts.check = false
+		}
+	}
+	if info.Mode().IsRegular() && info.Mode().Perm()&0o077 != 0 {
+		warn("%s: insecure permissions %04o, fix with: chmod 0600 %s",
+			opts.device, info.Mode().Perm(), opts.device)
+	}
+	// -F asks for a swap file, and a swap file is the owner's business alone,
+	// so the complaint above is followed by the repair.
+	if opts.makeFile && info.Mode().IsRegular() {
+		if err := file.Chmod(0o600); err != nil {
+			fatalf("mkswap", "%s: %v", opts.device, errText(err))
+			return 1
+		}
+	}
+
+	// An old signature is wiped so that the area is not claimed twice, and the
+	// original says so before it writes anything.
+	if kind, _, probeErr := probeFilesystem(opts.device); probeErr == nil && kind != "" {
+		warn("%s: warning: wiping old %s signature.", opts.device, kind)
+		if kind == "btrfs" {
+			if _, err := file.WriteAt(make([]byte, 8), 65536+64); err != nil {
+				fatalf("mkswap", "%s: %v", opts.device, errText(err))
+				return 1
+			}
+		}
+	}
+
+	var badPages []uint32
+	if opts.check {
+		badPages = mkswapBadPages(file, opts.offset, opts.pageSize, pages)
+		if len(badPages) > 0 && !opts.quiet {
+			fmt.Printf("%d bad pages\n", len(badPages))
+		}
+	}
+
+	order := binary.ByteOrder(binary.LittleEndian)
+	if opts.endian == "big" || opts.endian == "native" && nativeIsBigEndian() {
+		order = binary.BigEndian
+	}
+	// The whole first page is rewritten, which is also what makes any earlier
+	// signature in it disappear.
+	header := make([]byte, opts.pageSize)
+	order.PutUint32(header[1024:1028], 1)
+	order.PutUint32(header[1028:1032], uint32(pages-1))       //nolint:gosec // Page counts were bounded to uint32 above.
+	order.PutUint32(header[1032:1036], uint32(len(badPages))) //nolint:gosec // One entry per page, and the page count is a uint32.
+	copy(header[1036:1052], uuid)
 	copy(header[1052:1068], label)
+	for index, page := range badPages {
+		at := 1536 + 4*index
+		if at+4 > len(header)-10 {
+			break
+		}
+		order.PutUint32(header[at:at+4], page)
+	}
 	copy(header[len(header)-10:], "SWAPSPACE2")
-	if _, err := file.WriteAt(header, 0); err != nil {
-		fatalf("mkswap", "%s: %v", path, err)
+	if opts.offset != 0 {
+		// The first page of the device is erased even when the swap area
+		// starts further in, so that whatever was there stops being found.
+		if _, err := file.WriteAt(make([]byte, opts.pageSize), 0); err != nil {
+			fatalf("mkswap", "%s: %v", opts.device, errText(err))
+			return 1
+		}
+	}
+	if _, err := file.WriteAt(header, int64(opts.offset)); err != nil { //nolint:gosec // The offset was bounded by the device size.
+		fatalf("mkswap", "%s: %v", opts.device, errText(err))
 		return 1
 	}
 	if err := file.Sync(); err != nil {
-		fatalf("mkswap", "%s: %v", path, err)
+		fatalf("mkswap", "%s: %v", opts.device, errText(err))
 		return 1
 	}
+	if opts.quiet {
+		return 0
+	}
+	if len(opts.label) > 15 {
+		fatalf("mkswap", "Label was truncated.")
+	}
+	usable := (pages - 1) * opts.pageSize
+	fmt.Printf("Setting up swapspace version 1, size = %s (%d bytes)\n", mkswapHumanSize(usable), usable)
+	if label == "" {
+		fmt.Printf("no label, UUID=%s\n", formatUUID(uuid))
+	} else {
+		fmt.Printf("LABEL=%s, UUID=%s\n", label, formatUUID(uuid))
+	}
 	return 0
+}
+
+// mkswapCreateFile makes the swap file "-F --size" asks for, private to its
+// owner and cut to the length that was asked for whether it existed before or
+// not.
+func mkswapCreateFile(path string, size uint64) error {
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	// The blocks are allocated rather than left as a hole, since the kernel
+	// refuses to swap to a sparse file. Filesystems that cannot do that fall
+	// back to a plain truncate.
+	length := int64(size)                                                   //nolint:gosec // The size came from a parsed argument below 2^63.
+	if err := syscall.Fallocate(int(file.Fd()), 0, 0, length); err != nil { //nolint:gosec // A file descriptor is small and positive.
+		return file.Truncate(length)
+	}
+	return file.Truncate(length)
+}
+
+// nativeIsBigEndian reports the byte order this machine writes, which is what
+// "-e native" means.
+func nativeIsBigEndian() bool {
+	probe := uint16(1)
+	return *(*byte)(unsafe.Pointer(&probe)) == 0 //nolint:gosec // Reading the low byte of a local is how the order is told.
 }
 
 func cmdSwapon(args []string) int {
