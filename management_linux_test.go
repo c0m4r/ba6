@@ -21,6 +21,16 @@ func TestParseWatchOptions(t *testing.T) {
 		args         []string
 		interval     time.Duration
 		noTitle      bool
+		differences  bool
+		cumulative   bool
+		chgexit      bool
+		errexit      bool
+		beep         bool
+		execMode     bool
+		noWrap       bool
+		color        bool
+		precise      bool
+		equexit      int
 		command      []string
 		shouldReject bool
 	}{
@@ -28,6 +38,12 @@ func TestParseWatchOptions(t *testing.T) {
 		{args: []string{"-n0.5", "-t", "date"}, interval: 500 * time.Millisecond, noTitle: true, command: []string{"date"}},
 		{args: []string{"--interval=3", "--", "echo", "-n"}, interval: 3 * time.Second, command: []string{"echo", "-n"}},
 		{args: []string{"-n", "0"}, shouldReject: true},
+		{args: []string{"-d", "-g", "-e", "-b", "-x", "-w", "-c", "-p", "-q", "uptime"},
+			interval: 2 * time.Second, differences: true, chgexit: true, errexit: true,
+			beep: true, execMode: true, noWrap: true, color: true, precise: true, equexit: 1, command: []string{"uptime"}},
+		{args: []string{"--differences=cumulative", "--equexit=3", "-C", "ls"},
+			interval: 2 * time.Second, differences: true, cumulative: true, equexit: 3, command: []string{"ls"}},
+		{args: []string{"-teb", "ps"}, interval: 2 * time.Second, noTitle: true, errexit: true, beep: true, command: []string{"ps"}},
 	}
 	for _, test := range tests {
 		opts, err := parseWatchOptions(test.args)
@@ -37,9 +53,44 @@ func TestParseWatchOptions(t *testing.T) {
 			}
 			continue
 		}
-		if err != nil || opts.interval != test.interval || opts.noTitle != test.noTitle || !sameStrings(opts.command, test.command) {
+		if err != nil || opts.interval != test.interval || opts.noTitle != test.noTitle ||
+			opts.differences != test.differences || opts.cumulative != test.cumulative ||
+			opts.chgexit != test.chgexit || opts.errexit != test.errexit || opts.beep != test.beep ||
+			opts.execMode != test.execMode || opts.noWrap != test.noWrap || opts.color != test.color ||
+			opts.precise != test.precise || opts.equexit != test.equexit || !sameStrings(opts.command, test.command) {
 			t.Errorf("parseWatchOptions(%q) = %+v, %v", test.args, opts, err)
 		}
+	}
+}
+
+func TestWatchFeatures(t *testing.T) {
+	// Test difference highlighting
+	diff := highlightDifferences([]byte("hello world"), []byte("hello there"), false, nil)
+	if !strings.Contains(diff, "\x1b[7mworld\x1b[27m") {
+		t.Errorf("highlightDifferences = %q, want reverse-video world", diff)
+	}
+
+	// Test -e / --errexit on command failure
+	if status := cmdWatch([]string{"-e", "-t", "false"}); status == 0 {
+		t.Errorf("watch -e false = 0, want failure exit code")
+	}
+
+	// Test -q / --equexit on identical output
+	if status := cmdWatch([]string{"-q", "-n0.1", "-t", "echo", "fixed"}); status != 0 {
+		t.Errorf("watch -q echo fixed = %d, want 0", status)
+	}
+
+	// Test -g / --chgexit on output change
+	tmp := filepath.Join(t.TempDir(), "counter")
+	if err := os.WriteFile(tmp, []byte("1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		_ = os.WriteFile(tmp, []byte("2"), 0o600)
+	}()
+	if status := cmdWatch([]string{"-g", "-n0.1", "-t", "cat", tmp}); status != 0 {
+		t.Errorf("watch -g cat counter = %d, want 0", status)
 	}
 }
 

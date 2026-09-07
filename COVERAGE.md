@@ -12,7 +12,7 @@ measured against its original; nothing is left under
 [Not yet assessed](#not-yet-assessed).
 
 **Short answer to "which are 1:1?"** — of the 170, 29 are genuine drop-ins,
-85 more are near-complete, 47 are partial in ways that stay invisible until a
+86 more are near-complete, 46 are partial in ways that stay invisible until a
 script reaches for a flag, none are so narrow that they should not be treated as
 a replacement at all, and 9 have no upstream counterpart to compare
 against; see the [verdict table](#verdict-in-one-table). `netstat`, `ps aux`/
@@ -32,8 +32,8 @@ options listed per applet below.
 | Tier | Meaning | Applets |
 |---|---|---|
 | **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `base64` `basename` `cksum` `comm` `cut` `dirname` `echo` `expand` `false` `fold` `join` `mknod` `nice` `nl` `paste` `pivot_root` `printenv` `pwd` `seq` `sleep` `split` `tac` `touch` `tr` `true` `tty` `uname` `unexpand` `whoami` |
-| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blkid` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `cpio` `date` `dd` `df` `du` `env` `expr` `find` `free` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `insmod` `kill` `ln` `losetup` `ls` `lsmod` `lspci` `lsusb` `md5sum` `mkdir` `mkswap` `mktemp` `modprobe` `mount` `mv` `nohup` `od` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `rmmod` `sed` `setsid` `sha1sum` `sha256sum` `sha512sum` `sort` `stat` `strings` `swapoff` `swapon` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `umount` `uniq` `unzip` `uptime` `wc` `which` `xargs` `zip` |
-| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `cfdisk` `curl` `diff` `dig` `dmesg` `fdisk` `file` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `getty` `iftop` `ip` `iptables` `less` `login` `lsblk` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mtr` `nano` `nc` `ncdu` `netstat` `nslookup` `passwd` `ping` `sfdisk` `sh` `ss` `traceroute` `tree` `unxz` `unzstd` `useradd` `watch` `wget` `xz` `zstd` |
+| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blkid` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `cpio` `date` `dd` `df` `du` `env` `expr` `find` `free` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `insmod` `kill` `ln` `losetup` `ls` `lsmod` `lspci` `lsusb` `md5sum` `mkdir` `mkswap` `mktemp` `modprobe` `mount` `mv` `nohup` `od` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `rmmod` `sed` `setsid` `sha1sum` `sha256sum` `sha512sum` `sort` `stat` `strings` `swapoff` `swapon` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `umount` `uniq` `unzip` `uptime` `watch` `wc` `which` `xargs` `zip` |
+| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `cfdisk` `curl` `diff` `dig` `dmesg` `fdisk` `file` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `getty` `iftop` `ip` `iptables` `less` `login` `lsblk` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mtr` `nano` `nc` `ncdu` `netstat` `nslookup` `passwd` `ping` `sfdisk` `sh` `ss` `traceroute` `tree` `unxz` `unzstd` `useradd` `wget` `xz` `zstd` |
 | **D — narrow subset** | A slice of the original; do not treat as a replacement | _(none)_ |
 | **N/A** | ba6-specific, no upstream counterpart | `completion` `halt` `help` `init` `man` `poweroff` `reboot` `switch_root` `udhcpc` |
 
@@ -205,6 +205,7 @@ Absent behaviour rather than wrong behaviour, each of which touches many applets
 | `uniq` | 10/11 | — | `-c -d -u -i -f -s -w -D --group -z` all present; the field/char skipping and `-w` truncation follow GNU's skipfield exactly (the blanks after a skipped field stay compared), and the `-D`/`--all-repeated` (`none`/`prepend`/`separate`) and `--group` (`separate`/`prepend`/`append`/`both`) blank-line placement was diffed byte for byte, including the quirks: `-D -u` prints one line per group, `-D -c` is rejected as `meaningless`, `--group` refuses to combine with `-c/-d/-D/-u` _(run)_ |
 | `uptime` | 4/4 | — | `-p` (decades/years/weeks/days/hours/minutes with singular/plural units), `-s` (boot time as `yyyy-mm-dd HH:MM:SS`), `-r` (boot epoch, uptime with six decimals, user count, three load averages) and `-c` (CLOCK_BOOTTIME minus pid 1's start) all present, and the default line now carries the user count with procps' exact `, %2d users?,  ` spacing and `%2d:%02d` uptime layout — byte-identical under C locale. The user count comes from `/run/systemd/sessions` `CLASS=user` entries when systemd runs, else from utmp records; both match procps' own `sd_get_sessions`-then-utmp order _(run)_ |
 | `wc` | 4/8 | `-L` `--total` `--files0-from` `--debug` | counts, column widths and the `total` line are byte-identical, including stdin and the unpadded single-count form _(run)_ |
+| `watch` | 12/16 | `-f`/`--follow` `-r`/`--no-rerun` `-s`/`--shotsdir` | `-n`/`--interval` `-t`/`--no-title` `-d`/`--differences` (including `=cumulative`) `-g`/`--chgexit` `-e`/`--errexit` `-b`/`--beep` `-x`/`--exec` `-q`/`--equexit` `-w`/`--no-wrap` `-c`/`--color` `-C`/`--no-color` `-p`/`--precise`. Difference highlighting in reverse video, cumulative tracking, exit-on-change, exit-on-error, beep, and right-aligned header layout match procps _(run)_ |
 | `which` | 1/10 | the `--skip-*`/`--show-*` family | found-path output identical; on a miss GNU prints `no X in (PATH)` to stderr, ba6 prints nothing (exit 1 either way) _(run)_ |
 | `zip` / `unzip` | 8/175 and 14/35 | zip's update, delete and move modes (`-u -d -m`), encryption, split archives and the wide option surface; unzip's `-Z` info mode, `-a`/`-b` text conversion, `-C` case-insensitive matching and the overwrite prompt | both interoperate with Info-ZIP 6.00 in either direction, and the output was diffed invocation by invocation. unzip: `-l -v -t -p -c -d -j -o -n -q/-qq -x` and member patterns, whose globs let `*` cross a slash as Info-ZIP's do; the `-l` and `-v` tables, the `testing: NAME   OK` lines and their summary, the `creating:`/`extracting:`/`inflating:` verbs with the name padded the way the original pads it, and the statuses it reserves — 9 for an archive it cannot open, 11 for a pattern nothing matched, with the `caution: filename not matched` line. Without `-o` an existing file is kept rather than prompted for, since there is no terminal to ask at. zip: `-r -j -0 -1`…`-9 -q -x` with the short options clustering, members written in whichever of the stored and deflated forms is smaller — and stored outright for the `.Z .zip .zoo .arc .lzh .arj` suffixes the original never tries — so the `adding: NAME (method N%)` lines match. Extraction rejects paths that escape the destination _(run)_ |
 | `xargs` | 14/14 | — | every option group present: `-0 -a -d -E -e -I -L -n -p -P -r -s -t -x --process-slot-var`. Input splitting, quoting, `-I` substitution, `-s` line-length capping, `-x`'s exact `argument line too long` wording, `-P` concurrency and `-L` line batching (blank lines skipped, a trailing blank continues a line, quoting honoured within a line) all byte-identical to GNU findutils, including the `--max-lines`/`--max-args`/`--replace` mutual-exclusion warnings and their last-option-wins rule, and `--process-slot-var`'s 0-based slot numbering. Quotes and backslash escapes do not span physical lines under `-L` the way they do without it _(run)_ |
@@ -485,16 +486,6 @@ mis-decoded. Zstandard dictionaries are not supported; a frame carrying a
 nonzero dictionary id is refused, though a present-but-zero id decodes
 normally.
 
-**`watch`** — 2/16 options _(run, under a pseudo-terminal on a disposable VM)_.
-`-n`/`--interval` and `-t`/`--no-title`, the alternate-screen clear-and-redraw
-cycle, and the header layout — interval and command on the left, `host: ctime`
-against the right edge, left side clipped rather than wrapped — are byte-identical
-to procps at an 80-column width. Missing: `-d`/`--differences` highlighting,
-`-g`/`--chgexit`, `-q`/`--equexit`, `-e`/`--errexit`, `-b`/`--beep`,
-`-c`/`--color`, `-x`/`--exec`, `-p`/`--precise` and `-w`/`--no-wrap`. The command
-is run directly rather than through `sh -c`, so shell syntax in the command needs
-an explicit `sh -c`.
-
 **`getty`** — 10/34 options against `agetty --help` (util-linux 2.42.2), counted by
 hand rather than by the automated man-page comparison behind the other rows: the
 real tool on the measurement host is only installed as `agetty`, and the
@@ -706,8 +697,9 @@ Ordered by how many applets each item moves, not by effort.
    full, but still write stored blocks, so `ba6 xz file` produces a valid but
    much larger archive than the original would. This is the remaining half of
    the job and matters far less than decoding did.
-4. **`watch -d` and `-g`** — change highlighting and exit-on-change are most of
-   why `watch` gets reached for interactively.
+4. **`watch -d` and `-g`** — *fixed*: change highlighting (including cumulative),
+   exit-on-change, exit-on-error, beep, direct exec, equexit, no-wrap, color,
+   and precise timing are now implemented and `watch` is elevated to Tier B.
 
 ## How this was measured
 
