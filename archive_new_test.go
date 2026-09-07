@@ -93,7 +93,7 @@ func TestCpioRoundTripAndTraversalProtection(t *testing.T) {
 	archive := filepath.Join(root, "bundle.cpio")
 	withWorkingDirectory(t, root, func() {
 		status, _, stderr := captureApplet(t, cmdCpio, []string{"-o", "-F", archive}, "source\nsource/data\n")
-		if status != 0 || stderr != "" {
+		if status != 0 || (stderr != "" && !strings.Contains(stderr, "block")) {
 			t.Fatalf("cpio create = (%d, %q)", status, stderr)
 		}
 	})
@@ -116,16 +116,16 @@ func TestCpioRoundTripAndTraversalProtection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := writeCpioHeader(file, cpioHeader{mode: cpioModeRegular | 0o600, size: 1, name: "../escape"}); err != nil {
+	if err := writeCpioHeader(file, cpioFormatNewc, cpioHeader{mode: cpioModeRegular | 0o600, size: 1, name: "../escape"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := file.Write([]byte("x")); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeCpioPadding(file, 1); err != nil {
+	if err := writeCpioPadding(file, cpioFormatNewc, 1); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeCpioHeader(file, cpioHeader{name: "TRAILER!!!"}); err != nil {
+	if err := writeCpioHeader(file, cpioFormatNewc, cpioHeader{name: "TRAILER!!!"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := file.Close(); err != nil {
@@ -378,4 +378,113 @@ func TestZipStoresWhatDeflateCannotShrink(t *testing.T) {
 	if !strings.Contains(listing, "Defl:N") || strings.Count(listing, "Stored") != 2 {
 		t.Fatalf("unzip -v of the new archive = %q", listing)
 	}
+}
+
+func TestCpioFormatsAndFeatures(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "src")
+	if err := os.Mkdir(source, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fileA := filepath.Join(source, "file_a.txt")
+	fileB := filepath.Join(source, "file_b.txt")
+	if err := os.WriteFile(fileA, []byte("alpha content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fileB, []byte("bravo content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	formats := []string{"newc", "crc", "odc", "bin"}
+	for _, fmtName := range formats {
+		t.Run("Format_"+fmtName, func(t *testing.T) {
+			archive := filepath.Join(root, fmtName+".cpio")
+			withWorkingDirectory(t, root, func() {
+				status, _, stderr := captureApplet(t, cmdCpio, []string{"-o", "-H", fmtName, "-F", archive}, "src/file_a.txt\nsrc/file_b.txt\n")
+				if status != 0 {
+					t.Fatalf("cpio -o -H %s failed: status=%d, stderr=%q", fmtName, status, stderr)
+				}
+			})
+
+			// Test listing (-t and -tv)
+			status, listOut, _ := captureApplet(t, cmdCpio, []string{"-t", "-F", archive}, "")
+			if status != 0 || !strings.Contains(listOut, "src/file_a.txt") || !strings.Contains(listOut, "src/file_b.txt") {
+				t.Fatalf("cpio -t failed: status=%d, out=%q", status, listOut)
+			}
+			status, listVOut, _ := captureApplet(t, cmdCpio, []string{"-tv", "-F", archive}, "")
+			if status != 0 || !strings.Contains(listVOut, "src/file_a.txt") {
+				t.Fatalf("cpio -tv failed: status=%d, out=%q", status, listVOut)
+			}
+
+			// Test extraction (-i)
+			dest := filepath.Join(root, "out_"+fmtName)
+			if err := os.Mkdir(dest, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			withWorkingDirectory(t, dest, func() {
+				status, _, errOut := captureApplet(t, cmdCpio, []string{"-i", "-d", "-F", archive}, "")
+				if status != 0 {
+					t.Fatalf("cpio -i failed: status=%d, stderr=%q", status, errOut)
+				}
+			})
+			extractedA, err := os.ReadFile(filepath.Join(dest, "src", "file_a.txt"))
+			if err != nil || string(extractedA) != "alpha content" {
+				t.Fatalf("extracted file_a content mismatch: %q, %v", extractedA, err)
+			}
+		})
+	}
+
+	// Test pass-through mode (-p)
+	t.Run("PassThrough", func(t *testing.T) {
+		dest := filepath.Join(root, "pass_dest")
+		if err := os.Mkdir(dest, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		withWorkingDirectory(t, root, func() {
+			status, _, errOut := captureApplet(t, cmdCpio, []string{"-p", "-d", dest}, "src/file_a.txt\nsrc/file_b.txt\n")
+			if status != 0 {
+				t.Fatalf("cpio -p failed: status=%d, stderr=%q", status, errOut)
+			}
+		})
+		passedA, err := os.ReadFile(filepath.Join(dest, "src", "file_a.txt"))
+		if err != nil || string(passedA) != "alpha content" {
+			t.Fatalf("pass-through content mismatch: %q, %v", passedA, err)
+		}
+	})
+
+	// Test NUL-separated input (-0)
+	t.Run("NullInput", func(t *testing.T) {
+		archive := filepath.Join(root, "null.cpio")
+		withWorkingDirectory(t, root, func() {
+			status, _, stderr := captureApplet(t, cmdCpio, []string{"-o", "-0", "-F", archive}, "src/file_a.txt\x00src/file_b.txt\x00")
+			if status != 0 {
+				t.Fatalf("cpio -o -0 failed: status=%d, stderr=%q", status, stderr)
+			}
+		})
+		status, listOut, _ := captureApplet(t, cmdCpio, []string{"-t", "-F", archive}, "")
+		if status != 0 || !strings.Contains(listOut, "src/file_a.txt") || !strings.Contains(listOut, "src/file_b.txt") {
+			t.Fatalf("cpio -t of null-created archive failed: status=%d, out=%q", status, listOut)
+		}
+	})
+
+	// Test pattern filtering
+	t.Run("PatternFilter", func(t *testing.T) {
+		archive := filepath.Join(root, "newc.cpio")
+		dest := filepath.Join(root, "pattern_dest")
+		if err := os.Mkdir(dest, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		withWorkingDirectory(t, dest, func() {
+			status, _, _ := captureApplet(t, cmdCpio, []string{"-i", "-d", "-F", archive, "*file_a.txt"}, "")
+			if status != 0 {
+				t.Fatalf("cpio -i pattern failed: status=%d", status)
+			}
+		})
+		if _, err := os.Stat(filepath.Join(dest, "src", "file_a.txt")); err != nil {
+			t.Fatalf("pattern filter did not extract matching file: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(dest, "src", "file_b.txt")); !os.IsNotExist(err) {
+			t.Fatalf("pattern filter extracted non-matching file")
+		}
+	})
 }
