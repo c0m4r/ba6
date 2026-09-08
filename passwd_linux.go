@@ -25,16 +25,239 @@ const (
 	passwdHashRounds = 100000
 )
 
+type passwdOptions struct {
+	lock       bool
+	unlock     bool
+	delete     bool
+	expire     bool
+	status     bool
+	all        bool
+	stdin      bool
+	quiet      bool
+	keepTokens bool
+	warnDays   int
+	maxDays    int
+	minDays    int
+	inactDays  int
+	expireDate int64
+	setWarn    bool
+	setMax     bool
+	setMin     bool
+	setInact   bool
+	setExpire  bool
+	root       string
+	prefix     string
+	repo       string
+	user       string
+}
+
+func parsePasswdOptions(args []string) (*passwdOptions, error) {
+	args = expandShortOptions(args, "irRPwxn")
+	opts := &passwdOptions{
+		minDays:   -1,
+		maxDays:   -1,
+		warnDays:  -1,
+		inactDays: -1,
+	}
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			if i+1 < len(args) {
+				if opts.user != "" {
+					return nil, fmt.Errorf("extra operand %q", args[i+1])
+				}
+				opts.user = args[i+1]
+				if i+2 < len(args) {
+					return nil, fmt.Errorf("extra operand %q", args[i+2])
+				}
+			}
+			break
+		}
+		nextVal := func(name string) (string, error) {
+			if strings.Contains(arg, "=") {
+				return strings.SplitN(arg, "=", 2)[1], nil
+			}
+			i++
+			if i >= len(args) {
+				return "", fmt.Errorf("option %s requires an argument", name)
+			}
+			return args[i], nil
+		}
+
+		switch {
+		case arg == "-a" || arg == "--all":
+			opts.all = true
+		case arg == "-d" || arg == "--delete":
+			opts.delete = true
+		case arg == "-e" || arg == "--expire":
+			opts.expire = true
+		case arg == "-k" || arg == "--keep-tokens":
+			opts.keepTokens = true
+		case arg == "-l" || arg == "--lock":
+			opts.lock = true
+		case arg == "-q" || arg == "--quiet":
+			opts.quiet = true
+		case arg == "-S" || arg == "--status":
+			opts.status = true
+		case arg == "-u" || arg == "--unlock":
+			opts.unlock = true
+		case arg == "-s" || arg == "--stdin":
+			opts.stdin = true
+		case arg == "-i" || arg == "--inactive" || strings.HasPrefix(arg, "--inactive="):
+			val, err := nextVal(arg)
+			if err != nil {
+				return nil, err
+			}
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				return nil, fmt.Errorf("invalid numeric argument %q", val)
+			}
+			opts.inactDays = n
+			opts.setInact = true
+		case arg == "-r" || arg == "--repository" || strings.HasPrefix(arg, "--repository="):
+			val, err := nextVal(arg)
+			if err != nil {
+				return nil, err
+			}
+			if val != "files" {
+				return nil, fmt.Errorf("only files repository supported")
+			}
+			opts.repo = val
+		case arg == "-R" || arg == "--root" || strings.HasPrefix(arg, "--root="):
+			val, err := nextVal(arg)
+			if err != nil {
+				return nil, err
+			}
+			opts.root = val
+		case arg == "-P" || arg == "--prefix" || strings.HasPrefix(arg, "--prefix="):
+			val, err := nextVal(arg)
+			if err != nil {
+				return nil, err
+			}
+			opts.prefix = val
+		case arg == "-w" || arg == "--warndays" || strings.HasPrefix(arg, "--warndays="):
+			val, err := nextVal(arg)
+			if err != nil {
+				return nil, err
+			}
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				return nil, fmt.Errorf("invalid numeric argument %q", val)
+			}
+			opts.warnDays = n
+			opts.setWarn = true
+		case arg == "-x" || arg == "--maxdays" || strings.HasPrefix(arg, "--maxdays="):
+			val, err := nextVal(arg)
+			if err != nil {
+				return nil, err
+			}
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				return nil, fmt.Errorf("invalid numeric argument %q", val)
+			}
+			opts.maxDays = n
+			opts.setMax = true
+		case arg == "-n" || arg == "--mindays" || strings.HasPrefix(arg, "--mindays="):
+			val, err := nextVal(arg)
+			if err != nil {
+				return nil, err
+			}
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				return nil, fmt.Errorf("invalid numeric argument %q", val)
+			}
+			opts.minDays = n
+			opts.setMin = true
+		case arg == "--expiredate" || strings.HasPrefix(arg, "--expiredate="):
+			val, err := nextVal(arg)
+			if err != nil {
+				return nil, err
+			}
+			if val == "" || val == "-1" {
+				opts.expireDate = -1
+			} else if n, err := strconv.ParseInt(val, 10, 64); err == nil {
+				opts.expireDate = n
+			} else if t, err := time.Parse("2006-01-02", val); err == nil {
+				opts.expireDate = t.Unix() / 86400
+			} else {
+				return nil, fmt.Errorf("invalid expiration date %q", val)
+			}
+			opts.setExpire = true
+		case strings.HasPrefix(arg, "-"):
+			return nil, fmt.Errorf("unsupported option %q", arg)
+		default:
+			if opts.user != "" {
+				return nil, fmt.Errorf("extra operand %q", arg)
+			}
+			if strings.ContainsAny(arg, ":\r\n") || arg == "" {
+				return nil, fmt.Errorf("invalid user name")
+			}
+			opts.user = arg
+		}
+	}
+	return opts, nil
+}
+
 func cmdPasswd(args []string) int {
-	username, ok := parsePasswdArgs(args)
-	if !ok {
+	opts, err := parsePasswdOptions(args)
+	if err != nil {
+		fatalf("passwd", "%v", err)
 		return 1
 	}
 
 	callerUID := os.Getuid()
-	account, found, err := findPasswdTarget(loginPasswdPath, username, callerUID)
+	isAdminMod := opts.lock || opts.unlock || opts.delete || opts.expire ||
+		opts.setWarn || opts.setMax || opts.setMin || opts.setInact || opts.setExpire ||
+		opts.root != "" || opts.prefix != ""
+
+	if callerUID != 0 {
+		if isAdminMod || opts.all || opts.stdin {
+			fatalf("passwd", "permission denied")
+			return 1
+		}
+	}
+
+	passwdPath := loginPasswdPath
+	shadowPath := loginShadowPath
+	if opts.root != "" || opts.prefix != "" {
+		baseDir := filepath.Join(opts.root, opts.prefix)
+		passwdPath = filepath.Join(baseDir, loginPasswdPath)
+		shadowPath = filepath.Join(baseDir, loginShadowPath)
+	}
+
+	if opts.status {
+		if opts.all {
+			return dumpAllPasswdStatus(passwdPath, shadowPath)
+		}
+		username := opts.user
+		account, found, err := findPasswdTarget(passwdPath, username, callerUID)
+		if err != nil {
+			fatalf("passwd", "read %s: %v", passwdPath, err)
+			return 1
+		}
+		if !found {
+			if username == "" {
+				fatalf("passwd", "no passwd entry for uid %d", callerUID)
+			} else {
+				fatalf("passwd", "unknown user %q", username)
+			}
+			return 1
+		}
+		if callerUID != 0 && callerUID != account.uid {
+			fatalf("passwd", "permission denied")
+			return 1
+		}
+		if err := printPasswdStatus(os.Stdout, account, shadowPath); err != nil {
+			fatalf("passwd", "%v", err)
+			return 1
+		}
+		return 0
+	}
+
+	username := opts.user
+	account, found, err := findPasswdTarget(passwdPath, username, callerUID)
 	if err != nil {
-		fatalf("passwd", "read %s: %v", loginPasswdPath, err)
+		fatalf("passwd", "read %s: %v", passwdPath, err)
 		return 1
 	}
 	if !found {
@@ -50,70 +273,286 @@ func cmdPasswd(args []string) int {
 		return 1
 	}
 
-	reader := bufio.NewReaderSize(os.Stdin, loginMaxLine+2)
-	if callerUID != 0 {
-		if !verifyCurrentPasswdPassword(account, reader) {
+	if isAdminMod {
+		targetPath := passwdPath
+		isShadow := false
+		if account.password == "x" {
+			targetPath = shadowPath
+			isShadow = true
+		}
+		err := modifyAccountRecord(targetPath, account.name, isShadow, opts)
+		if err != nil {
+			fatalf("passwd", "%v", err)
 			return 1
 		}
+		if !opts.quiet {
+			switch {
+			case opts.lock:
+				fmt.Fprintln(os.Stdout, "passwd: password locked")
+			case opts.unlock:
+				fmt.Fprintln(os.Stdout, "passwd: password unlocked")
+			case opts.delete:
+				fmt.Fprintln(os.Stdout, "passwd: password deleted")
+			case opts.expire:
+				fmt.Fprintln(os.Stdout, "passwd: password expiry information changed")
+			default:
+				fmt.Fprintln(os.Stdout, "passwd: password expiry information changed")
+			}
+		}
+		return 0
 	}
 
-	newPassword, err := promptPasswdPassword(reader, "New password: ")
-	if err != nil {
-		passwdInputError(err)
-		return 1
+	var newPassword []byte
+	if opts.stdin {
+		reader := bufio.NewReader(os.Stdin)
+		line, err := reader.ReadString('\n')
+		if err != nil && len(line) == 0 {
+			passwdInputError(err)
+			return 1
+		}
+		newPassword = []byte(strings.TrimRight(line, "\r\n"))
+		if len(newPassword) == 0 {
+			fatalf("passwd", "empty passwords are not allowed")
+			return 1
+		}
+	} else {
+		reader := bufio.NewReaderSize(os.Stdin, loginMaxLine+2)
+		if callerUID != 0 {
+			if !verifyCurrentPasswdPassword(account, reader) {
+				return 1
+			}
+		}
+
+		pwd, err := promptPasswdPassword(reader, "New password: ")
+		if err != nil {
+			passwdInputError(err)
+			return 1
+		}
+		if len(pwd) == 0 {
+			fatalf("passwd", "empty passwords are not allowed")
+			return 1
+		}
+		confirmation, err := promptPasswdPassword(reader, "Retype new password: ")
+		if err != nil {
+			clearBytes(pwd)
+			passwdInputError(err)
+			return 1
+		}
+		if !constantTimeBytesEqual(pwd, confirmation) {
+			clearBytes(pwd)
+			clearBytes(confirmation)
+			fatalf("passwd", "passwords do not match")
+			return 1
+		}
+		clearBytes(confirmation)
+		newPassword = pwd
 	}
 	defer clearBytes(newPassword)
-	if len(newPassword) == 0 {
-		fatalf("passwd", "empty passwords are not allowed")
-		return 1
-	}
-	confirmation, err := promptPasswdPassword(reader, "Retype new password: ")
-	if err != nil {
-		passwdInputError(err)
-		return 1
-	}
-	if !constantTimeBytesEqual(newPassword, confirmation) {
-		clearBytes(confirmation)
-		fatalf("passwd", "passwords do not match")
-		return 1
-	}
-	clearBytes(confirmation)
 
 	hash, err := makePasswdHash(newPassword, rand.Reader)
 	if err != nil {
 		fatalf("passwd", "generate password hash: %v", err)
 		return 1
 	}
-	path := loginPasswdPath
+	path := passwdPath
 	shadow := false
 	if account.password == "x" {
-		path = loginShadowPath
+		path = shadowPath
 		shadow = true
 	}
 	if err := replacePasswordRecord(path, account.name, hash, shadow, time.Now()); err != nil {
 		fatalf("passwd", "update %s: %v", path, err)
 		return 1
 	}
-	fmt.Fprintln(os.Stdout, "Password changed.")
+	if !opts.quiet {
+		fmt.Fprintln(os.Stdout, "Password changed.")
+	}
 	return 0
 }
 
-func parsePasswdArgs(args []string) (string, bool) {
-	if len(args) > 0 && args[0] == "--" {
-		args = args[1:]
+func printPasswdStatus(w io.Writer, account *loginAccount, shadowPath string) error {
+	status := "P"
+	changeDate := "1970-01-01"
+	minDays := "0"
+	maxDays := "99999"
+	warnDays := "7"
+	inactDays := "-1"
+
+	if account.password == "" {
+		status = "NP"
+	} else if strings.HasPrefix(account.password, "!") || strings.HasPrefix(account.password, "*") {
+		status = "L"
 	}
-	if len(args) > 1 {
-		fatalf("passwd", "extra operand %q", args[1])
-		return "", false
+
+	if account.password == "x" {
+		file, err := os.Open(shadowPath)
+		if err == nil {
+			defer file.Close()
+			scanner := newLineScanner(file)
+			for scanner.Scan() {
+				fields := strings.Split(scanner.Text(), ":")
+				if len(fields) >= 2 && fields[0] == account.name {
+					pwd := fields[1]
+					if pwd == "" {
+						status = "NP"
+					} else if strings.HasPrefix(pwd, "!") || strings.HasPrefix(pwd, "*") {
+						status = "L"
+					} else {
+						status = "P"
+					}
+					if len(fields) > 2 && fields[2] != "" {
+						if days, err := strconv.ParseInt(fields[2], 10, 64); err == nil {
+							changeDate = time.Unix(days*86400, 0).UTC().Format("2006-01-02")
+						}
+					}
+					if len(fields) > 3 && fields[3] != "" {
+						minDays = fields[3]
+					}
+					if len(fields) > 4 && fields[4] != "" {
+						maxDays = fields[4]
+					}
+					if len(fields) > 5 && fields[5] != "" {
+						warnDays = fields[5]
+					}
+					if len(fields) > 6 && fields[6] != "" {
+						inactDays = fields[6]
+					}
+					break
+				}
+			}
+		}
 	}
-	if len(args) == 0 {
-		return "", true
+	fmt.Fprintf(w, "%s %s %s %s %s %s %s\n", account.name, status, changeDate, minDays, maxDays, warnDays, inactDays)
+	return nil
+}
+
+func dumpAllPasswdStatus(passwdPath, shadowPath string) int {
+	file, err := os.Open(passwdPath)
+	if err != nil {
+		fatalf("passwd", "%v", err)
+		return 1
 	}
-	if strings.HasPrefix(args[0], "-") || strings.ContainsAny(args[0], ":\r\n") || args[0] == "" {
-		fatalf("passwd", "invalid user name")
-		return "", false
+	defer file.Close()
+	scanner := newLineScanner(file)
+	for scanner.Scan() {
+		fields := strings.Split(scanner.Text(), ":")
+		if len(fields) != 7 || fields[0] == "" {
+			continue
+		}
+		parsedUID, _ := strconv.ParseUint(fields[2], 10, 31)
+		parsedGID, _ := strconv.ParseUint(fields[3], 10, 31)
+		acc := &loginAccount{
+			name: fields[0], password: fields[1], uid: int(parsedUID), gid: int(parsedGID),
+			home: fields[5], shell: fields[6],
+		}
+		_ = printPasswdStatus(os.Stdout, acc, shadowPath)
 	}
-	return args[0], true
+	return 0
+}
+
+func modifyAccountRecord(path, username string, shadow bool, opts *passwdOptions) error {
+	lock, err := lockPasswdDatabase(path)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) //nolint:errcheck
+
+	file, err := openPasswdDatabase(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("not a regular file")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxScanLine+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxScanLine {
+		return fmt.Errorf("file is too large")
+	}
+
+	hadFinalNewline := len(data) > 0 && data[len(data)-1] == '\n'
+	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	found := false
+	for index, line := range lines {
+		if strings.HasSuffix(line, "\r") {
+			return fmt.Errorf("invalid carriage return in database")
+		}
+		fields := strings.Split(line, ":")
+		if len(fields) < 2 || fields[0] != username {
+			continue
+		}
+		if found {
+			return fmt.Errorf("duplicate entry for %s", username)
+		}
+		if shadow {
+			for len(fields) < 9 {
+				fields = append(fields, "")
+			}
+			if opts.lock {
+				if !strings.HasPrefix(fields[1], "!") {
+					fields[1] = "!" + fields[1]
+				}
+			}
+			if opts.unlock {
+				fields[1] = strings.TrimPrefix(fields[1], "!")
+			}
+			if opts.delete {
+				fields[1] = ""
+			}
+			if opts.expire {
+				fields[2] = "0"
+			}
+			if opts.setMin {
+				fields[3] = strconv.Itoa(opts.minDays)
+			}
+			if opts.setMax {
+				fields[4] = strconv.Itoa(opts.maxDays)
+			}
+			if opts.setWarn {
+				fields[5] = strconv.Itoa(opts.warnDays)
+			}
+			if opts.setInact {
+				fields[6] = strconv.Itoa(opts.inactDays)
+			}
+			if opts.setExpire {
+				fields[7] = strconv.FormatInt(opts.expireDate, 10)
+			}
+		} else {
+			if len(fields) != 7 {
+				return fmt.Errorf("invalid passwd entry for %s", username)
+			}
+			if opts.lock {
+				if !strings.HasPrefix(fields[1], "!") {
+					fields[1] = "!" + fields[1]
+				}
+			}
+			if opts.unlock {
+				fields[1] = strings.TrimPrefix(fields[1], "!")
+			}
+			if opts.delete {
+				fields[1] = ""
+			}
+		}
+		lines[index] = strings.Join(fields, ":")
+		found = true
+	}
+	if !found {
+		return fmt.Errorf("no entry for %s", username)
+	}
+	result := []byte(strings.Join(lines, "\n"))
+	if hadFinalNewline {
+		result = append(result, '\n')
+	}
+	return atomicReplacePasswdFile(path, result, info)
 }
 
 func findPasswdTarget(path, username string, uid int) (*loginAccount, bool, error) {

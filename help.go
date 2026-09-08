@@ -317,12 +317,31 @@ Options:
   -H              omit printing host name in login prompt
   -s, --shell=SH  override default login shell executable path
   -h HOST         record incoming remote host identifier`,
-	"passwd": `Usage: passwd [USERNAME]
+	"passwd": `Usage: passwd [OPTIONS] [USERNAME]
 Change a user's password in /etc/shadow, or in /etc/passwd for a legacy account.
 Ordinary users may change only their own password and must enter the current
 password; sufficient permission to update the password database is still
 required. Root may name any user and can replace unsupported or locked hashes.
-New passwords are stored as salted SHA-512 crypt hashes.`,
+New passwords are stored as salted SHA-512 crypt hashes.
+
+Options:
+  -a, --all               inspect status of all account records
+  -d, --delete            clear password entry making it blank
+  -e, --expire            force immediate credential expiration
+  -k, --keep-tokens       retain existing expired authentication tokens
+  -i, --inactive DAYS     duration before expired credentials become unusable
+  -l, --lock              disable account access by locking credentials
+  -u, --unlock            restore access by removing credential lock
+  -q, --quiet             suppress diagnostic operational messages
+  -r, --repository REPO   specify database storage backend repository
+  -R, --root DIR          apply modifications inside alternate chroot directory
+  -P, --prefix DIR        alternate base path prefix for account files
+  -S, --status            display brief account credential status summary
+  -w, --warndays DAYS     advance warning interval before expiration
+  -x, --maxdays DAYS      maximum lifespan of credentials in days
+  -n, --mindays DAYS      minimum elapsed days between password modifications
+  --expiredate DATE       set fixed account termination date
+  -s, --stdin             consume new password string from standard input stream`,
 
 	"paste": `Usage: paste [OPTION]... [FILE]...
 Write the lines of each FILE side by side, separated by cycled delimiter

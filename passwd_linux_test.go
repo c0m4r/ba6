@@ -126,10 +126,101 @@ func TestPasswdTargetAndArguments(t *testing.T) {
 	if err != nil || !found || account.uid != 0 {
 		t.Fatalf("name lookup = %+v, %v, %v", account, found, err)
 	}
-	if username, ok := parsePasswdArgs([]string{"--", "user"}); !ok || username != "user" {
-		t.Fatalf("parsed username = %q, %v", username, ok)
+}
+
+func TestPasswdOptions(t *testing.T) {
+	opts, err := parsePasswdOptions([]string{"--", "user"})
+	if err != nil || opts.user != "user" {
+		t.Fatalf("parsePasswdOptions(-- user) = %+v, %v", opts, err)
 	}
-	if _, ok := parsePasswdArgs([]string{"-d"}); ok {
-		t.Fatal("unsupported password deletion option was accepted")
+	opts, err = parsePasswdOptions([]string{"-l", "-u", "-d", "-e", "-k", "-q", "-S", "-a", "-s", "user"})
+	if err != nil || !opts.lock || !opts.unlock || !opts.delete || !opts.expire || !opts.keepTokens || !opts.quiet || !opts.status || !opts.all || !opts.stdin || opts.user != "user" {
+		t.Fatalf("parsePasswdOptions flags = %+v, %v", opts, err)
+	}
+	opts, err = parsePasswdOptions([]string{"-w", "7", "-x", "90", "-n", "1", "-i", "14", "--expiredate=2026-12-31", "-r", "files", "-R", "/chroot", "-P", "/prefix", "user"})
+	if err != nil || opts.warnDays != 7 || opts.maxDays != 90 || opts.minDays != 1 || opts.inactDays != 14 || opts.repo != "files" || opts.root != "/chroot" || opts.prefix != "/prefix" || opts.user != "user" {
+		t.Fatalf("parsePasswdOptions params = %+v, %v", opts, err)
+	}
+	if _, err := parsePasswdOptions([]string{"-unknown"}); err == nil {
+		t.Fatal("expected error on -unknown")
 	}
 }
+
+func TestModifyAccountRecord(t *testing.T) {
+	dir := t.TempDir()
+	shadowPath := filepath.Join(dir, "shadow")
+	if err := os.WriteFile(shadowPath, []byte("user:$6$salt$hash:20000:0:99999:7:::\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Lock
+	opts := &passwdOptions{lock: true}
+	if err := modifyAccountRecord(shadowPath, "user", true, opts); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(shadowPath)
+	if !strings.Contains(string(data), "user:!$6$salt$hash") {
+		t.Fatalf("lock failed: %s", data)
+	}
+
+	// Unlock
+	opts = &passwdOptions{unlock: true}
+	if err := modifyAccountRecord(shadowPath, "user", true, opts); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(shadowPath)
+	if strings.Contains(string(data), "user:!") {
+		t.Fatalf("unlock failed: %s", data)
+	}
+
+	// Delete
+	opts = &passwdOptions{delete: true}
+	if err := modifyAccountRecord(shadowPath, "user", true, opts); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(shadowPath)
+	if !strings.HasPrefix(string(data), "user::") {
+		t.Fatalf("delete failed: %s", data)
+	}
+
+	// Expiry params
+	opts = &passwdOptions{
+		expire:     true,
+		setMin:     true,
+		minDays:    5,
+		setMax:     true,
+		maxDays:    60,
+		setWarn:    true,
+		warnDays:   10,
+		setInact:   true,
+		inactDays:  3,
+		setExpire:  true,
+		expireDate: 25000,
+	}
+	if err := modifyAccountRecord(shadowPath, "user", true, opts); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(shadowPath)
+	want := "user::0:5:60:10:3:25000:\n"
+	if string(data) != want {
+		t.Fatalf("expiry update got %q, want %q", string(data), want)
+	}
+}
+
+func TestPrintPasswdStatus(t *testing.T) {
+	dir := t.TempDir()
+	shadowPath := filepath.Join(dir, "shadow")
+	if err := os.WriteFile(shadowPath, []byte("user:$6$salt$hash:20000:0:99999:7:::\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	acc := &loginAccount{name: "user", password: "x", uid: 1000}
+	var buf bytes.Buffer
+	if err := printPasswdStatus(&buf, acc, shadowPath); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.HasPrefix(out, "user P ") {
+		t.Fatalf("printPasswdStatus got %q, want user P ...", out)
+	}
+}
+
