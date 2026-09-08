@@ -305,11 +305,18 @@ Options:
 The bracketed device and inode of the -a form come from an ioctl the kernel
 only answers for a caller that can open the device, so they are empty for an
 unprivileged run — which is what the original prints then too.`,
-	"login": `Usage: login [USERNAME]
+	"login": `Usage: login [OPTION]... [USERNAME]
 Authenticate a user against /etc/passwd and /etc/shadow, initialize their
 supplementary groups and environment, and start their configured login shell.
 SHA-256 ($5$) and SHA-512 ($6$) crypt password hashes are supported. The applet
-must start as root; locked and expired accounts are rejected.`,
+must start as root; locked and expired accounts are rejected.
+
+Options:
+  -p              preserve existing environment variables across session setup
+  -f              skip authentication for pre-authenticated user
+  -H              omit printing host name in login prompt
+  -s, --shell=SH  override default login shell executable path
+  -h HOST         record incoming remote host identifier`,
 	"passwd": `Usage: passwd [USERNAME]
 Change a user's password in /etc/shadow, or in /etc/passwd for a legacy account.
 Ordinary users may change only their own password and must enter the current

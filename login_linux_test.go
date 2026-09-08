@@ -142,11 +142,29 @@ func TestLoginLineAndSupplementaryGroups(t *testing.T) {
 }
 
 func TestLoginArguments(t *testing.T) {
-	if username, ok := parseLoginArgs([]string{"--", "root"}); !ok || username != "root" {
-		t.Fatalf("parsed username = %q, %v", username, ok)
+	if opts, ok := parseLoginArgs([]string{"--", "root"}); !ok || opts.username != "root" {
+		t.Fatalf("parsed username = %q, %v", opts.username, ok)
 	}
-	if _, ok := parseLoginArgs([]string{"-f", "root"}); ok {
-		t.Fatal("authentication bypass option was accepted")
+	opts, ok := parseLoginArgs([]string{"-p", "-f", "-H", "-s", "/bin/bash", "admin"})
+	if !ok {
+		t.Fatal("failed to parse valid login options")
+	}
+	if !opts.preserveEnv || !opts.preAuth || !opts.noHost || opts.shell != "/bin/bash" || opts.username != "admin" {
+		t.Fatalf("unexpected options: %+v", opts)
+	}
+
+	// Clustered flags
+	opts2, ok := parseLoginArgs([]string{"-pfH", "user1"})
+	if !ok || !opts2.preserveEnv || !opts2.preAuth || !opts2.noHost || opts2.username != "user1" {
+		t.Fatalf("clustered flags failed: %+v, %v", opts2, ok)
+	}
+
+	// Invalid options
+	if _, ok := parseLoginArgs([]string{"-unknown"}); ok {
+		t.Fatal("unknown option was accepted")
+	}
+	if _, ok := parseLoginArgs([]string{"user1", "user2"}); ok {
+		t.Fatal("extra operand was accepted")
 	}
 	if _, err := readLoginLine(bufio.NewReader(strings.NewReader("")), 10); !errors.Is(err, io.EOF) {
 		t.Fatalf("empty input error = %v", err)

@@ -43,8 +43,17 @@ type shadowAccount struct {
 	expires  int64
 }
 
+type loginOptions struct {
+	preserveEnv bool
+	preAuth     bool
+	noHost      bool
+	remoteHost  string
+	shell       string
+	username    string
+}
+
 func cmdLogin(args []string) int {
-	username, ok := parseLoginArgs(args)
+	opts, ok := parseLoginArgs(args)
 	if !ok {
 		return 1
 	}
@@ -53,12 +62,23 @@ func cmdLogin(args []string) int {
 		return 1
 	}
 
+	if opts.preAuth && opts.username != "" {
+		account, found, err := findLoginAccount(loginPasswdPath, opts.username)
+		if err == nil && found && account != nil {
+			if err := beginLoginSession(account, opts); err != nil {
+				fatalf("login", "%v", err)
+				return 1
+			}
+			return 0
+		}
+	}
+
 	reader := bufio.NewReaderSize(os.Stdin, loginMaxLine+2)
 	for attempts := 0; attempts < 3; attempts++ {
-		current := username
+		current := opts.username
 		if current == "" {
 			hostname, _ := os.Hostname()
-			if hostname != "" {
+			if hostname != "" && !opts.noHost {
 				fmt.Fprintf(os.Stdout, "%s login: ", hostname)
 			} else {
 				fmt.Fprint(os.Stdout, "login: ")
@@ -89,7 +109,7 @@ func cmdLogin(args []string) int {
 			return 1
 		}
 		if account != nil {
-			if err := beginLoginSession(account); err != nil {
+			if err := beginLoginSession(account, opts); err != nil {
 				fatalf("login", "%v", err)
 				return 1
 			}
@@ -102,22 +122,73 @@ func cmdLogin(args []string) int {
 	return 1
 }
 
-func parseLoginArgs(args []string) (string, bool) {
-	if len(args) > 0 && args[0] == "--" {
-		args = args[1:]
-	}
-	if len(args) > 1 {
-		fatalf("login", "extra operand %q", args[1])
-		return "", false
-	}
-	if len(args) == 1 {
-		if strings.HasPrefix(args[0], "-") || strings.ContainsAny(args[0], ":\r\n") {
-			fatalf("login", "invalid user name")
-			return "", false
+func parseLoginArgs(args []string) (loginOptions, bool) {
+	var opts loginOptions
+	var operands []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			operands = append(operands, args[i+1:]...)
+			break
 		}
-		return args[0], true
+		if !strings.HasPrefix(arg, "-") || arg == "-" {
+			operands = append(operands, arg)
+			continue
+		}
+		switch {
+		case arg == "-p":
+			opts.preserveEnv = true
+		case arg == "-f":
+			opts.preAuth = true
+		case arg == "-H":
+			opts.noHost = true
+		case arg == "-h":
+			if i+1 < len(args) {
+				i++
+				opts.remoteHost = args[i]
+			}
+		case arg == "-s" || arg == "--shell" || strings.HasPrefix(arg, "--shell="):
+			if strings.HasPrefix(arg, "--shell=") {
+				opts.shell = strings.TrimPrefix(arg, "--shell=")
+			} else if i+1 < len(args) {
+				i++
+				opts.shell = args[i]
+			}
+		default:
+			if len(arg) > 2 && !strings.HasPrefix(arg, "--") {
+				valid := true
+				for _, ch := range arg[1:] {
+					switch ch {
+					case 'p':
+						opts.preserveEnv = true
+					case 'f':
+						opts.preAuth = true
+					case 'H':
+						opts.noHost = true
+					default:
+						valid = false
+					}
+				}
+				if valid {
+					continue
+				}
+			}
+			fatalf("login", "invalid option -- '%s'", strings.TrimPrefix(arg, "-"))
+			return opts, false
+		}
 	}
-	return "", true
+	if len(operands) > 1 {
+		fatalf("login", "extra operand %q", operands[1])
+		return opts, false
+	}
+	if len(operands) == 1 {
+		if strings.HasPrefix(operands[0], "-") || strings.ContainsAny(operands[0], ":\r\n") {
+			fatalf("login", "invalid user name")
+			return opts, false
+		}
+		opts.username = operands[0]
+	}
+	return opts, true
 }
 
 func readLoginPassword(reader *bufio.Reader) ([]byte, error) {
@@ -477,7 +548,7 @@ func encodeSHA256Crypt(output *strings.Builder, sum []byte) {
 	encodeCrypt24(output, 0, sum[31], sum[30], 3)
 }
 
-func beginLoginSession(account *loginAccount) error {
+func beginLoginSession(account *loginAccount, opts loginOptions) error {
 	if account.uid != 0 {
 		if message, err := os.ReadFile(loginNologin); err == nil {
 			_, _ = os.Stdout.Write(message)
@@ -524,26 +595,32 @@ func beginLoginSession(account *loginAccount) error {
 		}
 	}
 	term := os.Getenv("TERM")
-	os.Clearenv()
+	if !opts.preserveEnv {
+		os.Clearenv()
+	}
 	path := "/usr/local/bin:/usr/bin:/bin"
 	if account.uid == 0 {
 		path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 	}
+	shell := account.shell
+	if opts.shell != "" {
+		shell = opts.shell
+	}
 	for name, value := range map[string]string{
 		"HOME": home, "USER": account.name, "LOGNAME": account.name,
-		"SHELL": account.shell, "PATH": path,
+		"SHELL": shell, "PATH": path,
 	} {
 		if err := os.Setenv(name, value); err != nil {
 			return fmt.Errorf("set environment: %w", err)
 		}
 	}
-	if term != "" {
+	if !opts.preserveEnv && term != "" {
 		_ = os.Setenv("TERM", term)
 	}
 	syscall.Umask(0o022)
-	argv := []string{"-" + filepath.Base(account.shell)}
-	if err := syscall.Exec(account.shell, argv, os.Environ()); err != nil { //nolint:gosec // G204: the root-owned passwd database selects the login shell.
-		return fmt.Errorf("execute %s: %w", account.shell, err)
+	argv := []string{"-" + filepath.Base(shell)}
+	if err := syscall.Exec(shell, argv, os.Environ()); err != nil { //nolint:gosec // G204: the root-owned passwd database selects the login shell.
+		return fmt.Errorf("execute %s: %w", shell, err)
 	}
 	return nil
 }
