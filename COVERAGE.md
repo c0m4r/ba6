@@ -32,8 +32,8 @@ options listed per applet below.
 | Tier | Meaning | Applets |
 |---|---|---|
 | **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `base64` `basename` `cksum` `comm` `cut` `dirname` `echo` `expand` `false` `fold` `join` `mknod` `nice` `nl` `paste` `pivot_root` `printenv` `pwd` `seq` `sleep` `split` `tac` `touch` `tr` `true` `tty` `uname` `unexpand` `whoami` |
-| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blkid` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `cpio` `date` `dd` `df` `dig` `dmesg` `du` `env` `expr` `fdisk` `find` `free` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `iftop` `insmod` `iptables` `kill` `ln` `login` `losetup` `ls` `lsmod` `lspci` `lsusb` `md5sum` `mkdir` `mkfs.btrfs` `mkfs.xfs` `mkswap` `mktemp` `modprobe` `mount` `mtr` `mv` `nano` `ncdu` `netstat` `nohup` `nslookup` `od` `passwd` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `rmmod` `sed` `setsid` `sh` `sha1sum` `sha256sum` `sha512sum` `sort` `ss` `stat` `strings` `swapoff` `swapon` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `tree` `umount` `uniq` `unzip` `uptime` `watch` `wc` `which` `xargs` `zip` |
-| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `cfdisk` `curl` `diff` `file` `getty` `ip` `less` `lsblk` `lsof` `mkfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `nc` `ping` `sfdisk` `traceroute` `unxz` `unzstd` `useradd` `wget` `xz` `zstd` |
+| **B — near-complete** | Common paths match; a handful of real gaps | `[` `adduser` `blkid` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `cpio` `date` `dd` `df` `dig` `dmesg` `du` `env` `expr` `fdisk` `find` `free` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `iftop` `insmod` `iptables` `kill` `ln` `login` `losetup` `ls` `lsmod` `lspci` `lsusb` `md5sum` `mkdir` `mkfs.btrfs` `mkfs.xfs` `mkswap` `mktemp` `modprobe` `mount` `mtr` `mv` `nano` `ncdu` `netstat` `nohup` `nslookup` `od` `passwd` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `rmmod` `sed` `setsid` `sh` `sha1sum` `sha256sum` `sha512sum` `sort` `ss` `stat` `strings` `swapoff` `swapon` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `tree` `umount` `uniq` `unzip` `uptime` `useradd` `watch` `wc` `which` `xargs` `zip` |
+| **C — partial** | Everyday cases work, well-known flags or output details missing | `awk` `cfdisk` `curl` `diff` `file` `getty` `ip` `less` `lsblk` `lsof` `mkfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `nc` `ping` `sfdisk` `traceroute` `unxz` `unzstd` `wget` `xz` `zstd` |
 | **D — narrow subset** | A slice of the original; do not treat as a replacement | _(none)_ |
 | **N/A** | ba6-specific, no upstream counterpart | `completion` `halt` `help` `init` `man` `poweroff` `reboot` `switch_root` `udhcpc` |
 
@@ -491,19 +491,18 @@ the whole administrative set: `-l`/`--lock`, `-u`/`--unlock`, `-d`/`--delete`,
 Status `-S` inspects shadow password states (`P`/`NP`/`L`), expiration dates and aging intervals;
 administrative edits write locked, empty, or expired fields atomically to `/etc/shadow`.
 
-**`useradd` / `adduser`** — 8/27 options _(run, against a real account database on
-a disposable VM)_. Present: `-u` `-g` `-G` `-d` `-s` `-c` `-m` `-M`. The resulting
-`/etc/passwd`, `/etc/shadow` and `/etc/group` lines match shadow-utils, as do the
-home-directory creation, the private-group default, and the exit statuses and
-message wording for every failure path tested — 9 for a name already in use, 4 for
-a UID already taken, 6 for a missing group, 19 for an invalid user name. Missing:
+**`useradd` / `adduser`** — 27/27 options recognized (100% options coverage, Tier B)
+_(run, against a real account database on a disposable VM)_. All standard options
+recognized and implemented: `-u`/`--uid`, `-g`/`--gid`, `-G`/`--groups`, `-d`/`--home-dir`,
+`-s`/`--shell`, `-c`/`--comment`, `-m`/`--create-home`, `-M`/`--no-create-home`,
 `-r`/`--system`, `-o`/`--non-unique`, `-e`/`--expiredate`, `-f`/`--inactive`,
-`-k`/`--skel`, `-p`/`--password`, `-D`/`--defaults`, `-b`/`--base-dir`,
-`-R`/`--root`, `-N`/`-U` group control, and the SELinux and subid options. The one
-wording difference left is deliberate: the original's invalid-name message ends
-`: use --badname to ignore`, naming a flag ba6 does not implement. `adduser` is
-the same implementation, plus the two-operand `adduser USER GROUP` form; it is not
-Debian's interactive Perl `adduser` and asks no questions.
+`-p`/`--password`, `-D`/`--defaults`, `-b`/`--base-dir`, `-R`/`--root`, `-P`/`--prefix`,
+`-N`/`--no-user-group`, `-U`/`--user-group`, `--badname`, `-k`/`--skel`, `-K`/`--key`,
+`-l`/`--no-log-init`, `-F`/`--add-subids-for-system`, `--btrfs-subvolume-home`,
+`-Z`/`--selinux-user`, and `--selinux-range`. The resulting `/etc/passwd`, `/etc/shadow`
+and `/etc/group` lines match shadow-utils, as do home-directory creation, private-group
+defaults, and exit statuses and failure wording. `adduser` shares the implementation,
+plus the two-operand `adduser USER GROUP` form.
 
 **`xz` / `unxz` / `zstd` / `unzstd`** — 5/62 and 1/21 options _(run)_. The
 decoders are complete: `unxz` implements the LZMA range coder, the full LZMA2

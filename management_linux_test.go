@@ -218,6 +218,55 @@ func TestAccountDatabaseRejectsDuplicateIdentifiers(t *testing.T) {
 	}
 }
 
+func TestUseraddOptionsAndDefaults(t *testing.T) {
+	status, stdout, stderr := captureApplet(t, cmdUseradd, []string{"-D"}, "")
+	if status != 0 || !strings.Contains(stdout, "GROUP=100") || !strings.Contains(stdout, "HOME=/home") {
+		t.Fatalf("useradd -D status=%d stdout=%q stderr=%q", status, stdout, stderr)
+	}
+
+	paths := accountFixture(t)
+	uid := 0
+	if err := createAccountUser(paths, useraddSpec{
+		name:        "sysuser",
+		system:      true,
+		nonUnique:   true,
+		uid:         &uid,
+		baseDir:     paths.homeRoot,
+		expireDate:  "2026-12-31",
+		inactive:    "30",
+		password:    "hashpass",
+		gecos:       "System Account",
+		shell:       "/bin/sh",
+		noUserGroup: true,
+	}, time.Unix(20_000*86_400, 0)); err != nil {
+		t.Fatal(err)
+	}
+
+	shadow, err := os.ReadFile(paths.shadow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(shadow), "sysuser:hashpass:20000:0:99999:7:30:") {
+		t.Fatalf("shadow content: %q", shadow)
+	}
+
+	spec, err := parseUseraddArgs([]string{
+		"--badname", "-b", "/custom/home", "--btrfs-subvolume-home",
+		"-c", "Test User", "-d", "/custom/home/bob", "-e", "2027-01-01",
+		"-f", "14", "-F", "-g", "users", "-G", "wheel,admin",
+		"-k", "/etc/skel", "-K", "MAIL_DIR=/var/mail", "-l", "-m",
+		"-N", "-o", "-p", "secret", "-r", "-R", "/mnt/root", "-P", "/mnt/prefix",
+		"-s", "/bin/bash", "-u", "1500", "-U", "-Z", "user_u", "--selinux-range", "s0",
+		"bob",
+	}, false)
+	if err != nil {
+		t.Fatalf("parseUseraddArgs failed: %v", err)
+	}
+	if spec.name != "bob" || *spec.uid != 1500 || spec.shell != "/bin/bash" || !spec.createHome {
+		t.Fatalf("unexpected spec: %+v", spec)
+	}
+}
+
 func accountFixture(t *testing.T) accountPaths {
 	t.Helper()
 	root := t.TempDir()

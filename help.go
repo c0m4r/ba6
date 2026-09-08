@@ -2311,9 +2311,38 @@ Decode a Zstandard stream, including entropy-coded blocks from any encoder.
 The frame checksum is verified, and concatenated and skippable frames are
 followed. -c uses standard output, -k keeps inputs, and -f replaces an
 existing output.`,
-	"useradd": `Usage: useradd [-mM] [-u UID] [-g GROUP] [-G GROUP,...] [-d HOME] [-s SHELL] [-c COMMENT] USER
-Create a locked local account. Without -g it also creates a private group; -m
-creates HOME, while -M suppresses home creation. Requires root.`,
+	"useradd": `Usage: useradd [OPTIONS] USER
+       useradd -D
+Create a new user account or examine configuration defaults.
+
+Options:
+      --badname                 Permit non-standard account usernames
+  -b, --base-dir DIR            Base prefix folder for personal home directory
+      --btrfs-subvolume-home    Flag for subvolume based home storage
+  -c, --comment COMMENT         Set user information field in passwd database
+  -d, --home-dir HOME_DIR       Path to home directory for created account
+  -D, --defaults                Display standard default account settings
+  -e, --expiredate DATE         Account expiration deadline timestamp
+  -f, --inactive DAYS           Days after credential expiration until lockout
+  -F, --add-subids-for-system   Assign subid range to system accounts
+  -g, --gid GROUP               Primary group identification name or number
+  -G, --groups GROUPS           List of additional supplementary memberships
+  -k, --skel SKEL_DIR           Custom template directory for home files
+  -K, --key KEY=VAL             Override settings configuration variable
+  -l, --no-log-init             Omit registering user in tracking databases
+  -m, --create-home             Construct the home storage location
+  -M, --no-create-home          Prevent construction of home location
+  -N, --no-user-group           Do not allocate a matching private group
+  -o, --non-unique              Permit duplicate numerical user identifiers
+  -p, --password PASS           Encrypted password secret for shadow file
+  -r, --system                  Generate a low-number system identity
+  -R, --root DIR                Operate inside alternative root path
+  -P, --prefix PREFIX_DIR       Prefix destination directory tree
+  -s, --shell SHELL             Login command interpreter location
+  -u, --uid UID                 Designate explicit numerical user identifier
+  -U, --user-group              Allocate matching user private group
+  -Z, --selinux-user SELINUX    Map user to specified selinux account
+      --selinux-range RANGE     Assign specified selinux security range`,
 	"ip": `Usage: ip [OPTION]... OBJECT COMMAND [ARG]...
 Show or change Linux links, addresses, neighbors, routes, and rules using rtnetlink.
 

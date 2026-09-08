@@ -129,15 +129,38 @@ func cmdGroupadd(args []string) int {
 }
 
 func cmdUseradd(args []string) int {
-	if !accountAdministrator("useradd") {
-		return 1
-	}
 	spec, err := parseUseraddArgs(args, false)
 	if err != nil {
 		fatalf("useradd", "%v", err)
 		return accountStatus(err)
 	}
-	if err := createAccountUser(currentAccountPaths(), spec, time.Now()); err != nil {
+	if spec.showDefaults {
+		fmt.Fprintln(os.Stdout, "GROUP=100")
+		fmt.Fprintln(os.Stdout, "HOME=/home")
+		fmt.Fprintln(os.Stdout, "INACTIVE=-1")
+		fmt.Fprintln(os.Stdout, "EXPIRE=")
+		fmt.Fprintln(os.Stdout, "SHELL=/bin/sh")
+		fmt.Fprintln(os.Stdout, "SKEL=/etc/skel")
+		fmt.Fprintln(os.Stdout, "CREATE_MAIL_SPOOL=no")
+		return 0
+	}
+	if !accountAdministrator("useradd") {
+		return 1
+	}
+	paths := currentAccountPaths()
+	targetRoot := spec.root
+	if targetRoot == "" {
+		targetRoot = spec.prefix
+	}
+	if targetRoot != "" {
+		paths = accountPaths{
+			passwd:   filepath.Join(targetRoot, "etc", "passwd"),
+			shadow:   filepath.Join(targetRoot, "etc", "shadow"),
+			group:    filepath.Join(targetRoot, "etc", "group"),
+			homeRoot: filepath.Join(targetRoot, "home"),
+		}
+	}
+	if err := createAccountUser(paths, spec, time.Now()); err != nil {
 		fatalf("useradd", "%v", err)
 		return accountStatus(err)
 	}
@@ -145,10 +168,10 @@ func cmdUseradd(args []string) int {
 }
 
 func cmdAdduser(args []string) int {
-	if !accountAdministrator("adduser") {
-		return 1
-	}
 	if len(args) == 2 && !strings.HasPrefix(args[0], "-") && !strings.HasPrefix(args[1], "-") {
+		if !accountAdministrator("adduser") {
+			return 1
+		}
 		if err := addAccountUserToGroup(currentAccountPaths(), args[0], args[1]); err != nil {
 			fatalf("adduser", "%v", err)
 			return accountStatus(err)
@@ -160,7 +183,23 @@ func cmdAdduser(args []string) int {
 		fatalf("adduser", "%v", err)
 		return accountStatus(err)
 	}
-	if err := createAccountUser(currentAccountPaths(), spec, time.Now()); err != nil {
+	if !accountAdministrator("adduser") {
+		return 1
+	}
+	paths := currentAccountPaths()
+	targetRoot := spec.root
+	if targetRoot == "" {
+		targetRoot = spec.prefix
+	}
+	if targetRoot != "" {
+		paths = accountPaths{
+			passwd:   filepath.Join(targetRoot, "etc", "passwd"),
+			shadow:   filepath.Join(targetRoot, "etc", "shadow"),
+			group:    filepath.Join(targetRoot, "etc", "group"),
+			homeRoot: filepath.Join(targetRoot, "home"),
+		}
+	}
+	if err := createAccountUser(paths, spec, time.Now()); err != nil {
 		fatalf("adduser", "%v", err)
 		return accountStatus(err)
 	}
@@ -211,7 +250,7 @@ func parseGroupaddArgs(args []string) (string, *int, error) {
 	if len(operands) != 1 {
 		return "", nil, accountFail(accountStatusUsage, "expected one group name")
 	}
-	if !validAccountName(operands[0]) {
+	if !validAccountName(operands[0], false) {
 		return "", nil, accountFail(accountStatusBadArg, "'%s' is not a valid group name", operands[0])
 	}
 	return operands[0], gid, nil
@@ -224,96 +263,197 @@ type useraddSpec struct {
 	supplementaryGroups []string
 	home, shell, gecos  string
 	createHome          bool
+	showDefaults        bool
+	badname             bool
+	baseDir             string
+	expireDate          string
+	inactive            string
+	skel                string
+	noUserGroup         bool
+	nonUnique           bool
+	password            string
+	system              bool
+	root                string
+	prefix              string
+	selinuxUser         string
+	selinuxRange        string
 }
 
 func parseUseraddArgs(args []string, createHome bool) (useraddSpec, error) {
 	spec := useraddSpec{createHome: createHome, shell: "/bin/sh"}
-	args = expandShortOptions(args, "ugGdsc")
+	args = expandShortOptions(args, "bcdefgGkKpRPsuZ")
 	var operands []string
 	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if arg == "--" {
-			operands = append(operands, args[i+1:]...)
-			break
+		raw := args[i]
+		arg := raw
+		val := ""
+		hasVal := false
+		if strings.HasPrefix(raw, "--") && strings.Contains(raw, "=") {
+			arg, val, _ = strings.Cut(raw, "=")
+			hasVal = true
 		}
-		switch {
-		case arg == "-m" || arg == "--create-home":
+
+		consumeVal := func() (string, error) {
+			if hasVal {
+				return val, nil
+			}
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+				return args[i], nil
+			}
+			return "", fmt.Errorf("option %s requires an argument", arg)
+		}
+
+		switch arg {
+		case "--badname":
+			spec.badname = true
+		case "-b", "--base-dir":
+			v, err := consumeVal()
+			if err != nil {
+				return spec, err
+			}
+			spec.baseDir = v
+		case "--btrfs-subvolume-home":
+			// Flag accepted for compatibility.
+		case "-c", "--comment":
+			v, err := consumeVal()
+			if err != nil {
+				return spec, err
+			}
+			spec.gecos = v
+		case "-d", "--home-dir":
+			v, err := consumeVal()
+			if err != nil {
+				return spec, err
+			}
+			spec.home = v
+		case "-D", "--defaults":
+			spec.showDefaults = true
+		case "-e", "--expiredate":
+			v, err := consumeVal()
+			if err != nil {
+				return spec, err
+			}
+			spec.expireDate = v
+		case "-f", "--inactive":
+			v, err := consumeVal()
+			if err != nil {
+				return spec, err
+			}
+			spec.inactive = v
+		case "-F", "--add-subids-for-system":
+			// Flag accepted for compatibility.
+		case "-g", "--gid":
+			v, err := consumeVal()
+			if err != nil {
+				return spec, err
+			}
+			spec.primaryGroup = v
+		case "-G", "--groups":
+			v, err := consumeVal()
+			if err != nil {
+				return spec, err
+			}
+			spec.supplementaryGroups = append(spec.supplementaryGroups, strings.Split(v, ",")...)
+		case "-k", "--skel":
+			v, err := consumeVal()
+			if err != nil {
+				return spec, err
+			}
+			spec.skel = v
+		case "-K", "--key":
+			_, err := consumeVal()
+			if err != nil {
+				return spec, err
+			}
+		case "-l", "--no-log-init":
+			// Flag accepted for compatibility.
+		case "-m", "--create-home":
 			spec.createHome = true
-		case arg == "-M" || arg == "--no-create-home":
+		case "-M", "--no-create-home":
 			spec.createHome = false
-		case arg == "-u" || arg == "--uid":
-			i++
-			if i >= len(args) {
-				return spec, fmt.Errorf("option %s requires an argument", arg)
-			}
-			value, err := parseAccountID(args[i])
+		case "-N", "--no-user-group":
+			spec.noUserGroup = true
+		case "-o", "--non-unique":
+			spec.nonUnique = true
+		case "-p", "--password":
+			v, err := consumeVal()
 			if err != nil {
-				return spec, fmt.Errorf("invalid uid %q", args[i])
+				return spec, err
+			}
+			spec.password = v
+		case "-r", "--system":
+			spec.system = true
+		case "-R", "--root":
+			v, err := consumeVal()
+			if err != nil {
+				return spec, err
+			}
+			spec.root = v
+		case "-P", "--prefix":
+			v, err := consumeVal()
+			if err != nil {
+				return spec, err
+			}
+			spec.prefix = v
+		case "-s", "--shell":
+			v, err := consumeVal()
+			if err != nil {
+				return spec, err
+			}
+			spec.shell = v
+		case "-u", "--uid":
+			v, err := consumeVal()
+			if err != nil {
+				return spec, err
+			}
+			value, err := parseAccountID(v)
+			if err != nil {
+				return spec, fmt.Errorf("invalid uid %q", v)
 			}
 			spec.uid = &value
-		case strings.HasPrefix(arg, "--uid="):
-			value, err := parseAccountID(strings.TrimPrefix(arg, "--uid="))
+		case "-U", "--user-group":
+			spec.noUserGroup = false
+		case "-Z", "--selinux-user":
+			v, err := consumeVal()
 			if err != nil {
-				return spec, fmt.Errorf("invalid uid %q", strings.TrimPrefix(arg, "--uid="))
+				return spec, err
 			}
-			spec.uid = &value
-		case arg == "-g" || arg == "--gid":
-			i++
-			if i >= len(args) {
-				return spec, fmt.Errorf("option %s requires an argument", arg)
+			spec.selinuxUser = v
+		case "--selinux-range":
+			v, err := consumeVal()
+			if err != nil {
+				return spec, err
 			}
-			spec.primaryGroup = args[i]
-		case strings.HasPrefix(arg, "--gid="):
-			spec.primaryGroup = strings.TrimPrefix(arg, "--gid=")
-		case arg == "-G" || arg == "--groups":
-			i++
-			if i >= len(args) {
-				return spec, fmt.Errorf("option %s requires an argument", arg)
-			}
-			spec.supplementaryGroups = append(spec.supplementaryGroups, strings.Split(args[i], ",")...)
-		case strings.HasPrefix(arg, "--groups="):
-			spec.supplementaryGroups = append(spec.supplementaryGroups, strings.Split(strings.TrimPrefix(arg, "--groups="), ",")...)
-		case arg == "-d" || arg == "--home-dir":
-			i++
-			if i >= len(args) {
-				return spec, fmt.Errorf("option %s requires an argument", arg)
-			}
-			spec.home = args[i]
-		case strings.HasPrefix(arg, "--home-dir="):
-			spec.home = strings.TrimPrefix(arg, "--home-dir=")
-		case arg == "-s" || arg == "--shell":
-			i++
-			if i >= len(args) {
-				return spec, fmt.Errorf("option %s requires an argument", arg)
-			}
-			spec.shell = args[i]
-		case strings.HasPrefix(arg, "--shell="):
-			spec.shell = strings.TrimPrefix(arg, "--shell=")
-		case arg == "-c" || arg == "--comment":
-			i++
-			if i >= len(args) {
-				return spec, fmt.Errorf("option %s requires an argument", arg)
-			}
-			spec.gecos = args[i]
-		case strings.HasPrefix(arg, "--comment="):
-			spec.gecos = strings.TrimPrefix(arg, "--comment=")
-		case strings.HasPrefix(arg, "-"):
-			return spec, fmt.Errorf("unsupported option %q", arg)
+			spec.selinuxRange = v
+		case "--":
+			operands = append(operands, args[i+1:]...)
+			i = len(args)
 		default:
+			if strings.HasPrefix(arg, "-") {
+				return spec, fmt.Errorf("unsupported option %q", arg)
+			}
 			operands = append(operands, arg)
 		}
+	}
+	if spec.showDefaults && len(operands) == 0 {
+		return spec, nil
 	}
 	if len(operands) != 1 {
 		return spec, accountFail(accountStatusUsage, "expected one user name")
 	}
-	if !validAccountName(operands[0]) {
-		return spec, accountFail(accountStatusBadName, "invalid user name '%s'", operands[0])
+	name := operands[0]
+	if !validAccountName(name, spec.badname) {
+		return spec, accountFail(accountStatusBadName, "invalid user name '%s'", name)
+	}
+	if spec.home == "" && spec.baseDir != "" {
+		spec.home = filepath.Join(spec.baseDir, name)
 	}
 	if strings.ContainsAny(spec.gecos, ":\r\n") || strings.ContainsAny(spec.home, ":\r\n") ||
 		strings.ContainsAny(spec.shell, ":\r\n") {
 		return spec, fmt.Errorf("invalid account field")
 	}
-	spec.name = operands[0]
+	spec.name = name
 	return spec, nil
 }
 
@@ -325,9 +465,12 @@ func parseAccountID(value string) (int, error) {
 	return int(parsed), nil
 }
 
-func validAccountName(value string) bool {
+func validAccountName(value string, badname bool) bool {
 	if len(value) == 0 || len(value) > 32 {
 		return false
+	}
+	if badname {
+		return !strings.ContainsAny(value, ":\r\n/\x00")
 	}
 	for index, character := range value {
 		if index == 0 {
@@ -347,7 +490,7 @@ func validAccountName(value string) bool {
 
 func createAccountGroup(paths accountPaths, name string, wantedGID *int) error {
 	return withAccountDatabase(paths, func(database *accountDatabase) error {
-		if !validAccountName(name) {
+		if !validAccountName(name, false) {
 			return accountFail(accountStatusBadArg, "'%s' is not a valid group name", name)
 		}
 		if _, found := database.groups[name]; found {
@@ -389,7 +532,7 @@ type createdAccount struct {
 }
 
 func (database *accountDatabase) planUser(spec useraddSpec, homeRoot string, now time.Time) (createdAccount, error) {
-	if !validAccountName(spec.name) {
+	if !validAccountName(spec.name, spec.badname) {
 		return createdAccount{}, accountFail(accountStatusBadName, "invalid user name '%s'", spec.name)
 	}
 	if _, found := database.users[spec.name]; found {
@@ -399,19 +542,38 @@ func (database *accountDatabase) planUser(spec useraddSpec, homeRoot string, now
 		return createdAccount{}, accountFail(accountStatusNameInUse, "shadow entry for '%s' already exists", spec.name)
 	}
 	usedForPrivateGroup := map[int]bool(nil)
-	if spec.primaryGroup == "" {
+	if spec.primaryGroup == "" && !spec.noUserGroup {
 		usedForPrivateGroup = database.gids
 	}
-	uid, err := chooseAccountID(spec.uid, database.uids, usedForPrivateGroup)
-	if err != nil {
-		return createdAccount{}, accountIDError(err, "UID %d is not unique", spec.uid)
+	var uid int
+	if spec.nonUnique && spec.uid != nil {
+		uid = *spec.uid
+	} else if spec.system {
+		var err error
+		uid, err = chooseSystemAccountID(spec.uid, database.uids, usedForPrivateGroup)
+		if err != nil {
+			return createdAccount{}, accountIDError(err, "UID %d is not unique", spec.uid)
+		}
+	} else {
+		var err error
+		uid, err = chooseAccountID(spec.uid, database.uids, usedForPrivateGroup)
+		if err != nil {
+			return createdAccount{}, accountIDError(err, "UID %d is not unique", spec.uid)
+		}
 	}
 	gid := uid
 	if spec.primaryGroup == "" {
-		if _, found := database.groups[spec.name]; found {
-			return createdAccount{}, accountFail(accountStatusNameInUse, "group '%s' already exists", spec.name)
+		if spec.noUserGroup {
+			gid = 100
+			if _, found := database.gids[100]; !found {
+				gid = uid
+			}
+		} else {
+			if _, found := database.groups[spec.name]; found {
+				return createdAccount{}, accountFail(accountStatusNameInUse, "group '%s' already exists", spec.name)
+			}
+			database.appendGroup(spec.name, gid)
 		}
-		database.appendGroup(spec.name, gid)
 	} else {
 		resolved, err := database.resolveGroup(spec.primaryGroup)
 		if err != nil {
@@ -446,8 +608,22 @@ func (database *accountDatabase) planUser(spec useraddSpec, homeRoot string, now
 	days := now.Unix() / 86400
 	database.passwd.data = appendAccountLine(database.passwd.data,
 		fmt.Sprintf("%s:x:%d:%d:%s:%s:%s", spec.name, uid, gid, spec.gecos, home, spec.shell))
+	pass := "!"
+	if spec.password != "" {
+		pass = spec.password
+	}
+	expireDays := ""
+	if spec.expireDate != "" {
+		if t, err := time.Parse("2006-01-02", spec.expireDate); err == nil {
+			expireDays = strconv.FormatInt(t.Unix()/86400, 10)
+		}
+	}
+	inactiveDays := ""
+	if spec.inactive != "" {
+		inactiveDays = spec.inactive
+	}
 	database.shadow.data = appendAccountLine(database.shadow.data,
-		fmt.Sprintf("%s:!:%d:0:99999:7:::", spec.name, days))
+		fmt.Sprintf("%s:%s:%d:0:99999:7:%s:%s:", spec.name, pass, days, inactiveDays, expireDays))
 	database.users[spec.name] = accountUser{name: spec.name, uid: uid, gid: gid}
 	database.uids[uid] = true
 	database.shadowNames[spec.name] = true
@@ -503,6 +679,21 @@ func chooseAccountID(requested *int, used, alsoUsed map[int]bool) (int, error) {
 		}
 	}
 	return 0, fmt.Errorf("no available identifiers")
+}
+
+func chooseSystemAccountID(requested *int, used, alsoUsed map[int]bool) (int, error) {
+	if requested != nil {
+		if used[*requested] || alsoUsed != nil && alsoUsed[*requested] {
+			return 0, errAccountIDInUse
+		}
+		return *requested, nil
+	}
+	for value := 999; value >= 100; value-- {
+		if !used[value] && (alsoUsed == nil || !alsoUsed[value]) {
+			return value, nil
+		}
+	}
+	return chooseAccountID(nil, used, alsoUsed)
 }
 
 func (database *accountDatabase) resolveGroup(nameOrID string) (accountGroup, error) {
