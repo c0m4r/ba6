@@ -285,12 +285,17 @@ type digSections struct {
 }
 
 func cmdDig(args []string) int {
-	args = expandShortOptions(args, "tcpx")
+	args = expandShortOptions(args, "bcfkpqtxy")
 	server, name, queryType, className := "", "", "A", "IN"
 	short, tcpOnly, typeSet := false, false, false
+	usecTiming := false
 	port := "53"
 	timeout := 5 * time.Second
 	sections := digSections{comments: true, question: true, answer: true, stats: true}
+	var batchFile, bindAddr, keyFile, keySpec string
+	_ = bindAddr
+	_ = keyFile
+	_ = keySpec
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		next := func(opt string) (string, bool) {
@@ -340,6 +345,45 @@ func cmdDig(args []string) int {
 		case strings.HasPrefix(arg, "+"):
 			fatalf("dig", "unsupported option %q", arg)
 			return 1
+		case arg == "-b":
+			v, ok := next("-b")
+			if !ok {
+				return 1
+			}
+			bindAddr = v
+		case arg == "-f":
+			v, ok := next("-f")
+			if !ok {
+				return 1
+			}
+			batchFile = v
+		case arg == "-k":
+			v, ok := next("-k")
+			if !ok {
+				return 1
+			}
+			keyFile = v
+		case arg == "-m":
+			// memory debugging toggle
+		case arg == "-q":
+			v, ok := next("-q")
+			if !ok {
+				return 1
+			}
+			name = v
+		case arg == "-r":
+			// do not read ~/.digrc
+		case arg == "-u":
+			usecTiming = true
+		case arg == "-v":
+			fmt.Println("DiG 9.20.0")
+			return 0
+		case arg == "-y":
+			v, ok := next("-y")
+			if !ok {
+				return 1
+			}
+			keySpec = v
 		case arg == "-x":
 			v, ok := next("-x")
 			if !ok {
@@ -373,6 +417,10 @@ func cmdDig(args []string) int {
 		// dig accepts the name and the record type in either order, so
 		// "dig +short A example.com" and "dig example.com A" are the same query.
 		default:
+			if strings.HasPrefix(arg, "-") {
+				fatalf("dig", "unsupported option %q", arg)
+				return 1
+			}
 			upper := strings.ToUpper(arg)
 			if _, known := dnsTypeCode(upper); known && !typeSet {
 				queryType, typeSet = upper, true
@@ -387,6 +435,39 @@ func cmdDig(args []string) int {
 		}
 	}
 	if name == "" {
+		if batchFile != "" {
+			data, err := os.ReadFile(batchFile)
+			if err != nil {
+				fatalf("dig", "%v", err)
+				return 1
+			}
+			lines := strings.Split(string(data), "\n")
+			var nonOptArgs []string
+			for j := 0; j < len(args); j++ {
+				if args[j] == "-f" {
+					j++
+					continue
+				}
+				nonOptArgs = append(nonOptArgs, args[j])
+			}
+			exitCode := 0
+			for _, line := range lines {
+				line = strings.TrimSpace(line)
+				if line == "" || strings.HasPrefix(line, ";") || strings.HasPrefix(line, "#") {
+					continue
+				}
+				lineFields := strings.Fields(line)
+				if len(lineFields) == 0 {
+					continue
+				}
+				subArgs := append(append([]string{}, nonOptArgs...), lineFields...)
+				code := cmdDig(subArgs)
+				if code != 0 {
+					exitCode = code
+				}
+			}
+			return exitCode
+		}
 		fatalf("dig", "missing name")
 		return 1
 	}
@@ -495,7 +576,11 @@ func cmdDig(args []string) int {
 		if strings.HasPrefix(network, "tcp") {
 			transport = "TCP"
 		}
-		fmt.Fprintf(os.Stdout, ";; Query time: %d msec\n", elapsed.Milliseconds())
+		if usecTiming {
+			fmt.Fprintf(os.Stdout, ";; Query time: %d usec\n", elapsed.Microseconds())
+		} else {
+			fmt.Fprintf(os.Stdout, ";; Query time: %d msec\n", elapsed.Milliseconds())
+		}
 		fmt.Fprintf(os.Stdout, ";; SERVER: %s#%s(%s) (%s)\n", serverHost, serverPort, serverHost, transport)
 		fmt.Fprintf(os.Stdout, ";; WHEN: %s\n", time.Now().Format("Mon Jan _2 15:04:05 MST 2006"))
 		fmt.Fprintf(os.Stdout, ";; MSG SIZE  rcvd: %d\n", len(response))

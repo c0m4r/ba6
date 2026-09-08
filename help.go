@@ -498,11 +498,26 @@ Options:
 
 Short options may be clustered, as in -sSL. Unlike wget, an HTTP error response
 is not by itself a failure; use -f for that.`,
-	"dig": `Usage: dig [@SERVER] [TYPE] NAME [+short] [+tcp] [+time=SECONDS]
+	"dig": `Usage: dig [@SERVER] [TYPE] NAME [OPTIONS]
 Query DNS over UDP with automatic TCP retry for truncated replies. Supported
 types are A, AAAA, CNAME, MX, NS, PTR, SOA, SRV, TXT, CAA, DS, DNSKEY, SVCB,
 HTTPS, and ANY. Compressed names and response bounds are validated before
-records are displayed.`,
+records are displayed.
+
+Options:
+  -b ADDRESS     outbound local source address binding
+  -c CLASS       lookup protocol class (default IN)
+  -f FILE        batch mode reading lookup targets from file
+  -k KEYFILE     TSIG cryptographic authentication key file
+  -m             turn on memory debugging diagnostics
+  -p PORT        remote DNS server destination port number
+  -q NAME        domain name to query
+  -r             omit reading default user startup options
+  -t TYPE        requested record resource type
+  -u             report elapsed duration in microseconds
+  -v             display software release identification and quit
+  -x ADDR        perform reverse mapping address lookup
+  -y KEY         specify transaction signature secret credentials`,
 	"host": `Usage: host [-46adrsTUvw] [-c CLASS] [-p PORT] [-R RETRIES] [-t TYPE]
             [-W SECONDS] NAME [SERVER]
 Look up NAME in the DNS and describe each answer in a sentence. Without -t it

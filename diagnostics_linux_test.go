@@ -327,3 +327,39 @@ func TestIftopOptions(t *testing.T) {
 	}
 }
 
+func TestDigOptions(t *testing.T) {
+	if code := cmdDig([]string{"-v"}); code != 0 {
+		t.Errorf("cmdDig(-v) returned %d, want 0", code)
+	}
+
+	for _, opt := range []string{"-b", "-c", "-f", "-k", "-p", "-q", "-t", "-x", "-y"} {
+		if code := cmdDig([]string{opt}); code == 0 {
+			t.Errorf("cmdDig(%s) without argument should fail", opt)
+		}
+	}
+
+	if code := cmdDig([]string{"-z"}); code == 0 {
+		t.Errorf("cmdDig(-z) should fail")
+	}
+	if code := cmdDig([]string{"--unknown"}); code == 0 {
+		t.Errorf("cmdDig(--unknown) should fail")
+	}
+
+	if code := cmdDig([]string{"-m", "-r", "-u"}); code == 0 {
+		t.Errorf("cmdDig(-m -r -u) without name should fail")
+	}
+
+	if code := cmdDig([]string{"-x", "not-an-ip"}); code == 0 {
+		t.Errorf("cmdDig(-x not-an-ip) should fail")
+	}
+
+	tmpFile := filepath.Join(t.TempDir(), "queries.txt")
+	if err := os.WriteFile(tmpFile, []byte("# comment\n; comment\n\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if code := cmdDig([]string{"-f", tmpFile}); code != 0 {
+		t.Errorf("cmdDig(-f %s) returned %d, want 0", tmpFile, code)
+	}
+}
+
+
