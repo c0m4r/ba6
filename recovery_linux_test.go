@@ -533,3 +533,66 @@ func TestFsckOptions(t *testing.T) {
 	}
 }
 
+func TestFsckExtExtendedOptions(t *testing.T) {
+	tempDir := t.TempDir()
+	image := filepath.Join(tempDir, "test.ext2")
+	if err := os.WriteFile(image, make([]byte, 8*1024*1024), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	status, _, stderr := captureApplet(t, cmdMkfsExt2, []string{"-F", "-L", "testlabel", image}, "")
+	if status != 0 {
+		t.Fatalf("mkfs.ext2 failed: %s", stderr)
+	}
+
+	for _, app := range []struct {
+		name string
+		fn   applet
+	}{
+		{"fsck.ext2", cmdFsckExt2},
+		{"fsck.ext3", cmdFsckExt3},
+		{"fsck.ext4", cmdFsckExt4},
+	} {
+		status, stdout, stderr := captureApplet(t, app.fn, []string{image}, "")
+		if status != 0 || !strings.Contains(stdout, ": clean") {
+			t.Errorf("%s basic run failed: status=%d out=%q err=%q", app.name, status, stdout, stderr)
+		}
+
+		status, stdout, stderr = captureApplet(t, app.fn, []string{
+			"-v", "-t", "-d", "-f", "-F", "-p", "-a", "-y", "-n", "-r", "-c", "-k", "-D", image,
+		}, "")
+		if status != 0 || !strings.Contains(stdout, ": clean") {
+			t.Errorf("%s multi-flag run failed: status=%d out=%q err=%q", app.name, status, stdout, stderr)
+		}
+		if !strings.Contains(stdout, "Elapsed time:") {
+			t.Errorf("%s -t did not output timing: out=%q", app.name, stdout)
+		}
+		if !strings.Contains(stdout, "files") || !strings.Contains(stdout, "blocks") {
+			t.Errorf("%s -v did not output filesystem statistics: out=%q", app.name, stdout)
+		}
+
+		dummyList := filepath.Join(tempDir, "badblocks.txt")
+		_ = os.WriteFile(dummyList, []byte(""), 0o644)
+		undoFile := filepath.Join(tempDir, "undo.bin")
+
+		status, stdout, stderr = captureApplet(t, app.fn, []string{
+			"-b", "1", "-B", "1024", "-C", "0", "-E", "discard",
+			"-j", "/dev/null", "-l", dummyList, "-L", dummyList,
+			"-z", undoFile, image,
+		}, "")
+		if status != 0 || !strings.Contains(stdout, ": clean") {
+			t.Errorf("%s with-value options failed: status=%d out=%q err=%q", app.name, status, stdout, stderr)
+		}
+
+		status, _, stderr = captureApplet(t, app.fn, []string{"-b"}, "")
+		if status == 0 || !strings.Contains(stderr, "requires an argument") {
+			t.Errorf("%s -b without arg should fail: status=%d err=%q", app.name, status, stderr)
+		}
+
+		status, _, stderr = captureApplet(t, app.fn, []string{}, "")
+		if status == 0 || !strings.Contains(stderr, "missing device") {
+			t.Errorf("%s with no args should fail: status=%d err=%q", app.name, status, stderr)
+		}
+	}
+}
+
+

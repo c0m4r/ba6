@@ -91,12 +91,75 @@ Options:
   -s             serialize filesystem checking sequentially
   -t TYPE        explicit filesystem driver type (ext2/ext3/ext4)
   -T             suppress startup title banner display`,
-	"fsck.ext2": `Usage: fsck.ext2 [-nfpav] DEVICE...
-Read-only structural validation for ext2, ext3, and ext4 filesystems.`,
-	"fsck.ext3": `Usage: fsck.ext3 [-nfpav] DEVICE...
-Read-only structural validation for ext2, ext3, and ext4 filesystems.`,
-	"fsck.ext4": `Usage: fsck.ext4 [-nfpav] DEVICE...
-Read-only structural validation for ext2, ext3, and ext4 filesystems.`,
+	"fsck.ext2": `Usage: fsck.ext2 [OPTION]... DEVICE...
+Validate ext2, ext3, or ext4 filesystem integrity.
+
+  -a, -p          automatic non-interactive repair mode
+  -b SUPERBLOCK   use alternate superblock location
+  -B BLOCKSIZE    specify block size for alternate superblock
+  -c              scan device blocks for read errors
+  -C FD           stream completion metrics to descriptor
+  -d              output diagnostic tracing information
+  -D              request directory index optimization
+  -E OPTS         configure filesystem tuning options
+  -f              perform checks regardless of clean flag
+  -F              flush disk cache buffers prior to run
+  -j JOURNAL      associate external journal volume
+  -k              preserve existing defect list entries
+  -l FILE         read additional defect blocks from list
+  -L FILE         replace defective block inventory from file
+  -n              open read-only without applying modifications
+  -r              interactive question mode (ignored)
+  -t              display execution timing statistics
+  -v              verbose inspection output
+  -y              assume affirmative response to queries
+  -z UNDO         record state rollbacks into undo archive`,
+	"fsck.ext3": `Usage: fsck.ext3 [OPTION]... DEVICE...
+Validate ext2, ext3, or ext4 filesystem integrity.
+
+  -a, -p          automatic non-interactive repair mode
+  -b SUPERBLOCK   use alternate superblock location
+  -B BLOCKSIZE    specify block size for alternate superblock
+  -c              scan device blocks for read errors
+  -C FD           stream completion metrics to descriptor
+  -d              output diagnostic tracing information
+  -D              request directory index optimization
+  -E OPTS         configure filesystem tuning options
+  -f              perform checks regardless of clean flag
+  -F              flush disk cache buffers prior to run
+  -j JOURNAL      associate external journal volume
+  -k              preserve existing defect list entries
+  -l FILE         read additional defect blocks from list
+  -L FILE         replace defective block inventory from file
+  -n              open read-only without applying modifications
+  -r              interactive question mode (ignored)
+  -t              display execution timing statistics
+  -v              verbose inspection output
+  -y              assume affirmative response to queries
+  -z UNDO         record state rollbacks into undo archive`,
+	"fsck.ext4": `Usage: fsck.ext4 [OPTION]... DEVICE...
+Validate ext2, ext3, or ext4 filesystem integrity.
+
+  -a, -p          automatic non-interactive repair mode
+  -b SUPERBLOCK   use alternate superblock location
+  -B BLOCKSIZE    specify block size for alternate superblock
+  -c              scan device blocks for read errors
+  -C FD           stream completion metrics to descriptor
+  -d              output diagnostic tracing information
+  -D              request directory index optimization
+  -E OPTS         configure filesystem tuning options
+  -f              perform checks regardless of clean flag
+  -F              flush disk cache buffers prior to run
+  -j JOURNAL      associate external journal volume
+  -k              preserve existing defect list entries
+  -l FILE         read additional defect blocks from list
+  -L FILE         replace defective block inventory from file
+  -n              open read-only without applying modifications
+  -r              interactive question mode (ignored)
+  -t              display execution timing statistics
+  -v              verbose inspection output
+  -y              assume affirmative response to queries
+  -z UNDO         record state rollbacks into undo archive`,
 	"groupadd": `Usage: groupadd [-g GID] GROUP
 Create a local group in /etc/group. Requires root.`,
 	"getty": `Usage: getty [OPTION]... LINE [BAUD_RATE[,BAUD_RATE...]] [TERM]

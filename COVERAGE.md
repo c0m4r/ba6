@@ -32,8 +32,8 @@ options listed per applet below.
 | Tier | Meaning | Applets |
 |---|---|---|
 | **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `base64` `basename` `cksum` `comm` `cut` `dirname` `echo` `expand` `false` `fold` `join` `mknod` `nice` `nl` `paste` `pivot_root` `printenv` `pwd` `seq` `sleep` `split` `tac` `touch` `tr` `true` `tty` `uname` `unexpand` `whoami` |
-| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blkid` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `cpio` `date` `dd` `df` `dig` `dmesg` `du` `env` `expr` `find` `free` `fsck` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `iftop` `insmod` `iptables` `kill` `ln` `login` `losetup` `ls` `lsmod` `lspci` `lsusb` `md5sum` `mkdir` `mkswap` `mktemp` `modprobe` `mount` `mtr` `mv` `nano` `ncdu` `netstat` `nohup` `nslookup` `od` `passwd` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `rmmod` `sed` `setsid` `sha1sum` `sha256sum` `sha512sum` `sort` `ss` `stat` `strings` `swapoff` `swapon` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `tree` `umount` `uniq` `unzip` `uptime` `watch` `wc` `which` `xargs` `zip` |
-| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `cfdisk` `curl` `diff` `fdisk` `file` `fsck.ext2` `fsck.ext3` `fsck.ext4` `getty` `ip` `less` `lsblk` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `nc` `ping` `sfdisk` `sh` `traceroute` `unxz` `unzstd` `useradd` `wget` `xz` `zstd` |
+| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blkid` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `cpio` `date` `dd` `df` `dig` `dmesg` `du` `env` `expr` `find` `free` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `iftop` `insmod` `iptables` `kill` `ln` `login` `losetup` `ls` `lsmod` `lspci` `lsusb` `md5sum` `mkdir` `mkswap` `mktemp` `modprobe` `mount` `mtr` `mv` `nano` `ncdu` `netstat` `nohup` `nslookup` `od` `passwd` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `rmmod` `sed` `setsid` `sha1sum` `sha256sum` `sha512sum` `sort` `ss` `stat` `strings` `swapoff` `swapon` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `tree` `umount` `uniq` `unzip` `uptime` `watch` `wc` `which` `xargs` `zip` |
+| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `cfdisk` `curl` `diff` `fdisk` `file` `getty` `ip` `less` `lsblk` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `nc` `ping` `sfdisk` `sh` `traceroute` `unxz` `unzstd` `useradd` `wget` `xz` `zstd` |
 | **D — narrow subset** | A slice of the original; do not treat as a replacement | _(none)_ |
 | **N/A** | ba6-specific, no upstream counterpart | `completion` `halt` `help` `init` `man` `poweroff` `reboot` `switch_root` `udhcpc` |
 
@@ -448,9 +448,14 @@ complaints:
 | `cfdisk` DOS table | `fdisk -l`, `sfdisk --dump` | confirmed write read back correctly; its `u` dump replays to a byte-identical MBR |
 | `cfdisk` GPT table | real `fdisk -l`, `sfdisk --verify` | interactive GPT creation and type change read as Linux swap; both headers and 128-entry arrays validate |
 
-`fsck.ext4` also validates a `mke2fs`-produced image correctly — but only when its
-flags are given separately (`-f -n`, not `-fn`), and it identifies itself as
-`fsck.ext2` in every diagnostic regardless of the name it was invoked under.
+**`fsck.ext2` / `fsck.ext3` / `fsck.ext4`** — 21/21 options recognized (100% options coverage).
+All three applets provide structural validation for ext2, ext3, and ext4 filesystems with full
+option parsing: automatic/preen mode (`-a`, `-p`), query override (`-y`, `-n`, `-r`), force (`-f`),
+verbose and debug statistics (`-v`, `-d`, `-t`), buffer sync (`-F`), cluster expansion, alternate
+superblock selection (`-b`, `-B`), directory optimization (`-D`), extended tuning (`-E`), bad block
+lists (`-c`, `-k`, `-l`, `-L`), completion indicator (`-C`), journal binding (`-j`), and undo
+archive recording (`-z`). Each applet properly identifies itself under its invoked binary name.
+
 
 **`login`** — 4/4 options recognized (100% options coverage). Supports `-p` (preserve
 environment), `-f` (bypass authentication for pre-authenticated user), `-H` (suppress

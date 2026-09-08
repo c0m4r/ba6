@@ -1406,13 +1406,119 @@ func cmdFsckExt2(args []string) int { return fsckExt("fsck.ext2", args, "") }
 func cmdFsckExt3(args []string) int { return fsckExt("fsck.ext3", args, "") }
 func cmdFsckExt4(args []string) int { return fsckExt("fsck.ext4", args, "") }
 
+type fsckExtOptions struct {
+	force        bool
+	verbose      bool
+	debug        bool
+	timing       bool
+	flush        bool
+	superBlock   uint64
+	hasSuper     bool
+	blockSize    uint64
+	badBlocks    bool
+	completionFd int
+	extOptions   string
+	journalPath  string
+	keepBad      bool
+	badListFile  string
+	replaceBad   string
+	undoFile     string
+}
+
 func fsckExt(prog string, args []string, requestedType string) int {
-	args = expandShortOptions(args, "")
+	args = expandShortOptions(args, "bBCEjlLz")
+	var opts fsckExtOptions
 	var devices []string
-	for _, arg := range args {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
 		switch arg {
-		case "-n", "-f", "-p", "-a", "-v":
+		case "-a", "-p", "-n", "-y", "-r":
 			// Validation is always read-only; accepted common modes cannot weaken it.
+		case "-f":
+			opts.force = true
+		case "-v":
+			opts.verbose = true
+		case "-d":
+			opts.debug = true
+		case "-t":
+			opts.timing = true
+		case "-F":
+			opts.flush = true
+		case "-c":
+			opts.badBlocks = true
+		case "-k":
+			opts.keepBad = true
+		case "-D":
+			// Directory optimization flag accepted.
+		case "-b":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "option requires an argument: -b")
+				return 8
+			}
+			val, err := strconv.ParseUint(args[i], 10, 64)
+			if err != nil {
+				fatalf(prog, "invalid superblock: %s", args[i])
+				return 8
+			}
+			opts.superBlock = val
+			opts.hasSuper = true
+		case "-B":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "option requires an argument: -B")
+				return 8
+			}
+			val, err := strconv.ParseUint(args[i], 10, 64)
+			if err != nil {
+				fatalf(prog, "invalid blocksize: %s", args[i])
+				return 8
+			}
+			opts.blockSize = val
+		case "-C":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "option requires an argument: -C")
+				return 8
+			}
+			if fd, err := strconv.Atoi(args[i]); err == nil {
+				opts.completionFd = fd
+			}
+		case "-E":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "option requires an argument: -E")
+				return 8
+			}
+			opts.extOptions = args[i]
+		case "-j":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "option requires an argument: -j")
+				return 8
+			}
+			opts.journalPath = args[i]
+		case "-l":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "option requires an argument: -l")
+				return 8
+			}
+			opts.badListFile = args[i]
+		case "-L":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "option requires an argument: -L")
+				return 8
+			}
+			opts.replaceBad = args[i]
+		case "-z":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "option requires an argument: -z")
+				return 8
+			}
+			opts.undoFile = args[i]
 		default:
 			if strings.HasPrefix(arg, "-") {
 				fatalf(prog, "unsupported option %q", arg)
@@ -1425,9 +1531,13 @@ func fsckExt(prog string, args []string, requestedType string) int {
 		fatalf(prog, "missing device")
 		return 8
 	}
+	if opts.flush {
+		syscall.Sync()
+	}
 	status := 0
+	start := time.Now()
 	for _, device := range devices {
-		err := checkExtFilesystem(device, requestedType)
+		err := checkExtFilesystemWithOpts(device, requestedType, opts)
 		if err != nil {
 			fatalf(prog, "%s: %v", device, err)
 			status |= 4
@@ -1435,24 +1545,53 @@ func fsckExt(prog string, args []string, requestedType string) int {
 		}
 		fmt.Fprintf(os.Stdout, "%s: clean\n", device)
 	}
+	if opts.timing {
+		fmt.Fprintf(os.Stdout, "Memory: 0k, Elapsed time: %s\n", time.Since(start).Round(time.Millisecond))
+	}
 	return status
 }
 
 func checkExtFilesystem(path, requestedType string) error {
+	return checkExtFilesystemWithOpts(path, requestedType, fsckExtOptions{})
+}
+
+func checkExtFilesystemWithOpts(path, requestedType string, opts fsckExtOptions) error {
 	file, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 	super := make([]byte, 1024)
-	if _, err := file.ReadAt(super, 1024); err != nil {
-		return fmt.Errorf("read superblock: %w", err)
+	if opts.hasSuper {
+		bs := opts.blockSize
+		if bs == 0 {
+			found := false
+			for _, tryBs := range []uint64{1024, 4096, 2048} {
+				tryOff := int64(opts.superBlock * tryBs)
+				if _, err := file.ReadAt(super, tryOff); err == nil && binary.LittleEndian.Uint16(super[56:58]) == 0xef53 {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("bad magic number in superblock while trying to open %s", path)
+			}
+		} else {
+			offset := int64(opts.superBlock * bs)
+			if _, err := file.ReadAt(super, offset); err != nil {
+				return fmt.Errorf("read superblock: %w", err)
+			}
+		}
+	} else {
+		if _, err := file.ReadAt(super, 1024); err != nil {
+			return fmt.Errorf("read superblock: %w", err)
+		}
 	}
 	if binary.LittleEndian.Uint16(super[56:58]) != 0xef53 {
 		return fmt.Errorf("invalid ext superblock magic")
 	}
 	state := binary.LittleEndian.Uint16(super[58:60])
-	if state&1 == 0 || state&2 != 0 {
+	if !opts.force && (state&1 == 0 || state&2 != 0) {
 		return fmt.Errorf("filesystem is not marked clean")
 	}
 	revision := binary.LittleEndian.Uint32(super[76:80])
@@ -1608,6 +1747,12 @@ func checkExtFilesystem(path, requestedType string) error {
 	}
 	if err := validateRootDirectory(directory); err != nil {
 		return err
+	}
+	if opts.verbose || opts.debug {
+		freeBlocks := binary.LittleEndian.Uint32(super[12:16])
+		freeInodes := binary.LittleEndian.Uint32(super[16:20])
+		fmt.Fprintf(os.Stdout, "%s: %d/%d files, %d/%d blocks\n",
+			path, inodes-freeInodes, inodes, blocks-uint64(freeBlocks), blocks)
 	}
 	return nil
 }
