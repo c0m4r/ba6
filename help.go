@@ -708,8 +708,16 @@ Options:
 	"nc": `Usage: nc [-u] [-w SECONDS] HOST PORT
        nc -l [-u] [-p PORT] [PORT]
 Copy data over a TCP or UDP connection.`,
-	"nslookup": `Usage: nslookup NAME [SERVER]
-Resolve a host name using DNS.`,
+	"nslookup": `Usage: nslookup [OPTION]... NAME [SERVER]
+       nslookup NAME [type=TYPE] [port=PORT] [SERVER]
+Query internet name servers for domain or IP address records.
+
+Options:
+  -t, -type=TYPE       specify record type to query (A, AAAA, MX, NS, TXT, PTR)
+  -p, -port=PORT       destination port number on the nameserver (default: 53)
+  -o, -timeout=SECS    initial response waiting interval in seconds
+  -i                   enable interactive query mode
+  -n                   disable recursive resolution requests`,
 	"od": `Usage: od [OPTION]... [FILE]...
 Write an unambiguous representation of the input, two-byte octal words by
 default. Several files are read as one stream, and "-" is standard input.

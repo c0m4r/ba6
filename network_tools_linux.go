@@ -24,32 +24,199 @@ import (
 	"time"
 )
 
-func cmdNslookup(args []string) int {
-	if len(args) < 1 || len(args) > 2 {
-		fatalf("nslookup", "expected NAME [SERVER]")
-		return 1
+type nslookupConfig struct {
+	queryType   string
+	port        int
+	timeout     time.Duration
+	interactive bool
+	noRecurse   bool
+	name        string
+	server      string
+}
+
+func parseNslookupArgs(args []string) (nslookupConfig, error) {
+	cfg := nslookupConfig{
+		port:    53,
+		timeout: 5 * time.Second,
 	}
-	name := args[0]
-	resolver := net.DefaultResolver
-	if len(args) == 2 {
-		server := args[1]
-		if !strings.Contains(server, ":") {
-			server = net.JoinHostPort(server, "53")
+	var positional []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "-o":
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+				if sec, err := strconv.Atoi(args[i]); err == nil && sec > 0 {
+					cfg.timeout = time.Duration(sec) * time.Second
+				}
+			}
+		case arg == "-p":
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+				if p, err := strconv.Atoi(args[i]); err == nil && p > 0 {
+					cfg.port = p
+				}
+			}
+		case arg == "-t":
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+				cfg.queryType = strings.ToUpper(args[i])
+			}
+		case arg == "-i":
+			cfg.interactive = true
+		case arg == "-n":
+			cfg.noRecurse = true
+		case strings.HasPrefix(arg, "-type=") || strings.HasPrefix(arg, "--type="):
+			cfg.queryType = strings.ToUpper(strings.TrimPrefix(strings.TrimPrefix(arg, "--type="), "-type="))
+		case strings.HasPrefix(arg, "-query=") || strings.HasPrefix(arg, "--query="):
+			cfg.queryType = strings.ToUpper(strings.TrimPrefix(strings.TrimPrefix(arg, "--query="), "-query="))
+		case strings.HasPrefix(arg, "-q="):
+			cfg.queryType = strings.ToUpper(strings.TrimPrefix(arg, "-q="))
+		case strings.HasPrefix(arg, "-port=") || strings.HasPrefix(arg, "--port="):
+			val := strings.TrimPrefix(strings.TrimPrefix(arg, "--port="), "-port=")
+			if p, err := strconv.Atoi(val); err == nil && p > 0 {
+				cfg.port = p
+			}
+		case strings.HasPrefix(arg, "-timeout=") || strings.HasPrefix(arg, "--timeout="):
+			val := strings.TrimPrefix(strings.TrimPrefix(arg, "--timeout="), "-timeout=")
+			if s, err := strconv.Atoi(val); err == nil && s > 0 {
+				cfg.timeout = time.Duration(s) * time.Second
+			}
+		case strings.HasPrefix(arg, "type="):
+			cfg.queryType = strings.ToUpper(strings.TrimPrefix(arg, "type="))
+		case strings.HasPrefix(arg, "querytype="):
+			cfg.queryType = strings.ToUpper(strings.TrimPrefix(arg, "querytype="))
+		case strings.HasPrefix(arg, "port="):
+			if p, err := strconv.Atoi(strings.TrimPrefix(arg, "port=")); err == nil && p > 0 {
+				cfg.port = p
+			}
+		case strings.HasPrefix(arg, "timeout="):
+			if s, err := strconv.Atoi(strings.TrimPrefix(arg, "timeout=")); err == nil && s > 0 {
+				cfg.timeout = time.Duration(s) * time.Second
+			}
+		case strings.HasPrefix(arg, "class="):
+			// ignored class parameter (e.g. IN)
+		case strings.HasPrefix(arg, "-"):
+			// Ignore other flags gracefully
+		default:
+			positional = append(positional, arg)
 		}
-		resolver = &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "udp", server)
-		}}
 	}
-	ctx, cancel := timeoutContext(5 * time.Second)
-	defer cancel()
-	addresses, err := resolver.LookupHost(ctx, name)
+	if len(positional) < 1 || len(positional) > 2 {
+		return cfg, fmt.Errorf("expected NAME [SERVER]")
+	}
+	cfg.name = positional[0]
+	if len(positional) == 2 {
+		cfg.server = positional[1]
+	}
+	return cfg, nil
+}
+
+func defaultNameserver() string {
+	if data, err := os.ReadFile("/etc/resolv.conf"); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "nameserver") {
+				fields := strings.Fields(line)
+				if len(fields) >= 2 {
+					return fields[1]
+				}
+			}
+		}
+	}
+	return "127.0.0.1"
+}
+
+func cmdNslookup(args []string) int {
+	cfg, err := parseNslookupArgs(args)
 	if err != nil {
 		fatalf("nslookup", "%v", err)
 		return 1
 	}
-	fmt.Printf("Name:\t%s\n", name)
-	for _, address := range addresses {
-		fmt.Printf("Address:\t%s\n", address)
+
+	serverHost := cfg.server
+	if serverHost == "" {
+		serverHost = defaultNameserver()
+	}
+
+	serverAddr := serverHost
+	if !strings.Contains(serverAddr, ":") {
+		serverAddr = net.JoinHostPort(serverAddr, strconv.Itoa(cfg.port))
+	}
+
+	resolver := net.DefaultResolver
+	if cfg.server != "" || cfg.port != 53 {
+		resolver = &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "udp", serverAddr)
+			},
+		}
+	}
+
+	fmt.Printf("Server:\t\t%s\n", serverHost)
+	fmt.Printf("Address:\t%s#%d\n\n", serverHost, cfg.port)
+
+	ctx, cancel := timeoutContext(cfg.timeout)
+	defer cancel()
+
+	fmt.Println("Non-authoritative answer:")
+	switch cfg.queryType {
+	case "MX":
+		mxs, err := resolver.LookupMX(ctx, cfg.name)
+		if err != nil {
+			fatalf("nslookup", "%v", err)
+			return 1
+		}
+		for _, mx := range mxs {
+			fmt.Printf("%s\tmail exchanger = %d %s.\n", cfg.name, mx.Pref, strings.TrimSuffix(mx.Host, "."))
+		}
+	case "NS":
+		nss, err := resolver.LookupNS(ctx, cfg.name)
+		if err != nil {
+			fatalf("nslookup", "%v", err)
+			return 1
+		}
+		for _, ns := range nss {
+			fmt.Printf("%s\tnameserver = %s.\n", cfg.name, strings.TrimSuffix(ns.Host, "."))
+		}
+	case "TXT":
+		txts, err := resolver.LookupTXT(ctx, cfg.name)
+		if err != nil {
+			fatalf("nslookup", "%v", err)
+			return 1
+		}
+		for _, txt := range txts {
+			fmt.Printf("%s\ttext = %q\n", cfg.name, txt)
+		}
+	case "PTR":
+		names, err := resolver.LookupAddr(ctx, cfg.name)
+		if err != nil {
+			fatalf("nslookup", "%v", err)
+			return 1
+		}
+		for _, host := range names {
+			fmt.Printf("%s\tname = %s\n", cfg.name, host)
+		}
+	default:
+		if net.ParseIP(cfg.name) != nil {
+			names, err := resolver.LookupAddr(ctx, cfg.name)
+			if err == nil && len(names) > 0 {
+				for _, host := range names {
+					fmt.Printf("%s\tname = %s\n", cfg.name, host)
+				}
+				return 0
+			}
+		}
+		addresses, err := resolver.LookupHost(ctx, cfg.name)
+		if err != nil {
+			fatalf("nslookup", "%v", err)
+			return 1
+		}
+		for _, address := range addresses {
+			fmt.Printf("Name:\t%s\n", cfg.name)
+			fmt.Printf("Address: %s\n", address)
+		}
 	}
 	return 0
 }

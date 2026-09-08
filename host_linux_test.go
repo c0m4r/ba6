@@ -290,3 +290,67 @@ func TestDNSClassRoundTrip(t *testing.T) {
 		t.Errorf("unknown class = %q", got)
 	}
 }
+
+func TestNslookupOptions(t *testing.T) {
+	cfg, err := parseNslookupArgs([]string{
+		"-o", "3",
+		"-p", "5353",
+		"-t", "mx",
+		"-i", "-n",
+		"example.com", "8.8.8.8",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.timeout != 3*time.Second {
+		t.Errorf("timeout = %v, want 3s", cfg.timeout)
+	}
+	if cfg.port != 5353 {
+		t.Errorf("port = %d, want 5353", cfg.port)
+	}
+	if cfg.queryType != "MX" {
+		t.Errorf("queryType = %s, want MX", cfg.queryType)
+	}
+	if !cfg.interactive || !cfg.noRecurse {
+		t.Errorf("flags not set: %+v", cfg)
+	}
+	if cfg.name != "example.com" || cfg.server != "8.8.8.8" {
+		t.Errorf("positional args = (%s, %s), want (example.com, 8.8.8.8)", cfg.name, cfg.server)
+	}
+
+	// Long forms
+	cfg2, err := parseNslookupArgs([]string{
+		"-type=txt",
+		"-port=1053",
+		"-timeout=10",
+		"test.local",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg2.queryType != "TXT" || cfg2.port != 1053 || cfg2.timeout != 10*time.Second {
+		t.Errorf("long forms not parsed: %+v", cfg2)
+	}
+
+	// In-line key=value form
+	cfg3, err := parseNslookupArgs([]string{
+		"example.org",
+		"type=ns",
+		"port=53",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg3.name != "example.org" || cfg3.queryType != "NS" || cfg3.port != 53 {
+		t.Errorf("key=value form not parsed: %+v", cfg3)
+	}
+
+	// Errors
+	if _, err := parseNslookupArgs(nil); err == nil {
+		t.Error("expected error with no arguments")
+	}
+	if _, err := parseNslookupArgs([]string{"a", "b", "c"}); err == nil {
+		t.Error("expected error with too many operands")
+	}
+}
+
