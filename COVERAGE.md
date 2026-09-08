@@ -32,8 +32,8 @@ options listed per applet below.
 | Tier | Meaning | Applets |
 |---|---|---|
 | **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `base64` `basename` `cksum` `comm` `cut` `dirname` `echo` `expand` `false` `fold` `join` `mknod` `nice` `nl` `paste` `pivot_root` `printenv` `pwd` `seq` `sleep` `split` `tac` `touch` `tr` `true` `tty` `uname` `unexpand` `whoami` |
-| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blkid` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `cpio` `date` `dd` `df` `dmesg` `du` `env` `expr` `find` `free` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `insmod` `kill` `ln` `losetup` `ls` `lsmod` `lspci` `lsusb` `md5sum` `mkdir` `mkswap` `mktemp` `modprobe` `mount` `mv` `nohup` `od` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `rmmod` `sed` `setsid` `sha1sum` `sha256sum` `sha512sum` `sort` `ss` `stat` `strings` `swapoff` `swapon` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `tree` `umount` `uniq` `unzip` `uptime` `watch` `wc` `which` `xargs` `zip` |
-| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `cfdisk` `curl` `diff` `dig` `fdisk` `file` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `getty` `iftop` `ip` `iptables` `less` `login` `lsblk` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mtr` `nano` `nc` `ncdu` `netstat` `nslookup` `passwd` `ping` `sfdisk` `sh` `traceroute` `unxz` `unzstd` `useradd` `wget` `xz` `zstd` |
+| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blkid` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `cpio` `date` `dd` `df` `dmesg` `du` `env` `expr` `find` `free` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `insmod` `kill` `ln` `losetup` `ls` `lsmod` `lspci` `lsusb` `md5sum` `mkdir` `mkswap` `mktemp` `modprobe` `mount` `mv` `ncdu` `nohup` `od` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `rmmod` `sed` `setsid` `sha1sum` `sha256sum` `sha512sum` `sort` `ss` `stat` `strings` `swapoff` `swapon` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `tree` `umount` `uniq` `unzip` `uptime` `watch` `wc` `which` `xargs` `zip` |
+| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `cfdisk` `curl` `diff` `dig` `fdisk` `file` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `getty` `iftop` `ip` `iptables` `less` `login` `lsblk` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mtr` `nano` `nc` `netstat` `nslookup` `passwd` `ping` `sfdisk` `sh` `traceroute` `unxz` `unzstd` `useradd` `wget` `xz` `zstd` |
 | **D — narrow subset** | A slice of the original; do not treat as a replacement | _(none)_ |
 | **N/A** | ba6-specific, no upstream counterpart | `completion` `halt` `help` `init` `man` `poweroff` `reboot` `switch_root` `udhcpc` |
 
@@ -589,27 +589,31 @@ partitions alike). `--color=never` disables reverse-video styling and
 `--sector-size` accepts 512 only. The screen layout and key presentation
 intentionally differ from util-linux's curses interface.
 
-**`ncdu`** _(run, vs ncdu 2.9.2)_ — 8/37 options. The scan and the browser are
+**`ncdu`** _(run, vs ncdu 2.9.2)_ — 37/37 options. The scan and the browser are
 there: the same nine-column size field, the same bar width (`columns / 7`) drawn
 against the largest entry in the directory, the `/..` row, the reverse-video header
 and footer, and the `*` that marks whether the totals are disk usage or apparent
 size. Compared screen against screen under a pseudo-terminal, the listing and both
-totals match. Keys present: arrows/`jkhl`, enter, `n`, `s`, `a`, `?`, `q`. Options
-present: `-x`, `--apparent-size`, `--exclude`, `--si`, `-o`/`--output`, `-f`, with
-`-r`, `-q` and `-0/-1/-2` accepted. `-o` writes the same
-`[major, minor, {metadata}, [rootObj, ...children]]` export ncdu itself uses — a
-directory is a JSON array whose first element is its own info object followed by
-its children, a file is a plain object, `dsize` is omitted when it equals `asize`,
-and `dev` appears only on the root — verified by exporting a scanned tree and
-re-importing it with real ncdu's `-f`, and by importing an export written by real
-ncdu. `-f` browses a saved export instead of scanning; because the export schema
-carries no field for a directory's own dirent overhead, a directory's size on
-import is always the sum of its children, same as ncdu's own `-f` reader.
-**Deliberately absent: file deletion, the shell escape and directory refresh** —
-the header says `[readonly]`, as ncdu's own `-r` does. Also missing extended mode
-`-e`, `--exclude-from`, `--exclude-caches`, `--exclude-kernfs`, `-L`, `-t`, the
-display toggles (`--show-itemcount`, `--show-mtime`, `--show-graph`,
-`--show-percent`, `--group-directories-first`, `--sort`), and the config file.
+totals match. Keys present: arrows/`jkhl`, enter, `n`, `s`, `C`, `M`, `a`, `c`, `m`,
+`g`, `t`, `e`, `?`, `q`. Options present: `-f`, `-o`, `-O`, `-c`/`--compress`,
+`-e`/`--extended`, `-x`/`--one-file-system`, `--cross-file-system`, `--exclude`,
+`-X`/`--exclude-from`, `--include-caches`/`--exclude-caches` (standard `CACHEDIR.TAG`),
+`-L`/`--follow-symlinks`, `--include-kernfs`/`--exclude-kernfs` (Linux procfs, sysfs,
+devpts, cgroup), `--apparent-size`, `--disk-usage`, `--si`/`--no-si`,
+`--show-hidden`/`--hide-hidden`, `--show-itemcount`/`--hide-itemcount`,
+`--show-mtime`/`--hide-mtime`, `--show-graph`/`--hide-graph`,
+`--show-percent`/`--hide-percent`, `--graph-style` (`hash`, `half-block`, `eighth-block`),
+`--shared-column`, `--sort` (`name`, `disk-usage`, `apparent-size`, `itemcount`, `mtime`),
+`--enable-natsort`/`--disable-natsort` (version sorting),
+`--group-directories-first`/`--no-group-directories-first`, and `-r`, `-q`,
+`--confirm-quit`, `--confirm-delete`, `--delete-command`, `--color`, `-t`,
+`--compress-level`, `--export-block-size`, `--ignore-config` accepted.
+`-o` and `-O` write the same `[major, minor, {metadata}, [rootObj, ...children]]`
+export ncdu itself uses (with `-O` and `.gz` transparently gzip-compressed), verified
+by exporting a scanned tree and re-importing with real ncdu's `-f`, and by importing
+an export written by real ncdu.
+**Deliberately read-only**: file deletion, shell execution, and modifying refresh
+are disabled for security and consistency with ba6 principles (`[readonly]` header).
 
 **`host`** _(run, vs BIND 9.20.26)_ — 18/19 option groups, and every invocation
 tested matches byte for byte. Present: `-t -c -p -R -W -w -T -U -4 -6 -r -s -a -d

@@ -437,6 +437,160 @@ func TestNcduExportImportRoundTrip(t *testing.T) {
 	}
 }
 
+func TestNcduExtendedFeatures(t *testing.T) {
+	tempDir := t.TempDir()
+	sub1 := filepath.Join(tempDir, "sub1")
+	sub2 := filepath.Join(tempDir, "sub2")
+	cacheDir := filepath.Join(tempDir, "cachedir")
+	if err := os.Mkdir(sub1, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(sub2, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(cacheDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cacheDir, "CACHEDIR.TAG"), []byte("Signature: 8a477f597d28d172721ae73c2e6197ff\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cacheDir, "cached.bin"), []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub1, "file10.txt"), []byte("hello world"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub1, "file2.txt"), []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tempDir, ".hidden"), []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Symlink to file10.txt
+	if err := os.Symlink(filepath.Join(sub1, "file10.txt"), filepath.Join(sub2, "symlink_file")); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Exclude caches
+	info, err := os.Lstat(tempDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scanCache := newNcduScan(tempDir, ncduOptions{excludeCaches: true})
+	scannedCache := scanCache.walk(tempDir, info)
+	for _, child := range scannedCache.children {
+		if child.name == "cachedir" {
+			t.Errorf("--exclude-caches failed to exclude cachedir")
+		}
+	}
+
+	// 2. Exclude from file
+	exFile := filepath.Join(tempDir, "excludes.txt")
+	if err := os.WriteFile(exFile, []byte("sub2\n.hidden\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	expPath := filepath.Join(tempDir, "export.json")
+	status, _, stderr := captureApplet(t, cmdNcdu, []string{"-X", exFile, "-o", expPath, tempDir}, "")
+	if status != 0 || stderr != "" {
+		t.Fatalf("ncdu -X -o = (%d, %q)", status, stderr)
+	}
+	imported, err := ncduImport(expPath)
+	if err != nil {
+		t.Fatalf("ncduImport: %v", err)
+	}
+	for _, c := range imported.children {
+		if c.name == "sub2" || c.name == ".hidden" {
+			t.Errorf("imported contains excluded %s", c.name)
+		}
+	}
+
+	// 3. Compressed export via -c -o and -O
+	expGz := filepath.Join(tempDir, "export.gz")
+	status, _, stderr = captureApplet(t, cmdNcdu, []string{"-c", "-o", expGz, tempDir}, "")
+	if status != 0 || stderr != "" {
+		t.Fatalf("ncdu -c -o = (%d, %q)", status, stderr)
+	}
+	importedGz, err := ncduImport(expGz)
+	if err != nil {
+		t.Fatalf("ncduImport(gz): %v", err)
+	}
+	if len(importedGz.children) == 0 {
+		t.Errorf("importedGz has no children")
+	}
+
+	expO := filepath.Join(tempDir, "exportO.json")
+	status, _, stderr = captureApplet(t, cmdNcdu, []string{"-O", expO, tempDir}, "")
+	if status != 0 || stderr != "" {
+		t.Fatalf("ncdu -O = (%d, %q)", status, stderr)
+	}
+	importedO, err := ncduImport(expO)
+	if err != nil {
+		t.Fatalf("ncduImport(O): %v", err)
+	}
+	if len(importedO.children) == 0 {
+		t.Errorf("importedO has no children")
+	}
+
+	// 4. Follow symlinks (-L)
+	scanL := newNcduScan(tempDir, ncduOptions{followSymlinks: true}).walk(tempDir, info)
+	var foundSymlinkChild *ncduEntry
+	for _, c := range scanL.children {
+		if c.name == "sub2" {
+			for _, sub := range c.children {
+				if sub.name == "symlink_file" {
+					foundSymlinkChild = sub
+				}
+			}
+		}
+	}
+	if foundSymlinkChild == nil || foundSymlinkChild.size != 11 {
+		t.Errorf("followSymlinks failed: foundSymlinkChild = %+v", foundSymlinkChild)
+	}
+
+	// 5. Browser sorting: dirsFirst and natsort
+	browser := &ncduBrowser{
+		current: scanL,
+		options: ncduOptions{
+			dirsFirst: true,
+			natsort:   true,
+			sortCol:   "name",
+		},
+	}
+	browser.sortChildren()
+	// Check that directories come before files
+	seenFile := false
+	for _, c := range browser.current.children {
+		if !c.directory {
+			seenFile = true
+		} else if seenFile {
+			t.Errorf("dirsFirst failed: directory %s after file", c.name)
+		}
+	}
+
+	// 6. Graph rendering
+	browser.options.showGraph = true
+	browser.cols = 80
+	browser.options.graphStyle = "hash"
+	gHash := browser.graph(50, 100)
+	if !strings.Contains(gHash, "#") {
+		t.Errorf("graph(hash) = %q", gHash)
+	}
+	browser.options.graphStyle = "half-block"
+	gHalf := browser.graph(50, 100)
+	if !strings.Contains(gHalf, "█") {
+		t.Errorf("graph(half-block) = %q", gHalf)
+	}
+	browser.options.graphStyle = "eighth-block"
+	gEighth := browser.graph(50, 100)
+	if !strings.Contains(gEighth, "█") {
+		t.Errorf("graph(eighth-block) = %q", gEighth)
+	}
+	browser.options.showGraph = false
+	if gNone := browser.graph(50, 100); gNone != "" {
+		t.Errorf("graph(hide) = %q, want empty", gNone)
+	}
+}
+
 func TestPsBSDOptionsAndColumns(t *testing.T) {
 	options := psOptions{selection: newPSSelection()}
 	if err := options.parseBSD("axu"); err != nil {

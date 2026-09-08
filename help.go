@@ -843,16 +843,42 @@ Keys:
   up/down, j/k        move the selection
   right/enter, l      open the selected directory
   left, h             go to the parent directory
-  n / s               sort by name / by size (s again reverses)
+  n / s               sort by name / by size (again reverses)
+  C / M               sort by item count / by mtime (again reverses)
   a                   switch between disk usage and apparent size
+  c / m               toggle item count / modification time display
+  g                   toggle graph bar or cycle block styles
+  t                   toggle grouping directories first
+  e                   toggle hidden dotfiles
   ? / q               show the key list / quit
 
 Options:
-  -x                  stay on one filesystem
-  --apparent-size     count file sizes instead of allocated blocks
-  --exclude PATTERN   skip entries matching PATTERN
-  --si                use powers of 1000 instead of 1024
-  -r, -q, -0/-1/-2    accepted for compatibility
+  -f FILE             load and browse a previously exported scan
+  -o FILE             export scanned data into a JSON file
+  -O FILE             export scanned data as compressed JSON
+  -c, --compress      compress export output with gzip
+  -e, --extended      record and display extended file attributes
+  -x, --one-file-system stay on initial filesystem mount
+  --exclude PATTERN   omit entries matching glob PATTERN
+  -X, --exclude-from FILE read exclusion patterns from FILE
+  -L, --follow-symlinks traverse symlinks to inspect targets
+  --exclude-caches    omit directories marked with CACHEDIR.TAG
+  --exclude-kernfs    omit Linux kernel pseudo-filesystems
+  --apparent-size     report apparent byte size instead of disk allocation
+  --disk-usage        report physical disk block allocation (default)
+  --si                use base-1000 prefixes instead of base-1024
+  --show-hidden       show hidden entries beginning with a dot
+  --hide-hidden       hide hidden dotfiles from view
+  --show-itemcount    display count of child items
+  --show-mtime        display item modification timestamps
+  --show-graph        draw graphical usage bars
+  --hide-graph        do not display graphical usage bars
+  --show-percent      display percentage share of parent size
+  --graph-style STYLE set bar style: hash, half-block, or eighth-block
+  --sort COLUMN       sort by name, disk-usage, apparent-size, itemcount, mtime
+  --enable-natsort    sort names using natural numeric ordering
+  --group-directories-first list directories prior to regular files
+  -r, -q, --color COLOR accepted for compatibility
   --help              show this help`,
 	"strings": `Usage: strings [OPTION]... [FILE]...
 Print runs of printable characters at least LENGTH long. With no file, or when
