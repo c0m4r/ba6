@@ -769,19 +769,19 @@ Display socket statistics and connection tables from kernel netlink and /proc.
 Short options may be bundled.
 
 Options:
-  -a, --all         display both listening and non-listening sockets
-  -l, --listening   display only listening sockets
-  -t, --tcp         display TCP sockets
-  -u, --udp         display UDP sockets
-  -x, --unix        display Unix domain sockets
-  -4, --ipv4        display only IPv4 sockets
-  -6, --ipv6        display only IPv6 sockets
-  -s, --summary     display socket usage summary
-  -H, --no-header   suppress header line
-  -Q, --no-queues   suppress send and receive queue columns
-  -n, --numeric     show numerical addresses and ports
-  -p, --processes   show process using socket
-  -f, --family=FAM  specify socket family (inet, inet6, unix)`,
+  -a, --all         include both listening and active endpoints
+  -l, --listening   show listening endpoints only
+  -t, --tcp         filter for TCP endpoints
+  -u, --udp         filter for UDP endpoints
+  -x, --unix        filter for local Unix domain sockets
+  -4, --ipv4        limit listing to IPv4 sockets
+  -6, --ipv6        limit listing to IPv6 sockets
+  -s, --summary     show summary of socket statistics
+  -H, --no-header   omit the header line
+  -Q, --no-queues   omit send and receive queue columns
+  -n, --numeric     do not resolve service or host names
+  -p, --processes   show process name and PID owning socket
+  -f, --family=FAM  select socket family (inet, inet6, unix)`,
 	"netstat": `Usage: netstat [-tuwxlanp] [-r] [-i]
 Display sockets, the routing table, or interface counters from /proc, in the
 net-tools layout. Short options may be bundled, so -tulpn is -t -u -l -p -n.
@@ -1902,18 +1902,32 @@ List directories as an indented tree and close with a count of what was found.
 Options:
   -a        include entries whose name begins with a dot
   -d        list directories only
+  -l        follow symbolic links as directories
   -f        print the full path of each entry
+  -x        stay on the current filesystem
   -F        append /, *, @, =, or | to mark the file type
   -i        omit the indentation lines
+  -u/-g     show file owner / group
+  -s/-h     show sizes in bytes / in human-readable units
+  -p        show permissions
+  -D        show last modification timestamp
+  -o FILE   write output to FILE instead of stdout
   -L LEVEL  descend at most LEVEL directories deep
   -P PATTERN keep only files matching PATTERN
   -I PATTERN skip entries matching PATTERN
-  -s/-h     show sizes in bytes / in human-readable units
-  -p        show permissions
-  -t/-r/-U  sort by modification time / reverse the order / do not sort
-  -n/-C     accepted for compatibility; output is never colored
+  -t/-c/-v  sort by modification time / status change time / natural version
+  -r/-U     reverse the order / do not sort
+  --sort=TYPE  sort by name, version, size, mtime, or ctime
   --dirsfirst  list directories before files
+  --prune      prune empty directories from the output
+  --du         accumulate directory sizes
+  --filelimit N  skip opening directories with more than N entries
+  --inodes     show inode numbers
+  --device     show device numbers
+  --timefmt FMT format modification timestamp using strftime format
+  --matchdirs  apply -P patterns to directories as well
   --noreport   omit the closing count
+  -n/-C     accepted for compatibility; output is never colored
   --help    show this help`,
 	"tty": `Usage: tty [-s]
 Report stdin's terminal path, or print "not a tty". -s reports through the exit

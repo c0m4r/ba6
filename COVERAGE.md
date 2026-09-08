@@ -32,8 +32,8 @@ options listed per applet below.
 | Tier | Meaning | Applets |
 |---|---|---|
 | **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `base64` `basename` `cksum` `comm` `cut` `dirname` `echo` `expand` `false` `fold` `join` `mknod` `nice` `nl` `paste` `pivot_root` `printenv` `pwd` `seq` `sleep` `split` `tac` `touch` `tr` `true` `tty` `uname` `unexpand` `whoami` |
-| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blkid` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `cpio` `date` `dd` `df` `du` `env` `expr` `find` `free` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `insmod` `kill` `ln` `losetup` `ls` `lsmod` `lspci` `lsusb` `md5sum` `mkdir` `mkswap` `mktemp` `modprobe` `mount` `mv` `nohup` `od` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `rmmod` `sed` `setsid` `sha1sum` `sha256sum` `sha512sum` `sort` `ss` `stat` `strings` `swapoff` `swapon` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `umount` `uniq` `unzip` `uptime` `watch` `wc` `which` `xargs` `zip` |
-| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `cfdisk` `curl` `diff` `dig` `dmesg` `fdisk` `file` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `getty` `iftop` `ip` `iptables` `less` `login` `lsblk` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mtr` `nano` `nc` `ncdu` `netstat` `nslookup` `passwd` `ping` `sfdisk` `sh` `traceroute` `tree` `unxz` `unzstd` `useradd` `wget` `xz` `zstd` |
+| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blkid` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `cpio` `date` `dd` `df` `du` `env` `expr` `find` `free` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `insmod` `kill` `ln` `losetup` `ls` `lsmod` `lspci` `lsusb` `md5sum` `mkdir` `mkswap` `mktemp` `modprobe` `mount` `mv` `nohup` `od` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `rmmod` `sed` `setsid` `sha1sum` `sha256sum` `sha512sum` `sort` `ss` `stat` `strings` `swapoff` `swapon` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `tree` `umount` `uniq` `unzip` `uptime` `watch` `wc` `which` `xargs` `zip` |
+| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `cfdisk` `curl` `diff` `dig` `dmesg` `fdisk` `file` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `getty` `iftop` `ip` `iptables` `less` `login` `lsblk` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mtr` `nano` `nc` `ncdu` `netstat` `nslookup` `passwd` `ping` `sfdisk` `sh` `traceroute` `unxz` `unzstd` `useradd` `wget` `xz` `zstd` |
 | **D — narrow subset** | A slice of the original; do not treat as a replacement | _(none)_ |
 | **N/A** | ba6-specific, no upstream counterpart | `completion` `halt` `help` `init` `man` `poweroff` `reboot` `switch_root` `udhcpc` |
 
@@ -203,6 +203,7 @@ Absent behaviour rather than wrong behaviour, each of which touches many applets
 | `tee` | 4/4 | — | `-a` `-i` `-p` and the four `--output-error` modes present, output identical _(run)_ |
 | `timeout` | 2/5 | `-f` `-p` `-v` | `-s` `-k` and the 124 exit code match _(run)_ |
 | `top` | common display paths | configuration files, alternate windows, field-layout editor, colour mapping, kill/renice prompts, and task-area scrolling | Provides the five standard summary lines; procps-style task columns; batch and terminal modes; `-b -n -d -p -u/-U -o/-O -c -H -i -S -E -e -w -1`; and basic live keys for sorting and view toggles. Dynamic CPU percentages use adjacent `/proc` snapshots rather than lifetime averages. In raw terminal mode, each rendered row ends in CRLF so the process table remains column-aligned. |
+| `tree` | 32 options | HTML/XML/JSON output (`-H -X -J`), `--charset` | Indented directory tree with symlink following (`-l`) and cycle detection, `-x` (one filesystem), file limit (`--filelimit`), inode/device/permission/user/group/size/mtime bracketed metadata, custom time formats (`--timefmt`), directory pruning (`--prune`), directory size accumulation (`--du`), multiple sorting modes (`--sort=`, `-t`, `-c`, `-v`, `-r`, `-U`), pattern filtering (`-P`, `-I`, `--matchdirs`), and file output (`-o`) _(run)_ |
 | `uniq` | 10/11 | — | `-c -d -u -i -f -s -w -D --group -z` all present; the field/char skipping and `-w` truncation follow GNU's skipfield exactly (the blanks after a skipped field stay compared), and the `-D`/`--all-repeated` (`none`/`prepend`/`separate`) and `--group` (`separate`/`prepend`/`append`/`both`) blank-line placement was diffed byte for byte, including the quirks: `-D -u` prints one line per group, `-D -c` is rejected as `meaningless`, `--group` refuses to combine with `-c/-d/-D/-u` _(run)_ |
 | `uptime` | 4/4 | — | `-p` (decades/years/weeks/days/hours/minutes with singular/plural units), `-s` (boot time as `yyyy-mm-dd HH:MM:SS`), `-r` (boot epoch, uptime with six decimals, user count, three load averages) and `-c` (CLOCK_BOOTTIME minus pid 1's start) all present, and the default line now carries the user count with procps' exact `, %2d users?,  ` spacing and `%2d:%02d` uptime layout — byte-identical under C locale. The user count comes from `/run/systemd/sessions` `CLASS=user` entries when systemd runs, else from utmp records; both match procps' own `sd_get_sessions`-then-utmp order _(run)_ |
 | `wc` | 4/8 | `-L` `--total` `--files0-from` `--debug` | counts, column widths and the `total` line are byte-identical, including stdin and the unpadded single-count form _(run)_ |
@@ -332,15 +333,6 @@ prints `HOST:https` and `_gateway`; only the default route is named. Missing `-s
 (per-protocol statistics), `-A`, `-g`, `-M`, `-C`, `-F`, `-c`, `-o`, and the IPv6
 routing table.
 
-**`tree`** — _(no reference)_: `tree(1)` is not installed on the measurement host, so
-nothing here was diffed and the option list below is what ba6 accepts, not a
-coverage ratio. Present: `-a -d -f -F -i -L -P -I -s -h -p -t -r -U -n -C
---dirsfirst --noreport`. Drawing, the `name -> target` form for symlinks, the
-`[error opening dir]` marker on the directory's own line, and the closing
-`N directories, M files` line follow the original's layout. Missing `-l` (follow
-symlinks), `-x`, `-D`, `-u`/`-g`, `-J`/`-X`/`-H` (JSON, XML, HTML), `--du`,
-`--prune`, `--filelimit`, `--timefmt`, `--charset`, `--matchdirs`, `--inodes`,
-`--device`, `--sort=`, `-o`.
 
 **`ip`** — objects `link`, `addr`, `route`, `neigh`, `rule` _(run)_. Objects and
 commands accept **any unambiguous prefix**, resolved in the order iproute2

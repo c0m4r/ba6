@@ -15,6 +15,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // treeFixture builds a small directory with a hidden file, a nested directory,
@@ -121,6 +122,120 @@ func TestTreeOptions(t *testing.T) {
 	if status, stdout, _ := captureApplet(t, cmdTree, []string{filepath.Join(root, "missing")}, ""); status == 0 ||
 		!strings.Contains(stdout, "[error opening dir]") {
 		t.Fatalf("tree on a missing path = (%d,%q)", status, stdout)
+	}
+}
+
+func TestTreeExtendedOptions(t *testing.T) {
+	root := treeFixture(t)
+
+	// Create symlinks for -l testing: one valid dir link, one recursive loop
+	if err := os.Symlink("sub", filepath.Join(root, "dir1", "sublink")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("..", filepath.Join(root, "dir1", "loop")); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. -o FILE redirection
+	outPath := filepath.Join(t.TempDir(), "tree_output.txt")
+	status, stdout, stderr := captureApplet(t, cmdTree, []string{"-o", outPath, root}, "")
+	if status != 0 || stderr != "" {
+		t.Fatalf("tree -o = (%d, %q)", status, stderr)
+	}
+	if stdout != "" {
+		t.Errorf("expected empty stdout when -o is given, got %q", stdout)
+	}
+	data, err := os.ReadFile(outPath)
+	if err != nil || !strings.Contains(string(data), "b.txt") {
+		t.Errorf("failed to read expected content from tree -o file: %v", err)
+	}
+
+	// 2. -p, -u, -g, -s, -h metadata
+	status, stdout, stderr = captureApplet(t, cmdTree, []string{"-pugsh", root}, "")
+	if status != 0 || stderr != "" {
+		t.Fatalf("tree -pugsh = (%d, %q)", status, stderr)
+	}
+	if !strings.Contains(stdout, "[") || !strings.Contains(stdout, "]") || !strings.Contains(stdout, "b.txt") {
+		t.Errorf("tree -pugsh missing bracketed metadata:\n%s", stdout)
+	}
+
+	// 3. -D with --timefmt
+	status, stdout, stderr = captureApplet(t, cmdTree, []string{"-D", "--timefmt=%Y-%m-%d", root}, "")
+	if status != 0 || stderr != "" {
+		t.Fatalf("tree -D --timefmt = (%d, %q)", status, stderr)
+	}
+	today := time.Now().Format("2006-01-02")
+	if !strings.Contains(stdout, today) {
+		t.Errorf("tree -D missing %s:\n%s", today, stdout)
+	}
+
+	// 4. --inodes and --device
+	status, stdout, stderr = captureApplet(t, cmdTree, []string{"--inodes", "--device", root}, "")
+	if status != 0 || stderr != "" {
+		t.Fatalf("tree --inodes --device = (%d, %q)", status, stderr)
+	}
+	if !strings.Contains(stdout, "b.txt") {
+		t.Errorf("tree --inodes --device missing b.txt:\n%s", stdout)
+	}
+
+	// 5. --du directory sizing
+	status, stdout, stderr = captureApplet(t, cmdTree, []string{"-s", "--du", root}, "")
+	if status != 0 || stderr != "" {
+		t.Fatalf("tree -s --du = (%d, %q)", status, stderr)
+	}
+	if !strings.Contains(stdout, "dir1") {
+		t.Errorf("tree --du missing dir1:\n%s", stdout)
+	}
+
+	// 6. --prune empty directory pruning (dir2 is empty)
+	status, stdout, stderr = captureApplet(t, cmdTree, []string{"--prune", root}, "")
+	if status != 0 || stderr != "" {
+		t.Fatalf("tree --prune = (%d, %q)", status, stderr)
+	}
+	if strings.Contains(stdout, "dir2") {
+		t.Errorf("tree --prune unexpectedly kept empty dir2:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "dir1") {
+		t.Errorf("tree --prune missing non-empty dir1:\n%s", stdout)
+	}
+
+	// 7. -l follow symlinks and loop detection
+	status, stdout, stderr = captureApplet(t, cmdTree, []string{"-l", root}, "")
+	if status != 0 || stderr != "" {
+		t.Fatalf("tree -l = (%d, %q)", status, stderr)
+	}
+	if !strings.Contains(stdout, "sublink -> sub") {
+		t.Errorf("tree -l missing followed symlink:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "[recursive, loop detected]") {
+		t.Errorf("tree -l missing loop detection:\n%s", stdout)
+	}
+
+	// 8. --filelimit
+	status, stdout, stderr = captureApplet(t, cmdTree, []string{"--filelimit=1", root}, "")
+	if status != 0 || stderr != "" {
+		t.Fatalf("tree --filelimit = (%d, %q)", status, stderr)
+	}
+	if !strings.Contains(stdout, "exceeds filelimit") {
+		t.Errorf("tree --filelimit missing limit marker:\n%s", stdout)
+	}
+
+	// 9. Sorting options: --sort=size, --sort=mtime, -c, -v
+	for _, sortArg := range []string{"--sort=size", "--sort=mtime", "--sort=ctime", "--sort=version", "-c", "-v"} {
+		status, _, stderr = captureApplet(t, cmdTree, []string{sortArg, root}, "")
+		if status != 0 || stderr != "" {
+			t.Errorf("tree %s failed: status=%d, stderr=%q", sortArg, status, stderr)
+		}
+	}
+
+	// 10. Rejections
+	if status, _, stderr := captureApplet(t, cmdTree, []string{"--sort=invalid", root}, ""); status == 0 ||
+		!strings.Contains(stderr, "invalid sort") {
+		t.Errorf("tree --sort=invalid did not fail properly: status=%d, stderr=%q", status, stderr)
+	}
+	if status, _, stderr := captureApplet(t, cmdTree, []string{"--filelimit=bad", root}, ""); status == 0 ||
+		!strings.Contains(stderr, "invalid filelimit") {
+		t.Errorf("tree --filelimit=bad did not fail properly: status=%d, stderr=%q", status, stderr)
 	}
 }
 
