@@ -121,6 +121,36 @@ func TestCmdDmesgFromFile(t *testing.T) {
 		{"userspace-only", []string{"-F", path, "-u"}, "[  123.456789] a userspace daemon message\n"},
 		{"level-err", []string{"-F", path, "-l", "err"}, "[   12.345678] an error occurred here\n"},
 		{"facility-user", []string{"-F", path, "-f", "user"}, "[  123.456789] a userspace daemon message\n"},
+		{"show-delta", []string{"-F", path, "-d"}, "[    0.000000 <    0.000000>] Linux version test\n" +
+			"[    1.234567 <    0.000000>] some warning message\n" +
+			"[   12.345678 <   11.111111>] an error occurred here\n" +
+			"[  123.456789 <  111.111111>] a userspace daemon message\n"},
+		{"time-format-delta", []string{"-F", path, "--time-format=delta"}, "[<    0.000000>] Linux version test\n" +
+			"[<    0.000000>] some warning message\n" +
+			"[<   11.111111>] an error occurred here\n" +
+			"[<  111.111111>] a userspace daemon message\n"},
+		{"show-delta-notime", []string{"-F", path, "-d", "-t"}, "[<    0.000000>] Linux version test\n" +
+			"[<    0.000000>] some warning message\n" +
+			"[<   11.111111>] an error occurred here\n" +
+			"[<  111.111111>] a userspace daemon message\n"},
+		{"json", []string{"-F", path, "-J"}, "{\n   \"dmesg\": [\n" +
+			"      {\n         \"pri\": 6,\n         \"time\":     0.000000,\n         \"msg\": \"Linux version test\"\n      },{\n" +
+			"         \"pri\": 4,\n         \"time\":     1.234567,\n         \"msg\": \"some warning message\"\n      },{\n" +
+			"         \"pri\": 3,\n         \"time\":    12.345678,\n         \"msg\": \"an error occurred here\"\n      },{\n" +
+			"         \"pri\": 14,\n         \"time\":   123.456789,\n         \"msg\": \"a userspace daemon message\"\n      }\n   ]\n}\n"},
+		{"json-decode", []string{"-F", path, "-J", "-x"}, "{\n   \"dmesg\": [\n" +
+			"      {\n         \"fac\": \"kern\",\n         \"pri\": \"info\",\n         \"time\":     0.000000,\n         \"msg\": \"Linux version test\"\n      },{\n" +
+			"         \"fac\": \"kern\",\n         \"pri\": \"warn\",\n         \"time\":     1.234567,\n         \"msg\": \"some warning message\"\n      },{\n" +
+			"         \"fac\": \"kern\",\n         \"pri\": \"err\",\n         \"time\":    12.345678,\n         \"msg\": \"an error occurred here\"\n      },{\n" +
+			"         \"fac\": \"user\",\n         \"pri\": \"info\",\n         \"time\":   123.456789,\n         \"msg\": \"a userspace daemon message\"\n      }\n   ]\n}\n"},
+		{"color-flag", []string{"-F", path, "-L", "--color=auto"}, "[    0.000000] Linux version test\n" +
+			"[    1.234567] some warning message\n" +
+			"[   12.345678] an error occurred here\n" +
+			"[  123.456789] a userspace daemon message\n"},
+		{"follow-file", []string{"-F", path, "-w"}, "[    0.000000] Linux version test\n" +
+			"[    1.234567] some warning message\n" +
+			"[   12.345678] an error occurred here\n" +
+			"[  123.456789] a userspace daemon message\n"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -139,6 +169,24 @@ func TestCmdDmesgFromFile(t *testing.T) {
 	}
 	if _, status := captureDmesgOutput(t, []string{"-F", "/nonexistent-file"}); status == 0 {
 		t.Fatal("cmdDmesg -F on a missing file should fail")
+	}
+	if _, status := captureDmesgOutput(t, []string{"-F", path, "--time-format=unsupported"}); status == 0 {
+		t.Fatal("cmdDmesg with unsupported time format should fail")
+	}
+
+	// Test -K with /dev/kmsg records null-delimited
+	kmsgPath := filepath.Join(t.TempDir(), "kmsg.bin")
+	kmsgData := []byte("6,0,0,-;Linux version test\x004,1,1234567,-;some warning message\x00")
+	if err := os.WriteFile(kmsgPath, kmsgData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gotKmsg, statusKmsg := captureDmesgOutput(t, []string{"-K", kmsgPath})
+	if statusKmsg != 0 {
+		t.Fatalf("cmdDmesg -K returned %d", statusKmsg)
+	}
+	wantKmsg := "[    0.000000] Linux version test\n[    1.234567] some warning message\n"
+	if gotKmsg != wantKmsg {
+		t.Fatalf("cmdDmesg -K = %q, want %q", gotKmsg, wantKmsg)
 	}
 }
 

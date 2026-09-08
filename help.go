@@ -498,8 +498,37 @@ memory debugging are not implemented; their options are rejected rather than
 quietly ignored.`,
 	"diff": `Usage: diff [-u] FILE1 FILE2
 Show a line-oriented difference.`,
-	"dmesg": `Usage: dmesg [-c]
-Read the kernel message buffer.`,
+	"dmesg": `Usage: dmesg [OPTION]...
+Inspect or control kernel ring buffer log records.
+
+Options:
+  -c, --read-clear          print messages then clear ring buffer
+  -C, --clear               clear ring buffer without printing
+  -r, --raw                 emit unparsed log entries with priority tags
+  -t, --notime              omit timestamps from records
+  -d, --show-delta          include time elapsed between consecutive records
+  -e, --reltime             print relative time deltas and periodic local time
+  -H, --human               human-friendly layout enabling reltime formatting
+  -J, --json                render output records in JSON format
+  -x, --decode              prefix facility and severity names
+  -T, --ctime               reconstruct human-readable wall clock times
+  -k, --kernel              restrict to kernel facility records
+  -u, --userspace           restrict to non-kernel facility records
+  -w, --follow              monitor log stream for new arrivals
+  -W, --follow-new          monitor and show exclusively new incoming lines
+  -F, --file FILE           read syslog-formatted records from FILE
+  -K, --kmsg-file FILE      read /dev/kmsg formatted records from FILE
+  -l, --level LIST          filter by comma-separated severity levels
+  -f, --facility LIST       filter by comma-separated facilities
+  -s, --buffer-size N       size of buffer allocated for syslog retrieval
+  -n, --console-level N     adjust console log printing threshold
+  -D, --console-off         turn off console logging
+  -E, --console-on          turn on console logging
+  --time-format FMT         choose format: delta, reltime, ctime, notime, iso, raw
+  --since TIME              filter records occurring after TIME
+  --until TIME              filter records occurring before TIME
+  -L, --color[=WHEN]        accepted for compatibility
+  -S, -P, -p, --noescape    accepted for compatibility`,
 	"env": `Usage: env [-i] [-u NAME] [NAME=VALUE]... [COMMAND [ARG]...]
 Display or modify the environment and optionally run a command.`,
 	"expr": `Usage: expr EXPRESSION

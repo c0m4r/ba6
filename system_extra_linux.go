@@ -7,7 +7,9 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -370,6 +372,39 @@ func parseDmesgLine(line string) dmesgLine {
 	return l
 }
 
+// parseKmsgRecord parses one /dev/kmsg record: "pri,seq,timestamp_usec,flags;msg\n"
+// with optional continuation or property lines following.
+func parseKmsgRecord(raw string) dmesgLine {
+	l := dmesgLine{facility: 0, level: 6, raw: raw, text: raw}
+	line := raw
+	if idx := strings.IndexByte(line, '\n'); idx >= 0 {
+		line = line[:idx]
+	}
+	line = strings.TrimRight(line, "\r")
+	semi := strings.IndexByte(line, ';')
+	if semi < 0 {
+		return parseDmesgLine(raw)
+	}
+	hdr := line[:semi]
+	msg := line[semi+1:]
+	parts := strings.Split(hdr, ",")
+	if len(parts) < 3 {
+		return parseDmesgLine(raw)
+	}
+	pri, err1 := strconv.Atoi(parts[0])
+	usecTotal, err2 := strconv.ParseInt(parts[2], 10, 64)
+	if err1 != nil || err2 != nil {
+		return parseDmesgLine(raw)
+	}
+	l.facility = pri / 8
+	l.level = pri % 8
+	l.sec = usecTotal / 1000000
+	l.usec = usecTotal % 1000000
+	l.hasTS = true
+	l.text = msg
+	return l
+}
+
 // dmesgBootInstant estimates the wall-clock instant CLOCK_MONOTONIC's zero
 // point corresponds to, the same delta dmesg(1) documents using for -T/-e:
 // "adjusted according to current delta between boottime and monotonic
@@ -448,15 +483,153 @@ func dmesgSyslog(action, size uintptr) ([]byte, error) {
 	return buf[:n], nil
 }
 
+type dmesgFormatter struct {
+	raw        bool
+	decode     bool
+	notime     bool
+	jsonFmt    bool
+	deltaFmt   bool
+	showDelta  bool
+	reltimeFmt bool
+	isoFmt     bool
+	ctimeFmt   bool
+	haveBoot   bool
+	boot       time.Time
+
+	lastMicro     int64
+	haveLastMicro bool
+
+	lastRelYear int
+	lastRelDay  int
+	lastRelHour int
+	lastRelMin  int
+	haveRelTime bool
+
+	jsonCount int
+}
+
+func (f *dmesgFormatter) format(line dmesgLine, out *strings.Builder) {
+	if f.jsonFmt {
+		if f.jsonCount == 0 {
+			out.WriteString("{\n   \"dmesg\": [\n      {\n")
+		} else {
+			out.WriteString("      },{\n")
+		}
+		f.jsonCount++
+		if f.decode {
+			fmt.Fprintf(out, "         \"fac\": %q,\n", dmesgFacilityName(line.facility))
+			fmt.Fprintf(out, "         \"pri\": %q,\n", dmesgLevelName(line.level))
+		} else {
+			fmt.Fprintf(out, "         \"pri\": %d,\n", line.facility*8+line.level)
+		}
+		fmt.Fprintf(out, "         \"time\": %5d.%06d,\n", line.sec, line.usec)
+		msgBytes, _ := json.Marshal(line.text)
+		fmt.Fprintf(out, "         \"msg\": %s\n", string(msgBytes))
+		return
+	}
+
+	if f.raw {
+		out.WriteString(line.raw)
+		out.WriteByte('\n')
+		return
+	}
+
+	currMicro := line.sec*1000000 + line.usec
+	var deltaMicro int64
+	if !f.haveLastMicro || f.lastMicro == 0 {
+		deltaMicro = 0
+	} else {
+		deltaMicro = currMicro - f.lastMicro
+		if deltaMicro < 0 {
+			deltaMicro = 0
+		}
+	}
+	f.lastMicro = currMicro
+	f.haveLastMicro = true
+	deltaSec := deltaMicro / 1000000
+	deltaUsecRem := deltaMicro % 1000000
+
+	var realTime time.Time
+	if f.haveBoot && line.hasTS {
+		realTime = f.boot.Add(time.Duration(line.sec)*time.Second + time.Duration(line.usec)*time.Microsecond)
+	}
+
+	if f.decode {
+		fmt.Fprintf(out, "%-6s:%-6s: ", dmesgFacilityName(line.facility), dmesgLevelName(line.level))
+	}
+	if line.hasTS {
+		if f.showDelta {
+			switch {
+			case f.ctimeFmt && f.haveBoot:
+				fmt.Fprintf(out, "[%s <%5d.%06d>] ", realTime.Format("Mon Jan _2 15:04:05 2006"), deltaSec, deltaUsecRem)
+			case f.notime:
+				fmt.Fprintf(out, "[<%5d.%06d>] ", deltaSec, deltaUsecRem)
+			default:
+				fmt.Fprintf(out, "[%5d.%06d <%5d.%06d>] ", line.sec, line.usec, deltaSec, deltaUsecRem)
+				if f.isoFmt && f.haveBoot {
+					fmt.Fprintf(out, "%s,%06d%s ", realTime.Format("2006-01-02T15:04:05"),
+						realTime.Nanosecond()/1000, realTime.Format("-07:00"))
+				} else if f.reltimeFmt && f.haveBoot {
+					if !f.haveRelTime || realTime.Year() != f.lastRelYear || realTime.YearDay() != f.lastRelDay ||
+						realTime.Hour() != f.lastRelHour || realTime.Minute() != f.lastRelMin {
+						fmt.Fprintf(out, "[%s %d %02d:%02d] ", realTime.Format("Jan"), realTime.Day(), realTime.Hour(), realTime.Minute())
+						f.lastRelYear = realTime.Year()
+						f.lastRelDay = realTime.YearDay()
+						f.lastRelHour = realTime.Hour()
+						f.lastRelMin = realTime.Minute()
+						f.haveRelTime = true
+					} else {
+						fmt.Fprintf(out, "[%11s] ", fmt.Sprintf("+%d.%06d", deltaSec, deltaUsecRem))
+					}
+				}
+			}
+		} else if !f.notime {
+			switch {
+			case f.deltaFmt:
+				fmt.Fprintf(out, "[<%5d.%06d>] ", deltaSec, deltaUsecRem)
+			case f.reltimeFmt && f.haveBoot:
+				if !f.haveRelTime || realTime.Year() != f.lastRelYear || realTime.YearDay() != f.lastRelDay ||
+					realTime.Hour() != f.lastRelHour || realTime.Minute() != f.lastRelMin {
+					fmt.Fprintf(out, "[%s %d %02d:%02d] ", realTime.Format("Jan"), realTime.Day(), realTime.Hour(), realTime.Minute())
+					f.lastRelYear = realTime.Year()
+					f.lastRelDay = realTime.YearDay()
+					f.lastRelHour = realTime.Hour()
+					f.lastRelMin = realTime.Minute()
+					f.haveRelTime = true
+				} else {
+					fmt.Fprintf(out, "[%11s] ", fmt.Sprintf("+%d.%06d", deltaSec, deltaUsecRem))
+				}
+			case f.isoFmt && f.haveBoot:
+				fmt.Fprintf(out, "%s,%06d%s ", realTime.Format("2006-01-02T15:04:05"),
+					realTime.Nanosecond()/1000, realTime.Format("-07:00"))
+			case f.ctimeFmt && f.haveBoot:
+				fmt.Fprintf(out, "[%s] ", realTime.Format("Mon Jan _2 15:04:05 2006"))
+			default:
+				fmt.Fprintf(out, "[%5d.%06d] ", line.sec, line.usec)
+			}
+		}
+	}
+	out.WriteString(line.text)
+	out.WriteByte('\n')
+}
+
+func (f *dmesgFormatter) finish(out *strings.Builder) {
+	if f.jsonFmt && f.jsonCount > 0 {
+		out.WriteString("      }\n   ]\n}\n")
+	}
+}
+
 func cmdDmesg(args []string) int {
-	args = expandShortOptions(args, "lfnsF")
+	args = expandShortOptions(args, "lfnsFK")
 	var (
 		clearAfter, clearOnly, raw, notime, decode, ctimeFmt, isoFmt bool
+		showDelta, deltaFmt, reltimeFmt, humanFmt, jsonFmt           bool
+		follow, followNew                                            bool
 		kernelOnly, userspaceOnly                                    bool
 		consoleOff, consoleOn                                        bool
 		consoleLevel                                                 = -1
 		bufSize                                                      uintptr
-		fromFile                                                     string
+		fromFile, fromKmsgFile                                       string
 		levels, facilities                                           map[int]bool
 		since, until                                                 *time.Time
 	)
@@ -478,6 +651,15 @@ func cmdDmesg(args []string) int {
 			raw = true
 		case arg == "-t" || arg == "--notime":
 			notime = true
+		case arg == "-d" || arg == "--show-delta":
+			showDelta = true
+		case arg == "-e" || arg == "--reltime":
+			reltimeFmt = true
+		case arg == "-H" || arg == "--human":
+			humanFmt = true
+			reltimeFmt = true
+		case arg == "-J" || arg == "--json":
+			jsonFmt = true
 		case arg == "-x" || arg == "--decode":
 			decode = true
 		case arg == "-T" || arg == "--ctime":
@@ -486,12 +668,18 @@ func cmdDmesg(args []string) int {
 			kernelOnly = true
 		case arg == "-u" || arg == "--userspace":
 			userspaceOnly = true
+		case arg == "-w" || arg == "--follow":
+			follow = true
+		case arg == "-W" || arg == "--follow-new":
+			follow = true
+			followNew = true
 		case arg == "-D" || arg == "--console-off":
 			consoleOff = true
 		case arg == "-E" || arg == "--console-on":
 			consoleOn = true
 		case arg == "-S" || arg == "--syslog", arg == "-P" || arg == "--nopager",
-			arg == "-p" || arg == "--force-prefix", arg == "--noescape":
+			arg == "-p" || arg == "--force-prefix", arg == "--noescape",
+			arg == "-L" || arg == "--color" || strings.HasPrefix(arg, "--color="):
 			// no-op: ba6 always uses syslog(2), never pages, never colours,
 			// and single-line records need no multi-line prefix repair.
 		case arg == "-n" || arg == "--console-level":
@@ -549,6 +737,13 @@ func cmdDmesg(args []string) int {
 				return 1
 			}
 			fromFile = v
+		case arg == "-K" || arg == "--kmsg-file":
+			v, ok := next()
+			if !ok {
+				fatalf("dmesg", "option '%s' requires an argument", arg)
+				return 1
+			}
+			fromKmsgFile = v
 		case strings.HasPrefix(arg, "--time-format"):
 			v := strings.TrimPrefix(arg, "--time-format=")
 			if v == arg {
@@ -566,6 +761,10 @@ func cmdDmesg(args []string) int {
 				isoFmt = true
 			case "notime":
 				notime = true
+			case "delta":
+				deltaFmt = true
+			case "reltime":
+				reltimeFmt = true
 			case "raw":
 				// default timestamp format; nothing to set
 			default:
@@ -600,6 +799,7 @@ func cmdDmesg(args []string) int {
 			return 1
 		}
 	}
+	_ = humanFmt
 
 	if consoleOff || consoleOn || consoleLevel >= 0 {
 		action, level := uintptr(6), uintptr(0)
@@ -616,14 +816,41 @@ func cmdDmesg(args []string) int {
 		return 0
 	}
 
-	var data []byte
-	if fromFile != "" {
+	var lines []dmesgLine
+	if fromKmsgFile != "" {
+		b, err := os.ReadFile(fromKmsgFile)
+		if err != nil {
+			fatalf("dmesg", "cannot open %s: %v", fromKmsgFile, errText(err))
+			return 1
+		}
+		var rawRecs []string
+		if bytes.IndexByte(b, 0) >= 0 {
+			for _, rec := range bytes.Split(b, []byte{0}) {
+				if len(rec) > 0 {
+					rawRecs = append(rawRecs, string(rec))
+				}
+			}
+		} else {
+			for _, line := range strings.Split(strings.TrimRight(string(b), "\n"), "\n") {
+				if line != "" {
+					rawRecs = append(rawRecs, line)
+				}
+			}
+		}
+		for _, r := range rawRecs {
+			lines = append(lines, parseKmsgRecord(r))
+		}
+	} else if fromFile != "" {
 		b, err := os.ReadFile(fromFile)
 		if err != nil {
 			fatalf("dmesg", "cannot open %s: %v", fromFile, errText(err))
 			return 1
 		}
-		data = b
+		for _, raw0 := range strings.Split(strings.TrimRight(string(b), "\n"), "\n") {
+			if raw0 != "" {
+				lines = append(lines, parseDmesgLine(raw0))
+			}
+		}
 	} else if clearOnly {
 		if _, err := dmesgSyslog(5, 0); err != nil {
 			fatalf("dmesg", "%v", err)
@@ -640,64 +867,122 @@ func cmdDmesg(args []string) int {
 			fatalf("dmesg", "%v", err)
 			return 1
 		}
-		data = b
+		for _, raw0 := range strings.Split(strings.TrimRight(string(b), "\n"), "\n") {
+			if raw0 != "" {
+				lines = append(lines, parseDmesgLine(raw0))
+			}
+		}
 	}
 
 	boot, haveBoot := dmesgBootInstant()
-	var out strings.Builder
-	for _, raw0 := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
-		if raw0 == "" {
-			continue
-		}
-		line := parseDmesgLine(raw0)
+	filterLine := func(line dmesgLine, realTime time.Time, haveBoot bool) bool {
 		if kernelOnly && line.facility != 0 {
-			continue
+			return false
 		}
 		if userspaceOnly && line.facility == 0 {
-			continue
+			return false
 		}
 		if levels != nil && !levels[line.level] {
-			continue
+			return false
 		}
 		if facilities != nil && !facilities[line.facility] {
-			continue
-		}
-		var realTime time.Time
-		if haveBoot && line.hasTS {
-			realTime = boot.Add(time.Duration(line.sec)*time.Second + time.Duration(line.usec)*time.Microsecond)
+			return false
 		}
 		if (since != nil || until != nil) && line.hasTS && haveBoot {
 			if since != nil && realTime.Before(*since) {
-				continue
+				return false
 			}
 			if until != nil && realTime.After(*until) {
+				return false
+			}
+		}
+		return true
+	}
+
+	fmtLine := dmesgFormatter{
+		raw:        raw,
+		decode:     decode,
+		notime:     notime,
+		jsonFmt:    jsonFmt,
+		deltaFmt:   deltaFmt,
+		showDelta:  showDelta,
+		reltimeFmt: reltimeFmt,
+		isoFmt:     isoFmt,
+		ctimeFmt:   ctimeFmt,
+		haveBoot:   haveBoot,
+		boot:       boot,
+	}
+
+	var out strings.Builder
+	if !followNew {
+		for _, line := range lines {
+			var realTime time.Time
+			if haveBoot && line.hasTS {
+				realTime = boot.Add(time.Duration(line.sec)*time.Second + time.Duration(line.usec)*time.Microsecond)
+			}
+			if !filterLine(line, realTime, haveBoot) {
 				continue
 			}
+			fmtLine.format(line, &out)
 		}
-		if raw {
-			out.WriteString(line.raw)
-			out.WriteByte('\n')
-			continue
+		if !follow {
+			fmtLine.finish(&out)
 		}
-		if decode {
-			fmt.Fprintf(&out, "%-6s:%-6s: ", dmesgFacilityName(line.facility), dmesgLevelName(line.level))
+		if out.Len() > 0 {
+			if _, err := os.Stdout.WriteString(out.String()); err != nil {
+				return 1
+			}
+			out.Reset()
 		}
-		if !notime && line.hasTS {
-			switch {
-			case isoFmt && haveBoot:
-				fmt.Fprintf(&out, "%s,%06d%s ", realTime.Format("2006-01-02T15:04:05"),
-					realTime.Nanosecond()/1000, realTime.Format("-07:00"))
-			case ctimeFmt && haveBoot:
-				fmt.Fprintf(&out, "[%s] ", realTime.Format("Mon Jan _2 15:04:05 2006"))
-			default:
-				fmt.Fprintf(&out, "[%5d.%06d] ", line.sec, line.usec)
+	}
+
+	if follow {
+		if fromKmsgFile != "" || fromFile != "" {
+			// Static files in tests have no more incoming entries
+			fmtLine.finish(&out)
+			if out.Len() > 0 {
+				if _, err := os.Stdout.WriteString(out.String()); err != nil {
+					return 1
+				}
+			}
+			return 0
+		}
+		kmsg, err := os.OpenFile("/dev/kmsg", os.O_RDONLY, 0)
+		if err != nil {
+			fatalf("dmesg", "read kernel buffer failed: %v", errText(err))
+			return 1
+		}
+		defer kmsg.Close()
+		if followNew {
+			if _, err := kmsg.Seek(0, io.SeekEnd); err != nil {
+				fatalf("dmesg", "cannot seek /dev/kmsg: %v", errText(err))
+				return 1
 			}
 		}
-		out.WriteString(line.text)
-		out.WriteByte('\n')
-	}
-	if _, err := os.Stdout.WriteString(out.String()); err != nil {
-		return 1
+		buf := make([]byte, 8192)
+		for {
+			n, err := kmsg.Read(buf)
+			if err != nil {
+				if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EINTR) {
+					continue
+				}
+				fatalf("dmesg", "read kernel buffer failed: %v", errText(err))
+				return 1
+			}
+			recLine := parseKmsgRecord(string(buf[:n]))
+			var realTime time.Time
+			if haveBoot && recLine.hasTS {
+				realTime = boot.Add(time.Duration(recLine.sec)*time.Second + time.Duration(recLine.usec)*time.Microsecond)
+			}
+			if !filterLine(recLine, realTime, haveBoot) {
+				continue
+			}
+			var single strings.Builder
+			fmtLine.format(recLine, &single)
+			if _, err := os.Stdout.WriteString(single.String()); err != nil {
+				return 1
+			}
+		}
 	}
 	return 0
 }

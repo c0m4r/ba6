@@ -32,8 +32,8 @@ options listed per applet below.
 | Tier | Meaning | Applets |
 |---|---|---|
 | **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `base64` `basename` `cksum` `comm` `cut` `dirname` `echo` `expand` `false` `fold` `join` `mknod` `nice` `nl` `paste` `pivot_root` `printenv` `pwd` `seq` `sleep` `split` `tac` `touch` `tr` `true` `tty` `uname` `unexpand` `whoami` |
-| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blkid` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `cpio` `date` `dd` `df` `du` `env` `expr` `find` `free` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `insmod` `kill` `ln` `losetup` `ls` `lsmod` `lspci` `lsusb` `md5sum` `mkdir` `mkswap` `mktemp` `modprobe` `mount` `mv` `nohup` `od` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `rmmod` `sed` `setsid` `sha1sum` `sha256sum` `sha512sum` `sort` `ss` `stat` `strings` `swapoff` `swapon` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `tree` `umount` `uniq` `unzip` `uptime` `watch` `wc` `which` `xargs` `zip` |
-| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `cfdisk` `curl` `diff` `dig` `dmesg` `fdisk` `file` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `getty` `iftop` `ip` `iptables` `less` `login` `lsblk` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mtr` `nano` `nc` `ncdu` `netstat` `nslookup` `passwd` `ping` `sfdisk` `sh` `traceroute` `unxz` `unzstd` `useradd` `wget` `xz` `zstd` |
+| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blkid` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `cpio` `date` `dd` `df` `dmesg` `du` `env` `expr` `find` `free` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `insmod` `kill` `ln` `losetup` `ls` `lsmod` `lspci` `lsusb` `md5sum` `mkdir` `mkswap` `mktemp` `modprobe` `mount` `mv` `nohup` `od` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `rmmod` `sed` `setsid` `sha1sum` `sha256sum` `sha512sum` `sort` `ss` `stat` `strings` `swapoff` `swapon` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `tree` `umount` `uniq` `unzip` `uptime` `watch` `wc` `which` `xargs` `zip` |
+| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `cfdisk` `curl` `diff` `dig` `fdisk` `file` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `getty` `iftop` `ip` `iptables` `less` `login` `lsblk` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mtr` `nano` `nc` `ncdu` `netstat` `nslookup` `passwd` `ping` `sfdisk` `sh` `traceroute` `unxz` `unzstd` `useradd` `wget` `xz` `zstd` |
 | **D — narrow subset** | A slice of the original; do not treat as a replacement | _(none)_ |
 | **N/A** | ba6-specific, no upstream counterpart | `completion` `halt` `help` `init` `man` `poweroff` `reboot` `switch_root` `udhcpc` |
 
@@ -153,6 +153,7 @@ Absent behaviour rather than wrong behaviour, each of which touches many applets
 | `date` | 10/11 | `--debug` | `-d`/`--date`, `-s`/`--set`, `-f`/`--file`, `-R`, `-I[SPEC]`, `--rfc-3339=SPEC`, `--resolution`, plus `-u` and `-r`. The date-string parser covers epoch stamps, calendar dates (ISO, `YYYY/MM/DD`, `MM/DD/YYYY`, compact `YYYYMMDD`, month names either side of the day), clock times with meridiem and zone, the day words, weekday names with `next`/`last`, and relative items in any combination — including GNU's rule that `ago` reverses only the item before it, and that any absolute item truncates the nanoseconds while a purely relative one keeps them. Not covered: named zones beyond `UTC`/`GMT`/`Z`, `--debug`, and the more exotic corners of GNU's parser. Format directives now include `%U %W %V %G %g %k %l %q %:z %::z`; `-s` reports the same failure as the original when the caller lacks `CAP_SYS_TIME`, and still prints the requested time _(run)_ |
 | `dd` | 8/13 operands | `iflag=` `oflag=` `cbs=`, `conv=fsync\|fdatasync\|noerror\|swab\|excl\|ucase\|lcase`, `status=progress` | `if of bs ibs obs count skip seek conv=notrunc,sync status=none` produce byte-identical results to GNU on every combination tested, including stdin/stdout; the summary omits GNU's `, T s, R MB/s` tail _(run)_ |
 | `df` | 15/15 | — | every option coreutils has: `-a -B -h -H -i -k -l -P -t -T -x -v --output --total --sync/--no-sync`. Diffed whole against GNU coreutils 9.11 over the live mount table in 30 option combinations, all byte-identical — the field selection, every heading (`1K-blocks` against `1024-blocks` against `Size`, `Available` against `Avail`, `Use%` against `Capacity`), the per-column minimum widths, the `-BM`-echoes-its-unit rule, and the SI kilo's small `k`. Two cases that only show up on a real system also match: a mount another has since been stacked on top of is listed with a dash in every figure rather than its neighbour's numbers, and so is one that cannot be measured at all, while a filesystem that genuinely reports no blocks still prints zeroes _(run)_ |
+| `dmesg` | 30/30 | — | `-c -C -r -t -x -T -k -u -D -E -S -P -p -n -l -f -s -F -K -d -e -H -J -L -w -W --time-format (delta, reltime, ctime, notime, iso, raw) --since --until --noescape`. Tested against util-linux 2.42.2 on live syslog and synthetic buffers, byte-identical over every timestamp and format mode: `-d` (inter-message delta `< sec.usec >`), `-e` and `-H` (reltime with minute boundaries `[b d H:M]` and intra-minute microsecond deltas `[ %+10.6f]`), `--time-format delta` (`[< sec.usec >]`), `-J` (structured JSON with `pri`/`time`/`msg`, and `fac` under `-x`), `-K` (null-delimited or line-delimited `/dev/kmsg` multi-field records `pri,seq,usec,flags;msg`), and live follow modes `-w`/`-W` _(run)_ |
 | `du` | 19/25 | `--files0-from` `-l`/`--count-links` `--si` `--time` `--time-style` `-X`/`--exclude-from` | `-a -s -c -d/--max-depth -S -x -L -D/-H -P -h -k -m -b -B/--block-size -t/--threshold -0 --apparent-size --inodes --exclude`. Byte-identical to GNU on every case tested, including the details: directories contribute no apparent size, a hard link or a repeated operand is counted and listed once, `-B` with a bare unit (`-B K`) echoes that unit after each value while `-B 1K` does not, `-S` still passes the full total up to the parent, and entries are walked in kernel directory order the way the original's `fts` walk is _(run)_ |
 | `env` | 2/11 | `-0` `-C` `-S` `-a`, signal options | `-i` `-u` and `NAME=VAL` prefixes match _(run)_ |
 | `expr` | arithmetic complete | `:` (regex match), `length` `substr` `index` `match` | `+ - * / % < <= = != >= > & \|` all match _(run)_ |
@@ -637,30 +638,6 @@ memory is out of reach and `F` (follow) is absent, as are marks, bracket
 matching, `-P` prompts, the `LESS` variable, lesskey files, `-b -h -j -k -o -O
 -t -T -y -D -#`, and — by design, since this binary starts no child processes —
 the `v`, `!` and `|` commands and `LESSOPEN` filters.
-
-**`dmesg`** _(run, vs util-linux 2.41 on a live kernel ring buffer)_ — 20/30 option
-groups. Present and verified byte-for-byte against a ~570-line real kernel ring
-buffer, apart from one gap noted below: the default view (strips the `<PRI>` prefix
-real dmesg also hides), `-r`/`--raw` (keeps it), `-t`/`--notime`, `-x`/`--decode`
-(`kern  :info  : ` style facility/level prefixes), `-k`/`--kernel`,
-`-u`/`--userspace`, `-l`/`--level` (including the `err+` "and more severe" suffix),
-`-f`/`--facility`, `-c`/`--read-clear`, `-C`/`--clear`, `-s`/`--buffer-size`,
-`-F`/`--file` (reads the same `<PRI>[sec.usec] text` format from an arbitrary file
-instead of the kernel buffer — useful for testing without root), and
-`--since`/`--until` (absolute timestamps or `"N unit(s) ago"`). `-T`/`--ctime` and
-`--time-format iso` reconstruct wall-clock time from `CLOCK_MONOTONIC`, matched to
-the real tool's own output down to the microsecond, day-name/month-name spelling
-aside (the project's standing C-locale-only gap). `-n`/`--console-level`,
-`-D`/`--console-off` and `-E`/`--console-on` drive the same `syslog(2)` console
-actions dmesg does, verified against `/proc/sys/kernel/printk` and a `strace` of the
-real tool's own syscall. `-p`/`--force-prefix`, `-S`/`--syslog`, `-P`/`--nopager`
-and `--noescape` are accepted as no-ops (ba6 already behaves as they'd request: no
-pager, no colour, no escaping). Known gap: ba6 reads the legacy `syslog(2)` ring
-buffer rather than `/dev/kmsg`, so a multi-line `KERN_CONT` kernel message reprints
-its own `<PRI>[timestamp]` on the continuation line instead of the blank-padded
-alignment `/dev/kmsg`-backed dmesg produces. Missing: `-H`/`--human`,
-`-e`/`--reltime`, `-d`/`--show-delta`, `-w`/`--follow`, `-W`/`--follow-new`,
-`-J`/`--json`, `-L`/`--color`, `-K`/`--kmsg-file`, `--time-format delta`.
 
 ### Tier D — narrow subset
 
