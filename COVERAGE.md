@@ -32,8 +32,8 @@ options listed per applet below.
 | Tier | Meaning | Applets |
 |---|---|---|
 | **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `base64` `basename` `cksum` `comm` `cut` `dirname` `echo` `expand` `false` `fold` `join` `mknod` `nice` `nl` `paste` `pivot_root` `printenv` `pwd` `seq` `sleep` `split` `tac` `touch` `tr` `true` `tty` `uname` `unexpand` `whoami` |
-| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blkid` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `cpio` `date` `dd` `df` `du` `env` `expr` `find` `free` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `insmod` `kill` `ln` `losetup` `ls` `lsmod` `lspci` `lsusb` `md5sum` `mkdir` `mkswap` `mktemp` `modprobe` `mount` `mv` `nohup` `od` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `rmmod` `sed` `setsid` `sha1sum` `sha256sum` `sha512sum` `sort` `stat` `strings` `swapoff` `swapon` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `umount` `uniq` `unzip` `uptime` `watch` `wc` `which` `xargs` `zip` |
-| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `cfdisk` `curl` `diff` `dig` `dmesg` `fdisk` `file` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `getty` `iftop` `ip` `iptables` `less` `login` `lsblk` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mtr` `nano` `nc` `ncdu` `netstat` `nslookup` `passwd` `ping` `sfdisk` `sh` `ss` `traceroute` `tree` `unxz` `unzstd` `useradd` `wget` `xz` `zstd` |
+| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blkid` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `cpio` `date` `dd` `df` `du` `env` `expr` `find` `free` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `insmod` `kill` `ln` `losetup` `ls` `lsmod` `lspci` `lsusb` `md5sum` `mkdir` `mkswap` `mktemp` `modprobe` `mount` `mv` `nohup` `od` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `rmmod` `sed` `setsid` `sha1sum` `sha256sum` `sha512sum` `sort` `ss` `stat` `strings` `swapoff` `swapon` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `umount` `uniq` `unzip` `uptime` `watch` `wc` `which` `xargs` `zip` |
+| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `cfdisk` `curl` `diff` `dig` `dmesg` `fdisk` `file` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `getty` `iftop` `ip` `iptables` `less` `login` `lsblk` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `mtr` `nano` `nc` `ncdu` `netstat` `nslookup` `passwd` `ping` `sfdisk` `sh` `traceroute` `tree` `unxz` `unzstd` `useradd` `wget` `xz` `zstd` |
 | **D — narrow subset** | A slice of the original; do not treat as a replacement | _(none)_ |
 | **N/A** | ba6-specific, no upstream counterpart | `completion` `halt` `help` `init` `man` `poweroff` `reboot` `switch_root` `udhcpc` |
 
@@ -192,6 +192,7 @@ Absent behaviour rather than wrong behaviour, each of which touches many applets
 | `setsid` | 3/3 | — | `-c` `-f` `-w`, session/process-group identity and exit statuses match; `-f` forks via Go's exec rather than a raw fork+exec _(run)_ |
 | `sha256sum` | 6/10 | `--tag` `-z` `--ignore-missing` `--strict` `-w` | `-c` verification, `-` stdin, the `-b` binary marker and the rejection of `--quiet`/`--status` outside `-c` all match _(run)_ |
 | `sort` | 20/27 | `-R`/`--random-sort` `--random-source` `-S`/`--buffer-size` `-T` `--parallel` `--batch-size` `--compress-program` `--debug` `--files0-from` `-V` | `-k` field keys with per-key modifiers (`bdfgiMnr`), `-t`, `-n -g -h -M -f -d -i -b -r -u -s -c -C -o -z`, and `-m` (every input is read and ordered, so a merge of sorted inputs is identical). The field rules match GNU's: without `-t` a field starts at the first blank of the run preceding it, with `-t` the separator belongs to neither neighbour, and a `.C` offset counts from there. The last-resort whole-line comparison is applied unless `-s` or `-u` is given, a global `-r` reverses it while a key's own `r` does not, and a key with no modifiers of its own inherits the global ones. Verified against GNU on 400 randomized inputs across 31 option sets, plus the `-c` disorder message and `-o` _(run)_ |
+| `ss` | 19/44 | `-e` `-m` `-i` `-o` (accepted), filter expressions, packet/dccp/sctp | `-t -u -x -a -l -n -p -s -H -Q -4 -6 -f/--family`, short option clustering. Netlink `sock_diag` provides `Recv-Q` and `Send-Q` (including listening backlog) and IPv6 `IPV6_V6ONLY` wildcard distinction (`[::]` vs `*`); fallback to `/proc/net/tcp*` and `/proc/net/udp*` with hex queue parsing. `-s`/`--summary` matches iproute2 summary output via `/proc/net/sockstat`, `/proc/net/sockstat6`, and `/proc/net/snmp` (reporting Total, TCP estab/closed/orphaned/timewait, and Transport table). `-p`/`--processes` attributes sockets to process names, PIDs, and FDs matching `users:(("name",pid=N,fd=FD))`. Netid naming uses standard `tcp`, `udp`, `u_str`, `u_dgr`, `u_seq` _(run)_ |
 | `stat` | `-c` near-complete | `-f` `-t` `--printf`, and `%d %t %T %w %m %C` | **default (no `-c`) layout differs**: quotes the name, no column alignment, `Device: 42` vs `0,42`, no `Birth:` line. `%N` quotes with `"` instead of `'` _(run)_ |
 | `strings` | 12/13 | `-U`/`--unicode` handling, and `-T`/`--target` is accepted but only the native format is read | diffed against GNU binutils 2.47 over every option combination on plain data, on stripped and unstripped ELF executables and shared objects: `-a -d -f -n -t -o -w -e -s`, the clustered and attached forms getopt accepts (`-at x`, `-n8`, the historic `-8`), and the error wording for a missing file, an unreadable one and a directory. Two details that are easy to get wrong both match: a wide encoding is retried one *byte* later rather than at the next character boundary, so a UTF-16 string at an odd offset is still found; and `-d` keeps every allocated section, code included — BFD's "loaded data" drops the sections a loader never maps, not the instructions _(run)_ |
 | `swapon` / `swapoff` | 15/17 and 4/4 | swapon's `--annotate` tooltips and the UUID and LABEL columns, which are listed but left empty | `-a -e -f -o -p -s -T -v -d -L -U --show[=COLUMNS] --output-all --noheadings --raw --bytes` for swapon, and the whole set for swapoff. Diffed against util-linux 2.41 on a live swap: `-s` is `/proc/swaps` itself, a bare `swapon` prints the `--show` table as the original does, and the table's own quirks are reproduced — a left-aligned column pads on the right except when it is last, so an empty trailing column adds nothing to the line, and `--noheadings` comes out single-spaced because there is no heading left to size the columns against. The diagnostics and their statuses match too: a device that is not there is reported before privilege comes into it, and the two tools disagree about the status an unknown option earns, which is reproduced _(run)_ |
@@ -319,13 +320,6 @@ agree apart from the UUID. Divergences: `-c` on a block device is implemented as
 a read sweep recording bad pages in the header but could not be checked here (no
 block device to spoil); `--verbose` prints nothing extra; and the refusal to erase
 the first block of a device carrying a partition table is not implemented.
-
-**`ss`** — 7/44 _(run)_. Addresses decode correctly, short options bundle, and
-v6-only listeners render as `[::]` against `*` for dual-stack ones, matched against
-the original socket by socket. Present: `-t -u -x -a -l -n -p` (`-n`/`-p` accepted
-but ignored). No `Recv-Q`/`Send-Q` columns, no service-name resolution, no process
-attribution, and the `Netid` column says `tcp6`/`udp6` where the original says `tcp`
-and `udp` for both families. Missing `-s -e -m -i -o -r -f -K -H -Z --ipv4/--ipv6`.
 
 **`netstat`** — 13/21 _(run, vs net-tools 2.10)_. Eight invocations diffed whole
 come back **byte-identical**: `-tan`, `-uan`, `-tuwxan`, `-tulpn`, `-xl`, `-xlp`,
@@ -691,8 +685,11 @@ Ordered by how many applets each item moves, not by effort.
    listed in `appletNeedsUnrestrictedSyscalls` (as `xargs`, `nice`, `nohup` and
    `setsid` already are) and give up its own filter. Until then `find -print0 |
    xargs -0` covers the same ground with the exemption confined to `xargs`.
-2. **`ss` `Recv-Q`/`Send-Q`** — the netlink query added for `IPV6_V6ONLY` already
-   returns `idiag_rqueue` and `idiag_wqueue`; only the columns are missing.
+2. **`ss` `Recv-Q`/`Send-Q`** — *fixed*: netlink `sock_diag` queries now supply
+   both `Recv-Q` and `Send-Q` columns (including TCP listen backlog), summary mode
+   `-s`, header suppression `-H`, queue suppression `-Q`, IPv4/IPv6 filtering
+   `-4`/`-6`, process attribution `-p`, and family selection `-f`. `ss` is elevated
+   to Tier B.
 3. **Compression for `xz` and `zstd`.** Both now *decode* the real formats in
    full, but still write stored blocks, so `ba6 xz file` produces a valid but
    much larger archive than the original would. This is the remaining half of

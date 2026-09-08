@@ -17,6 +17,7 @@ import (
 	"net/http/httptrace"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -221,22 +222,87 @@ func icmpChecksum(data []byte) uint16 {
 
 func cmdSs(args []string) int {
 	tcp, udp, unix, listen, all := false, false, false, false, false
-	for _, a := range args {
-		switch {
-		case a == "--all":
-			all = true
-		case a == "--listening":
-			listen = true
-		case a == "--tcp":
-			tcp = true
-		case a == "--udp":
-			udp = true
-		case a == "--unix":
+	ipv4, ipv6, summary, noHeader, noQueues, processes := false, false, false, false, false, false
+
+	applyFamily := func(fam string) bool {
+		switch strings.ToLower(fam) {
+		case "inet", "4":
+			ipv4 = true
+		case "inet6", "6":
+			ipv6 = true
+		case "unix":
 			unix = true
-		// Short options bundle, so -tuln is the same as -t -u -l -n.
+		case "tcp":
+			tcp = true
+		case "udp":
+			udp = true
+		default:
+			fatalf("ss", "unsupported family %q", fam)
+			return false
+		}
+		return true
+	}
+
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--help":
+			_ = writeAppletHelp(os.Stdout, "ss")
+			return 0
+		case a == "--version":
+			fmt.Fprintln(os.Stdout, "ss from ba6")
+			return 0
+		case a == "-s" || a == "--summary":
+			summary = true
+		case a == "-a" || a == "--all":
+			all = true
+		case a == "-l" || a == "--listening":
+			listen = true
+		case a == "-t" || a == "--tcp":
+			tcp = true
+		case a == "-u" || a == "--udp":
+			udp = true
+		case a == "-x" || a == "--unix":
+			unix = true
+		case a == "-4" || a == "--ipv4":
+			ipv4 = true
+		case a == "-6" || a == "--ipv6":
+			ipv6 = true
+		case a == "-H" || a == "--no-header":
+			noHeader = true
+		case a == "-Q" || a == "--no-queues":
+			noQueues = true
+		case a == "-n" || a == "--numeric":
+			// Numeric by default.
+		case a == "-p" || a == "--processes":
+			processes = true
+		case a == "-e" || a == "--extended" || a == "-o" || a == "--options" ||
+			a == "-m" || a == "--memory" || a == "-i" || a == "--info":
+			// Accepted for compatibility.
+		case a == "-f" || a == "--family":
+			i++
+			if i >= len(args) {
+				fatalf("ss", "option %s requires an argument", a)
+				return 1
+			}
+			if !applyFamily(args[i]) {
+				return 1
+			}
+		case strings.HasPrefix(a, "--family="):
+			if !applyFamily(strings.TrimPrefix(a, "--family=")) {
+				return 1
+			}
 		case len(a) > 1 && a[0] == '-':
-			for _, f := range a[1:] {
-				switch f {
+			for j := 1; j < len(a); j++ {
+				switch a[j] {
+				case 'h':
+					_ = writeAppletHelp(os.Stdout, "ss")
+					return 0
+				case 'V':
+					fmt.Fprintln(os.Stdout, "ss from ba6")
+					return 0
+				case 's':
+					summary = true
 				case 'a':
 					all = true
 				case 'l':
@@ -247,11 +313,36 @@ func cmdSs(args []string) int {
 					udp = true
 				case 'x':
 					unix = true
-				case 'n', 'p':
-					// Addresses are always numeric here, and process
-					// information is never shown.
+				case '4':
+					ipv4 = true
+				case '6':
+					ipv6 = true
+				case 'H':
+					noHeader = true
+				case 'Q':
+					noQueues = true
+				case 'n':
+					// Numeric addresses.
+				case 'p':
+					processes = true
+				case 'e', 'o', 'm', 'i':
+					// Accepted for compatibility.
+				case 'f':
+					fam := a[j+1:]
+					if fam == "" {
+						i++
+						if i >= len(args) {
+							fatalf("ss", "option -f requires an argument")
+							return 1
+						}
+						fam = args[i]
+					}
+					if !applyFamily(fam) {
+						return 1
+					}
+					j = len(a)
 				default:
-					fatalf("ss", "unsupported option -%c", f)
+					fatalf("ss", "unsupported option -%c", a[j])
 					return 1
 				}
 			}
@@ -260,28 +351,79 @@ func cmdSs(args []string) int {
 			return 1
 		}
 	}
-	if !tcp && !udp && !unix {
-		tcp, udp, unix = true, true, true
+
+	if summary {
+		printSsSummary()
+		return 0
 	}
-	fmt.Println("Netid State  Local Address:Port       Peer Address:Port")
-	v6only := map[uint64]bool{}
+
+	if !tcp && !udp && !unix {
+		tcp, udp = true, true
+		if !ipv4 && !ipv6 {
+			unix = true
+		}
+	} else if (ipv4 || ipv6) && unix && !tcp && !udp {
+		tcp, udp = true, true
+	}
+
+	showIpv4 := true
+	showIpv6 := true
+	if ipv4 && !ipv6 {
+		showIpv6 = false
+	} else if ipv6 && !ipv4 {
+		showIpv4 = false
+	}
+
+	showNetid := unix || (tcp && udp)
+
+	var owners map[string]string
+	if processes {
+		owners = findSocketOwners()
+	}
+
+	if !noHeader {
+		var header []string
+		if showNetid {
+			header = append(header, fmt.Sprintf("%-7s", "Netid"))
+		}
+		header = append(header, fmt.Sprintf("%-8s", "State"))
+		if !noQueues {
+			header = append(header, fmt.Sprintf("%-8s %-8s", "Recv-Q", "Send-Q"))
+		}
+		header = append(header, fmt.Sprintf("%-24s %s", "Local Address:Port", "Peer Address:Port"))
+		if processes {
+			header = append(header, "Process")
+		}
+		fmt.Println(strings.Join(header, " "))
+	}
+
+	diagMap := map[uint64]diagSocketInfo{}
 	if tcp || udp {
-		v6only = v6OnlySockets()
+		diagMap = querySocketDiag()
 	}
 	if tcp {
-		readSocketTable("tcp", "/proc/net/tcp", listen, all, nil)
-		readSocketTable("tcp6", "/proc/net/tcp6", listen, all, v6only)
+		if showIpv4 {
+			readSocketTable("tcp", "/proc/net/tcp", listen, all, diagMap, showNetid, noQueues, owners)
+		}
+		if showIpv6 {
+			readSocketTable("tcp", "/proc/net/tcp6", listen, all, diagMap, showNetid, noQueues, owners)
+		}
 	}
 	if udp {
-		readSocketTable("udp", "/proc/net/udp", listen, all, nil)
-		readSocketTable("udp6", "/proc/net/udp6", listen, all, v6only)
+		if showIpv4 {
+			readSocketTable("udp", "/proc/net/udp", listen, all, diagMap, showNetid, noQueues, owners)
+		}
+		if showIpv6 {
+			readSocketTable("udp", "/proc/net/udp6", listen, all, diagMap, showNetid, noQueues, owners)
+		}
 	}
 	if unix {
-		readUnixSockets(listen, all)
+		readUnixSockets(listen, all, showNetid, noQueues, owners)
 	}
 	return 0
 }
-func readSocketTable(kind, path string, listen, all bool, v6only map[uint64]bool) {
+
+func readSocketTable(netid, path string, listen, all bool, diagMap map[uint64]diagSocketInfo, showNetid, noQueues bool, owners map[string]string) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return
@@ -296,26 +438,61 @@ func readSocketTable(kind, path string, listen, all bool, v6only map[uint64]bool
 		// A UDP socket with no peer is this table's equivalent of a listener.
 		// The remote field is eight hex digits for IPv4 and thirty-two for
 		// IPv6, so test what it holds rather than matching one spelling of it.
-		isListen := state == "LISTEN" || kind[:3] == "udp" && strings.Trim(f[2], "0:") == ""
+		isListen := state == "LISTEN" || netid == "udp" && strings.Trim(f[2], "0:") == ""
 		if listen && !isListen || !listen && !all && isListen {
 			continue
 		}
-		// The wildcard address is written "*" for a socket that also accepts
-		// IPv4 and "[::]" for one bound v6-only. /proc records the socket's
-		// inode, which is what ties this row to the netlink answer.
 		bound := false
+		var recvQ, sendQ uint32
+		var inode uint64
 		if len(f) > 9 {
-			if inode, convErr := strconv.ParseUint(f[9], 10, 64); convErr == nil {
-				bound = v6only[inode]
+			if parsedInode, convErr := strconv.ParseUint(f[9], 10, 64); convErr == nil {
+				inode = parsedInode
+				if diag, ok := diagMap[inode]; ok {
+					bound = diag.v6only
+					recvQ = diag.recvQ
+					sendQ = diag.sendQ
+				}
 			}
 		}
-		fmt.Printf("%-5s %-6s %-24s %s\n", kind, state,
-			decodeSocketAddrMode(f[1], bound), decodeSocketAddrMode(f[2], bound))
+		if recvQ == 0 && sendQ == 0 && len(f) > 4 {
+			parts := strings.Split(f[4], ":")
+			if len(parts) == 2 {
+				if tx, err := strconv.ParseUint(parts[0], 16, 32); err == nil {
+					sendQ = uint32(tx) //nolint:gosec // hex from /proc is 32-bit
+				}
+				if rx, err := strconv.ParseUint(parts[1], 16, 32); err == nil {
+					recvQ = uint32(rx) //nolint:gosec // hex from /proc is 32-bit
+				}
+			}
+		}
+		localStr := decodeSocketAddrMode(f[1], bound)
+		peerStr := decodeSocketAddrMode(f[2], bound)
+		var row []string
+		if showNetid {
+			row = append(row, fmt.Sprintf("%-7s", netid))
+		}
+		row = append(row, fmt.Sprintf("%-8s", state))
+		if !noQueues {
+			row = append(row, fmt.Sprintf("%-8d %-8d", recvQ, sendQ))
+		}
+		row = append(row, fmt.Sprintf("%-24s %s", localStr, peerStr))
+		if owners != nil {
+			if proc, ok := owners[strconv.FormatUint(inode, 10)]; ok {
+				row = append(row, "users:("+proc+")")
+			}
+		}
+		fmt.Println(strings.Join(row, " "))
 	}
 }
 
-// Linux sock_diag numbers. ss has to ask the kernel for the v6only flag because
-// it appears nowhere in /proc.
+type diagSocketInfo struct {
+	v6only bool
+	recvQ  uint32
+	sendQ  uint32
+}
+
+// Linux sock_diag numbers.
 const (
 	netlinkSockDiag  = 4  // NETLINK_SOCK_DIAG
 	sockDiagByFamily = 20 // SOCK_DIAG_BY_FAMILY
@@ -324,20 +501,24 @@ const (
 	inetDiagReqLen   = 56 // sizeof(struct inet_diag_req_v2)
 )
 
-// v6OnlySockets returns the inodes of IPv6 sockets bound with IPV6_V6ONLY. An
-// empty map is a safe answer -- it renders every wildcard listener as "*",
-// which is what this applet did before and what a dual-stack socket wants --
-// so a kernel without the inet_diag modules simply loses the distinction.
-func v6OnlySockets() map[uint64]bool {
-	found := map[uint64]bool{}
-	for _, protocol := range []byte{syscall.IPPROTO_TCP, syscall.IPPROTO_UDP} {
-		messages, err := sockDiagDump(syscall.AF_INET6, protocol)
-		if err != nil {
-			continue
-		}
-		for _, message := range messages {
-			if inode, only, ok := parseInetDiag(message.Data); ok && only {
-				found[inode] = true
+// querySocketDiag returns socket statistics (send/receive queues, v6only) for
+// IPv4 and IPv6 TCP and UDP sockets from netlink sock_diag.
+func querySocketDiag() map[uint64]diagSocketInfo {
+	found := map[uint64]diagSocketInfo{}
+	for _, family := range []byte{syscall.AF_INET, syscall.AF_INET6} {
+		for _, protocol := range []byte{syscall.IPPROTO_TCP, syscall.IPPROTO_UDP} {
+			messages, err := sockDiagDump(family, protocol)
+			if err != nil {
+				continue
+			}
+			for _, message := range messages {
+				if inode, rq, wq, only, ok := parseInetDiag(message.Data); ok {
+					found[inode] = diagSocketInfo{
+						v6only: only,
+						recvQ:  rq,
+						sendQ:  wq,
+					}
+				}
 			}
 		}
 	}
@@ -399,13 +580,14 @@ func sockDiagDump(family, protocol byte) ([]syscall.NetlinkMessage, error) {
 	}
 }
 
-// parseInetDiag takes the socket inode and the v6only flag out of one
-// inet_diag_msg. The fixed part is 72 bytes and the flag follows it as a
-// one-byte netlink attribute.
-func parseInetDiag(data []byte) (uint64, bool, bool) {
+// parseInetDiag extracts the socket inode, rqueue, wqueue, and v6only flag from one
+// inet_diag_msg. The fixed part is 72 bytes and the flag follows as a netlink attribute.
+func parseInetDiag(data []byte) (uint64, uint32, uint32, bool, bool) {
 	if len(data) < inetDiagMsgLen {
-		return 0, false, false
+		return 0, 0, 0, false, false
 	}
+	rqueue := binary.NativeEndian.Uint32(data[56:60])
+	wqueue := binary.NativeEndian.Uint32(data[60:64])
 	inode := uint64(binary.NativeEndian.Uint32(data[68:72]))
 	v6only := false
 	for offset := inetDiagMsgLen; offset+4 <= len(data); {
@@ -414,12 +596,12 @@ func parseInetDiag(data []byte) (uint64, bool, bool) {
 		if length < 4 || offset+length > len(data) {
 			break
 		}
-		if kind == inetDiagSKV6Only && length >= 5 {
+		if kind == inetDiagSKV6Only && length >= 5 && offset+4 < len(data) {
 			v6only = data[offset+4] != 0
 		}
 		offset += (length + 3) &^ 3
 	}
-	return inode, v6only, true
+	return inode, rqueue, wqueue, v6only, true
 }
 func socketState(s string) string {
 	states := map[string]string{"01": "ESTAB", "02": "SYN-SENT", "03": "SYN-RECV", "04": "FIN-WAIT-1", "05": "FIN-WAIT-2", "06": "TIME-WAIT", "07": "UNCONN", "08": "CLOSE-WAIT", "09": "LAST-ACK", "0A": "LISTEN", "0B": "CLOSING"}
@@ -491,9 +673,9 @@ func decodeSocketAddrMode(value string, v6only bool) string {
 		return address.String() + ":" + port
 	}
 }
-func readUnixSockets(listen, all bool) {
-	data, e := os.ReadFile("/proc/net/unix")
-	if e != nil {
+func readUnixSockets(listen, all, showNetid, noQueues bool, owners map[string]string) {
+	data, err := os.ReadFile("/proc/net/unix")
+	if err != nil {
 		return
 	}
 	for _, line := range strings.Split(string(data), "\n")[1:] {
@@ -501,19 +683,211 @@ func readUnixSockets(listen, all bool) {
 		if len(f) < 7 {
 			continue
 		}
+		netid := "u_str"
+		if len(f) > 4 {
+			switch f[4] {
+			case "0002":
+				netid = "u_dgr"
+			case "0005":
+				netid = "u_seq"
+			}
+		}
 		state := "UNCONN"
-		if f[5] == "01" {
+		switch f[5] {
+		case "01":
 			state = "LISTEN"
+		case "03":
+			state = "ESTAB"
 		}
 		if listen && state != "LISTEN" || !listen && !all && state == "LISTEN" {
 			continue
 		}
-		path := ""
-		if len(f) > 7 {
+		path := "*"
+		if len(f) > 7 && f[7] != "" {
 			path = f[7]
 		}
-		fmt.Printf("%-5s %-6s %-24s %s\n", "u_str", state, path, "*")
+		localAddr := path + " " + f[6]
+		peerAddr := "* 0"
+		var row []string
+		if showNetid {
+			row = append(row, fmt.Sprintf("%-7s", netid))
+		}
+		row = append(row, fmt.Sprintf("%-8s", state))
+		if !noQueues {
+			row = append(row, fmt.Sprintf("%-8d %-8d", 0, 0))
+		}
+		row = append(row, fmt.Sprintf("%-24s %s", localAddr, peerAddr))
+		if owners != nil {
+			if proc, ok := owners[f[6]]; ok {
+				row = append(row, "users:("+proc+")")
+			}
+		}
+		fmt.Println(strings.Join(row, " "))
 	}
+}
+
+func findSocketOwners() map[string]string {
+	owners := map[string]string{}
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return owners
+	}
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		fds, err := os.ReadDir(filepath.Join("/proc", entry.Name(), "fd"))
+		if err != nil {
+			continue
+		}
+		comm := ""
+		for _, fd := range fds {
+			target, err := os.Readlink(filepath.Join("/proc", entry.Name(), "fd", fd.Name()))
+			if err != nil || !strings.HasPrefix(target, "socket:[") {
+				continue
+			}
+			if comm == "" {
+				if data, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "comm")); err == nil {
+					comm = strings.TrimSpace(string(data))
+				}
+			}
+			inode := strings.TrimSuffix(strings.TrimPrefix(target, "socket:["), "]")
+			userEntry := fmt.Sprintf(`("%s",pid=%d,fd=%s)`, comm, pid, fd.Name())
+			if existing, exists := owners[inode]; exists {
+				owners[inode] = existing + "," + userEntry
+			} else {
+				owners[inode] = userEntry
+			}
+		}
+	}
+	return owners
+}
+
+func printSsSummary() {
+	var totalSockets, tcpInuse, tcpOrphan, tcpTw, tcpAlloc, udpInuse, rawInuse, fragInuse int
+	var tcp6Inuse, udp6Inuse, raw6Inuse, frag6Inuse int
+	var currEstab int
+
+	if data, err := os.ReadFile("/proc/net/sockstat"); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 2 {
+				continue
+			}
+			switch fields[0] {
+			case "sockets:":
+				for i := 1; i+1 < len(fields); i += 2 {
+					if fields[i] == "used" {
+						totalSockets, _ = strconv.Atoi(fields[i+1])
+					}
+				}
+			case "TCP:":
+				for i := 1; i+1 < len(fields); i += 2 {
+					switch fields[i] {
+					case "inuse":
+						tcpInuse, _ = strconv.Atoi(fields[i+1])
+					case "orphan":
+						tcpOrphan, _ = strconv.Atoi(fields[i+1])
+					case "tw":
+						tcpTw, _ = strconv.Atoi(fields[i+1])
+					case "alloc":
+						tcpAlloc, _ = strconv.Atoi(fields[i+1])
+					}
+				}
+			case "UDP:":
+				for i := 1; i+1 < len(fields); i += 2 {
+					if fields[i] == "inuse" {
+						udpInuse, _ = strconv.Atoi(fields[i+1])
+					}
+				}
+			case "RAW:":
+				for i := 1; i+1 < len(fields); i += 2 {
+					if fields[i] == "inuse" {
+						rawInuse, _ = strconv.Atoi(fields[i+1])
+					}
+				}
+			case "FRAG:":
+				for i := 1; i+1 < len(fields); i += 2 {
+					if fields[i] == "inuse" {
+						fragInuse, _ = strconv.Atoi(fields[i+1])
+					}
+				}
+			}
+		}
+	}
+
+	if data, err := os.ReadFile("/proc/net/sockstat6"); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 2 {
+				continue
+			}
+			switch fields[0] {
+			case "TCP6:":
+				for i := 1; i+1 < len(fields); i += 2 {
+					if fields[i] == "inuse" {
+						tcp6Inuse, _ = strconv.Atoi(fields[i+1])
+					}
+				}
+			case "UDP6:":
+				for i := 1; i+1 < len(fields); i += 2 {
+					if fields[i] == "inuse" {
+						udp6Inuse, _ = strconv.Atoi(fields[i+1])
+					}
+				}
+			case "RAW6:":
+				for i := 1; i+1 < len(fields); i += 2 {
+					if fields[i] == "inuse" {
+						raw6Inuse, _ = strconv.Atoi(fields[i+1])
+					}
+				}
+			case "FRAG6:":
+				for i := 1; i+1 < len(fields); i += 2 {
+					if fields[i] == "inuse" {
+						frag6Inuse, _ = strconv.Atoi(fields[i+1])
+					}
+				}
+			}
+		}
+	}
+
+	if data, err := os.ReadFile("/proc/net/snmp"); err == nil {
+		lines := strings.Split(string(data), "\n")
+		for i := 0; i+1 < len(lines); i++ {
+			headerFields := strings.Fields(lines[i])
+			if len(headerFields) > 0 && headerFields[0] == "Tcp:" {
+				valFields := strings.Fields(lines[i+1])
+				if len(valFields) == len(headerFields) {
+					for idx, name := range headerFields {
+						if name == "CurrEstab" {
+							currEstab, _ = strconv.Atoi(valFields[idx])
+							break
+						}
+					}
+				}
+				break
+			}
+		}
+	}
+
+	tcpTotal := tcpAlloc + tcpTw
+	closed := tcpTotal - (tcpInuse + tcp6Inuse)
+	if closed < 0 {
+		closed = 0
+	}
+
+	fmt.Printf("Total: %d\n", totalSockets)
+	fmt.Printf("TCP:   %d (estab %d, closed %d, orphaned %d, timewait %d)\n\n",
+		tcpTotal, currEstab, closed, tcpOrphan, tcpTw)
+	fmt.Printf("Transport Total     IP        IPv6\n")
+	fmt.Printf("RAW\t  %-9d %-9d %-9d\n", rawInuse+raw6Inuse, rawInuse, raw6Inuse)
+	fmt.Printf("UDP\t  %-9d %-9d %-9d\n", udpInuse+udp6Inuse, udpInuse, udp6Inuse)
+	fmt.Printf("TCP\t  %-9d %-9d %-9d\n", tcpInuse+tcp6Inuse, tcpInuse, tcp6Inuse)
+	inet4 := rawInuse + udpInuse + tcpInuse
+	inet6 := raw6Inuse + udp6Inuse + tcp6Inuse
+	fmt.Printf("INET\t  %-9d %-9d %-9d\n", inet4+inet6, inet4, inet6)
+	fmt.Printf("FRAG\t  %-9d %-9d %-9d\n\n", fragInuse+frag6Inuse, fragInuse, frag6Inuse)
 }
 
 // fetchOptions is the union of what curl and wget need from their very different

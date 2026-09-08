@@ -764,9 +764,24 @@ Options:
   --help    show this help`,
 	"sh": `Usage: sh [-c COMMAND | FILE]
 Run a small shell supporting quoting, expansion, pipelines, redirection, and basic builtins.`,
-	"ss": `Usage: ss [-atuxlnp]
-Display TCP, UDP, and Unix sockets from /proc. Short options may be bundled.
-An unset port and an unspecified IPv6 address are shown as *.`,
+	"ss": `Usage: ss [-atuxlnp46sHQ] [-f FAMILY]
+Display socket statistics and connection tables from kernel netlink and /proc.
+Short options may be bundled.
+
+Options:
+  -a, --all         display both listening and non-listening sockets
+  -l, --listening   display only listening sockets
+  -t, --tcp         display TCP sockets
+  -u, --udp         display UDP sockets
+  -x, --unix        display Unix domain sockets
+  -4, --ipv4        display only IPv4 sockets
+  -6, --ipv6        display only IPv6 sockets
+  -s, --summary     display socket usage summary
+  -H, --no-header   suppress header line
+  -Q, --no-queues   suppress send and receive queue columns
+  -n, --numeric     show numerical addresses and ports
+  -p, --processes   show process using socket
+  -f, --family=FAM  specify socket family (inet, inet6, unix)`,
 	"netstat": `Usage: netstat [-tuwxlanp] [-r] [-i]
 Display sockets, the routing table, or interface counters from /proc, in the
 net-tools layout. Short options may be bundled, so -tulpn is -t -u -l -p -n.

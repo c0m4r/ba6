@@ -6,7 +6,9 @@
 package main
 
 import (
+	"encoding/binary"
 	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -531,4 +533,155 @@ func captureStdout(t *testing.T, fn func() error) error {
 		t.Fatal(closeErr)
 	}
 	return err
+}
+
+func TestSsSummary(t *testing.T) {
+	status, stdout, stderr := captureApplet(t, cmdSs, []string{"-s"}, "")
+	if status != 0 || stderr != "" {
+		t.Fatalf("ss -s = (%d, %q)", status, stderr)
+	}
+	for _, expected := range []string{"Total:", "TCP:", "Transport", "RAW", "UDP", "TCP", "INET", "FRAG"} {
+		if !strings.Contains(stdout, expected) {
+			t.Errorf("ss -s missing %q in output:\n%s", expected, stdout)
+		}
+	}
+}
+
+func TestSsReports(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen tcp: %v", err)
+	}
+	defer listener.Close()
+
+	addr := listener.Addr().String()
+	_, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("split host port: %v", err)
+	}
+
+	// Test ss -tln contains port and LISTEN
+	status, stdout, stderr := captureApplet(t, cmdSs, []string{"-tln"}, "")
+	if status != 0 || stderr != "" {
+		t.Fatalf("ss -tln = (%d, %q)", status, stderr)
+	}
+	if !strings.Contains(stdout, "State") || !strings.Contains(stdout, "Recv-Q") || !strings.Contains(stdout, "Send-Q") {
+		t.Errorf("ss -tln missing expected header: %s", stdout)
+	}
+	if !strings.Contains(stdout, "127.0.0.1:"+portStr) {
+		t.Errorf("ss -tln missing listener port %s:\n%s", portStr, stdout)
+	}
+
+	// Test ss -tlnH suppresses header
+	status, stdout, stderr = captureApplet(t, cmdSs, []string{"-tlnH"}, "")
+	if status != 0 || stderr != "" {
+		t.Fatalf("ss -tlnH = (%d, %q)", status, stderr)
+	}
+	if strings.Contains(stdout, "State") {
+		t.Errorf("ss -tlnH did not suppress header: %s", stdout)
+	}
+	if !strings.Contains(stdout, "127.0.0.1:"+portStr) {
+		t.Errorf("ss -tlnH missing listener port %s", portStr)
+	}
+
+	// Test ss -tlnQ suppresses queues
+	status, stdout, stderr = captureApplet(t, cmdSs, []string{"-tlnQ"}, "")
+	if status != 0 || stderr != "" {
+		t.Fatalf("ss -tlnQ = (%d, %q)", status, stderr)
+	}
+	if strings.Contains(stdout, "Recv-Q") || strings.Contains(stdout, "Send-Q") {
+		t.Errorf("ss -tlnQ did not suppress queue columns: %s", stdout)
+	}
+
+	// Test ss -4tln includes listener
+	status, stdout, stderr = captureApplet(t, cmdSs, []string{"-4tln"}, "")
+	if status != 0 || stderr != "" || !strings.Contains(stdout, "127.0.0.1:"+portStr) {
+		t.Errorf("ss -4tln missing port %s", portStr)
+	}
+
+	// Test ss -6tln excludes our IPv4 listener
+	status, stdout, stderr = captureApplet(t, cmdSs, []string{"-6tln"}, "")
+	if status != 0 || stderr != "" {
+		t.Fatalf("ss -6tln = (%d, %q)", status, stderr)
+	}
+	if strings.Contains(stdout, "127.0.0.1:"+portStr) {
+		t.Errorf("ss -6tln incorrectly included IPv4 port %s", portStr)
+	}
+
+	// Test ss -tlpn includes process attribution
+	status, stdout, stderr = captureApplet(t, cmdSs, []string{"-tlpn"}, "")
+	if status != 0 || stderr != "" {
+		t.Fatalf("ss -tlpn = (%d, %q)", status, stderr)
+	}
+	pidStr := strconv.Itoa(os.Getpid())
+	if !strings.Contains(stdout, "pid="+pidStr) {
+		t.Logf("ss -tlpn output:\n%s", stdout)
+	}
+}
+
+func TestSsUnix(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "test.sock")
+	uListener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	defer uListener.Close()
+
+	status, stdout, stderr := captureApplet(t, cmdSs, []string{"-xln"}, "")
+	if status != 0 || stderr != "" {
+		t.Fatalf("ss -xln = (%d, %q)", status, stderr)
+	}
+	if !strings.Contains(stdout, "u_str") {
+		t.Errorf("ss -xln missing u_str: %s", stdout)
+	}
+	if !strings.Contains(stdout, socketPath) {
+		t.Errorf("ss -xln missing socket path %s in output:\n%s", socketPath, stdout)
+	}
+}
+
+func TestSsOptionsAndBundling(t *testing.T) {
+	status, stdout, stderr := captureApplet(t, cmdSs, []string{"-f", "inet", "-l", "-n"}, "")
+	if status != 0 || stderr != "" {
+		t.Fatalf("ss -f inet -l -n = (%d, %q)", status, stderr)
+	}
+	if !strings.Contains(stdout, "State") {
+		t.Errorf("missing header in ss -f inet -l -n")
+	}
+
+	status, _, stderr = captureApplet(t, cmdSs, []string{"-Z"}, "")
+	if status == 0 || !strings.Contains(stderr, "unsupported option") {
+		t.Errorf("expected rejection of -Z, got status=%d stderr=%q", status, stderr)
+	}
+
+	status, _, stderr = captureApplet(t, cmdSs, []string{"foobar"}, "")
+	if status == 0 || !strings.Contains(stderr, "unsupported operand") {
+		t.Errorf("expected rejection of foobar, got status=%d stderr=%q", status, stderr)
+	}
+}
+
+func TestParseInetDiagUnit(t *testing.T) {
+	if _, _, _, _, ok := parseInetDiag(make([]byte, 71)); ok {
+		t.Error("expected failure for <72 bytes")
+	}
+
+	buf := make([]byte, 72, 80)
+	binary.NativeEndian.PutUint32(buf[56:60], 123)
+	binary.NativeEndian.PutUint32(buf[60:64], 456)
+	binary.NativeEndian.PutUint32(buf[68:72], 7890)
+
+	inode, rq, wq, v6only, ok := parseInetDiag(buf)
+	if !ok || inode != 7890 || rq != 123 || wq != 456 || v6only {
+		t.Errorf("got (%d, %d, %d, %v, %v), want (7890, 123, 456, false, true)", inode, rq, wq, v6only, ok)
+	}
+
+	attr := make([]byte, 8)
+	binary.NativeEndian.PutUint16(attr[0:2], 5)
+	binary.NativeEndian.PutUint16(attr[2:4], inetDiagSKV6Only)
+	attr[4] = 1
+	buf = append(buf, attr...)
+
+	inode, rq, wq, v6only, ok = parseInetDiag(buf)
+	if !ok || inode != 7890 || rq != 123 || wq != 456 || !v6only {
+		t.Errorf("got (%d, %d, %d, %v, %v), want (7890, 123, 456, true, true)", inode, rq, wq, v6only, ok)
+	}
 }
