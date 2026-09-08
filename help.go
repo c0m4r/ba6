@@ -2249,8 +2249,15 @@ Commands:
   -L [CHAIN]             list rules as a table
   -S [CHAIN]             print rules as the commands that would recreate them
   -A CHAIN RULE          append a rule
+  -I CHAIN [NUM] RULE    insert rule at position (default 1)
+  -R CHAIN NUM RULE      replace rule at position
   -D CHAIN RULE|NUMBER   delete a matching rule or rule number
+  -C CHAIN RULE          verify existence of matching rule
   -F [CHAIN]             flush rules
+  -Z [CHAIN]             reset packet and byte counters
+  -N CHAIN               instantiate a new custom rule chain
+  -X [CHAIN]             remove unused custom rule chain
+  -E OLD NEW             retitle an existing custom chain
   -P CHAIN ACCEPT|DROP   set the base-chain policy
 
 Rule matches, each of which "!" negates:
@@ -2269,11 +2276,13 @@ Rule matches, each of which "!" negates:
 
 Options:
   -t TABLE               filter (the default), nat, mangle, raw or security
+  -c PKTS BYTES          set initial packet and byte counter values
   -n                     leave addresses, ports and protocols as numbers
   -v                     add counters and interface columns
   -x                     print counters in full instead of rounding them
   --line-numbers         number the rules of each chain
   -w, -W                 accepted and ignored; every change is already atomic
+  --modprobe PROGRAM     path to kernel module loader helper
   --help                 show this help`,
 	"help": `Usage: ba6 help [COMMAND]
 Show general help or detailed help for COMMAND.

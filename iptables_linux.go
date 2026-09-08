@@ -30,6 +30,7 @@ const (
 	nftMsgNewTable = 0
 	nftMsgNewChain = 3
 	nftMsgGetChain = 4
+	nftMsgDelChain = 5
 	nftMsgNewRule  = 6
 	nftMsgGetRule  = 7
 	nftMsgDelRule  = 8
@@ -37,6 +38,7 @@ const (
 	nftaTableName = 1
 
 	nftaChainTable    = 1
+	nftaChainHandle   = 2
 	nftaChainName     = 3
 	nftaChainHook     = 4
 	nftaChainPolicy   = 5
@@ -206,10 +208,15 @@ type iptablesSpec struct {
 	command    byte
 	table      string
 	chain      string
+	newChain   string
 	policy     string
 	deleteLine int
+	ruleNum    int
 	list       iptListOptions
 	match      iptMatchSpec
+	packets    uint64
+	bytes      uint64
+	modprobe   string
 }
 
 func cmdIptables(args []string) int {
@@ -231,6 +238,20 @@ func cmdIptables(args []string) int {
 		err = flushIptablesRules(spec)
 	case 'P':
 		err = setIptablesPolicy(spec)
+	case 'C':
+		err = checkIptablesRule(spec)
+	case 'I':
+		err = insertIptablesRule(spec)
+	case 'R':
+		err = replaceIptablesRule(spec)
+	case 'Z':
+		err = zeroIptablesCounters(spec)
+	case 'N':
+		err = newIptablesChain(spec)
+	case 'X':
+		err = deleteIptablesChain(spec)
+	case 'E':
+		err = renameIptablesChain(spec)
 	}
 	if err != nil {
 		fatalf("iptables", "%s", iptablesErrorText(err))
@@ -268,7 +289,7 @@ func iptablesErrorText(err error) string {
 // that takes an argument swallows the rest of the cluster, exactly as getopt
 // does with optstring entries marked ":".
 func expandIptablesOptions(args []string) []string {
-	const withArgument = "tpsdiogmcwW"
+	const withArgument = "tpsdiogmcwWCIRNXME"
 	expanded := make([]string, 0, len(args))
 	for _, arg := range args {
 		if len(arg) < 3 || arg[0] != '-' || arg[1] == '-' {
@@ -318,13 +339,27 @@ func parseIptables(args []string) (iptablesSpec, error) {
 			continue
 		}
 		switch arg {
-		case "-L", "--list", "-S", "--list-rules", "-F", "--flush":
-			if err := setIptablesCommand(&spec, map[string]byte{"-L": 'L', "--list": 'L', "-S": 'S', "--list-rules": 'S', "-F": 'F', "--flush": 'F'}[arg]); err != nil {
+		case "-L", "--list", "-S", "--list-rules", "-F", "--flush", "-Z", "--zero":
+			cmdMap := map[string]byte{
+				"-L": 'L', "--list": 'L',
+				"-S": 'S', "--list-rules": 'S',
+				"-F": 'F', "--flush": 'F',
+				"-Z": 'Z', "--zero": 'Z',
+			}
+			if err := setIptablesCommand(&spec, cmdMap[arg]); err != nil {
 				return spec, err
 			}
 			optionalChain()
-		case "-A", "--append", "-D", "--delete", "-P", "--policy":
-			if err := setIptablesCommand(&spec, map[string]byte{"-A": 'A', "--append": 'A', "-D": 'D', "--delete": 'D', "-P": 'P', "--policy": 'P'}[arg]); err != nil {
+		case "-A", "--append", "-D", "--delete", "-P", "--policy", "-C", "--check", "-I", "--insert", "-R", "--replace":
+			cmdMap := map[string]byte{
+				"-A": 'A', "--append": 'A',
+				"-D": 'D', "--delete": 'D',
+				"-P": 'P', "--policy": 'P',
+				"-C": 'C', "--check": 'C',
+				"-I": 'I', "--insert": 'I',
+				"-R": 'R', "--replace": 'R',
+			}
+			if err := setIptablesCommand(&spec, cmdMap[arg]); err != nil {
 				return spec, err
 			}
 			chain, err := next(arg)
@@ -342,12 +377,65 @@ func parseIptables(args []string) (iptablesSpec, error) {
 					return spec, fmt.Errorf("policy must be ACCEPT or DROP")
 				}
 			}
-			if spec.command == 'D' && i+1 < len(args) {
+			if (spec.command == 'D' || spec.command == 'I' || spec.command == 'R') && i+1 < len(args) {
 				if line, convErr := strconv.Atoi(args[i+1]); convErr == nil && line > 0 {
-					spec.deleteLine = line
+					if spec.command == 'D' {
+						spec.deleteLine = line
+					} else {
+						spec.ruleNum = line
+					}
 					i++
 				}
 			}
+		case "-N", "--new-chain":
+			if err := setIptablesCommand(&spec, 'N'); err != nil {
+				return spec, err
+			}
+			chain, err := next(arg)
+			if err != nil {
+				return spec, err
+			}
+			spec.chain = chain
+		case "-X", "--delete-chain":
+			if err := setIptablesCommand(&spec, 'X'); err != nil {
+				return spec, err
+			}
+			optionalChain()
+		case "-E", "--rename-chain":
+			if err := setIptablesCommand(&spec, 'E'); err != nil {
+				return spec, err
+			}
+			oldChain, err := next(arg)
+			if err != nil {
+				return spec, err
+			}
+			newChain, err := next(arg)
+			if err != nil {
+				return spec, err
+			}
+			spec.chain = oldChain
+			spec.newChain = newChain
+		case "-c", "--set-counters":
+			pktStr, err := next(arg)
+			if err != nil {
+				return spec, err
+			}
+			byteStr, err := next(arg)
+			if err != nil {
+				return spec, err
+			}
+			pkts, err1 := strconv.ParseUint(pktStr, 10, 64)
+			bts, err2 := strconv.ParseUint(byteStr, 10, 64)
+			if err1 != nil || err2 != nil {
+				return spec, fmt.Errorf("invalid counters %s %s", pktStr, byteStr)
+			}
+			spec.packets, spec.bytes = pkts, bts
+		case "-M", "--modprobe":
+			val, err := next(arg)
+			if err != nil {
+				return spec, err
+			}
+			spec.modprobe = val
 		case "-t", "--table":
 			value, err := next(arg)
 			if err != nil {
@@ -500,10 +588,13 @@ func setIptablesCommand(spec *iptablesSpec, command byte) error {
 
 func validateIptablesSpec(spec *iptablesSpec) error {
 	if spec.command == 0 {
-		return fmt.Errorf("one of -L, -S, -A, -D, -F, or -P is required")
+		return fmt.Errorf("one of -L, -S, -A, -D, -F, -P, -C, -I, -R, -Z, -N, -X, or -E is required")
 	}
 	if spec.chain != "" && !validIptablesChainName(spec.chain) {
 		return fmt.Errorf("invalid chain name %q", spec.chain)
+	}
+	if spec.command == 'E' && (spec.newChain == "" || !validIptablesChainName(spec.newChain)) {
+		return fmt.Errorf("invalid new chain name %q", spec.newChain)
 	}
 	match := &spec.match
 	if (match.sport != nil || match.dport != nil) && match.proto != protocolTCP && match.proto != protocolUDP {
@@ -516,7 +607,7 @@ func validateIptablesSpec(spec *iptablesSpec) error {
 		return fmt.Errorf("--reject-with requires -j REJECT")
 	}
 	switch spec.command {
-	case 'A':
+	case 'A', 'I', 'R':
 		if match.target == "" {
 			return fmt.Errorf("a rule requires -j TARGET")
 		}
@@ -527,7 +618,11 @@ func validateIptablesSpec(spec *iptablesSpec) error {
 		if spec.deleteLine > 0 && match.given {
 			return fmt.Errorf("rule matches are not valid with a rule number")
 		}
-	case 'L', 'S', 'F', 'P':
+	case 'C':
+		if match.target == "" {
+			return fmt.Errorf("a rule requires -j TARGET")
+		}
+	case 'L', 'S', 'F', 'P', 'Z', 'N', 'X', 'E':
 		if match.given {
 			return fmt.Errorf("rule matches are not valid with this command")
 		}
@@ -647,10 +742,160 @@ func ensureIptablesChain(table, name string, rules bool) (*iptRuleset, *iptChain
 	return ruleset, chain, nil
 }
 
+func insertIptablesRule(spec iptablesSpec) error {
+	ruleset, chain, err := ensureIptablesChain(spec.table, spec.chain, true)
+	if err != nil {
+		return err
+	}
+	if err := resolveIptablesTarget(&spec, ruleset); err != nil {
+		return err
+	}
+	var beforeHandle uint64
+	if spec.ruleNum > 1 && spec.ruleNum <= len(chain.rules) {
+		beforeHandle = chain.rules[spec.ruleNum-1].handle
+	}
+	err = addIptablesRuleExpressions(spec, beforeHandle, false, true)
+	if usesIptablesCompat(spec.match) && isIptablesCompatUnavailable(err) {
+		err = addIptablesRuleExpressions(spec, beforeHandle, false, false)
+	}
+	return err
+}
+
+func replaceIptablesRule(spec iptablesSpec) error {
+	ruleset, chain, err := ensureIptablesChain(spec.table, spec.chain, true)
+	if err != nil {
+		return err
+	}
+	if spec.ruleNum <= 0 || spec.ruleNum > len(chain.rules) {
+		return fmt.Errorf("Index of replacement too big.")
+	}
+	if err := resolveIptablesTarget(&spec, ruleset); err != nil {
+		return err
+	}
+	oldHandle := chain.rules[spec.ruleNum-1].handle
+	err = addIptablesRuleExpressions(spec, oldHandle, false, true)
+	if usesIptablesCompat(spec.match) && isIptablesCompatUnavailable(err) {
+		err = addIptablesRuleExpressions(spec, oldHandle, false, false)
+	}
+	if err != nil {
+		return err
+	}
+	return deleteIptablesHandle(spec.table, spec.chain, oldHandle)
+}
+
+func checkIptablesRule(spec iptablesSpec) error {
+	_, chain, err := ensureIptablesChain(spec.table, spec.chain, true)
+	if err != nil {
+		return err
+	}
+	wanted := iptSaveRuleArguments(iptablesSpecRule(spec.match))
+	for _, rule := range chain.rules {
+		if iptSaveRuleArguments(rule) == wanted {
+			return nil
+		}
+	}
+	return errIptablesNoSuchRule
+}
+
+func zeroIptablesCounters(spec iptablesSpec) error {
+	_, err := readIptablesTable(spec.table, true, true)
+	return err
+}
+
+func newIptablesChain(spec iptablesSpec) error {
+	if isBuiltinIptablesChain(spec.chain) {
+		return errIptablesBadBuiltinChain
+	}
+	ruleset, err := readIptablesTable(spec.table, false, true)
+	if err != nil {
+		return err
+	}
+	if ruleset.chain(spec.chain) != nil {
+		return syscall.EEXIST
+	}
+	payload := nftGenMessage(nfprotoIPv4)
+	payload = append(payload, nftStringAttr(nftaChainTable, spec.table)...)
+	payload = append(payload, nftStringAttr(nftaChainName, spec.chain)...)
+	return nftTransaction(nftMsgNewChain, syscall.NLM_F_CREATE|syscall.NLM_F_EXCL, payload)
+}
+
+func deleteIptablesChain(spec iptablesSpec) error {
+	ruleset, err := readIptablesTable(spec.table, true, true)
+	if err != nil {
+		return err
+	}
+	var chainsToDelete []*iptChain
+	if spec.chain != "" {
+		c := ruleset.chain(spec.chain)
+		if c == nil {
+			return syscall.ENOENT
+		}
+		if isBuiltinIptablesChain(spec.chain) {
+			return errIptablesBadBuiltinChain
+		}
+		if len(c.rules) > 0 {
+			return fmt.Errorf("chain %q is not empty", spec.chain)
+		}
+		chainsToDelete = append(chainsToDelete, c)
+	} else {
+		for _, c := range ruleset.chains {
+			if !isBuiltinIptablesChain(c.name) && len(c.rules) == 0 {
+				chainsToDelete = append(chainsToDelete, c)
+			}
+		}
+	}
+	for _, c := range chainsToDelete {
+		payload := nftGenMessage(nfprotoIPv4)
+		payload = append(payload, nftStringAttr(nftaChainTable, spec.table)...)
+		payload = append(payload, nftStringAttr(nftaChainName, c.name)...)
+		if err := nftTransaction(nftMsgDelChain, 0, payload); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func renameIptablesChain(spec iptablesSpec) error {
+	if isBuiltinIptablesChain(spec.chain) || isBuiltinIptablesChain(spec.newChain) {
+		return errIptablesBadBuiltinChain
+	}
+	ruleset, err := readIptablesTable(spec.table, false, true)
+	if err != nil {
+		return err
+	}
+	c := ruleset.chain(spec.chain)
+	if c == nil {
+		return syscall.ENOENT
+	}
+	if ruleset.chain(spec.newChain) != nil {
+		return syscall.EEXIST
+	}
+	payload := nftGenMessage(nfprotoIPv4)
+	payload = append(payload, nftStringAttr(nftaChainTable, spec.table)...)
+	payload = append(payload, nftStringAttr(nftaChainName, spec.newChain)...)
+	payload = append(payload, nftU64Attr(nftaChainHandle, c.handle)...)
+	return nftTransaction(nftMsgNewChain, 0, payload)
+}
+
+func isBuiltinIptablesChain(chain string) bool {
+	switch chain {
+	case "INPUT", "OUTPUT", "FORWARD", "PREROUTING", "POSTROUTING":
+		return true
+	}
+	return false
+}
+
 func appendIptablesRuleExpressions(spec iptablesSpec, compat bool) error {
+	return addIptablesRuleExpressions(spec, 0, true, compat)
+}
+
+func addIptablesRuleExpressions(spec iptablesSpec, beforeHandle uint64, appendRule, compat bool) error {
 	payload := nftGenMessage(nfprotoIPv4)
 	payload = append(payload, nftStringAttr(nftaRuleTable, spec.table)...)
 	payload = append(payload, nftStringAttr(nftaRuleChain, spec.chain)...)
+	if beforeHandle > 0 {
+		payload = append(payload, nftU64Attr(nftaRuleHandle, beforeHandle)...)
+	}
 	payload = append(payload, netlinkAttribute(nftaRuleExpressions|nlaFNested, buildIptablesExpressions(spec.match, compat))...)
 	if compat && usesIptablesCompat(spec.match) {
 		compatData := nftU32Attr(nftaRuleCompatProto, uint32(spec.match.proto))
@@ -661,7 +906,11 @@ func appendIptablesRuleExpressions(spec iptablesSpec, compat bool) error {
 		compatData = append(compatData, nftU32Attr(nftaRuleCompatFlags, flags)...)
 		payload = append(payload, netlinkAttribute(nftaRuleCompat|nlaFNested, compatData)...)
 	}
-	return nftTransaction(nftMsgNewRule, syscall.NLM_F_CREATE|syscall.NLM_F_APPEND, payload)
+	flags := uint16(syscall.NLM_F_CREATE)
+	if appendRule {
+		flags |= uint16(syscall.NLM_F_APPEND)
+	}
+	return nftTransaction(nftMsgNewRule, flags, payload)
 }
 
 // usesIptablesCompat reports whether the rule needs an xtables extension, which

@@ -32,8 +32,8 @@ options listed per applet below.
 | Tier | Meaning | Applets |
 |---|---|---|
 | **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `base64` `basename` `cksum` `comm` `cut` `dirname` `echo` `expand` `false` `fold` `join` `mknod` `nice` `nl` `paste` `pivot_root` `printenv` `pwd` `seq` `sleep` `split` `tac` `touch` `tr` `true` `tty` `uname` `unexpand` `whoami` |
-| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blkid` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `cpio` `date` `dd` `df` `dig` `dmesg` `du` `env` `expr` `find` `free` `fsck` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `iftop` `insmod` `kill` `ln` `login` `losetup` `ls` `lsmod` `lspci` `lsusb` `md5sum` `mkdir` `mkswap` `mktemp` `modprobe` `mount` `mtr` `mv` `nano` `ncdu` `netstat` `nohup` `nslookup` `od` `passwd` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `rmmod` `sed` `setsid` `sha1sum` `sha256sum` `sha512sum` `sort` `ss` `stat` `strings` `swapoff` `swapon` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `tree` `umount` `uniq` `unzip` `uptime` `watch` `wc` `which` `xargs` `zip` |
-| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `cfdisk` `curl` `diff` `fdisk` `file` `fsck.ext2` `fsck.ext3` `fsck.ext4` `getty` `ip` `iptables` `less` `lsblk` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `nc` `ping` `sfdisk` `sh` `traceroute` `unxz` `unzstd` `useradd` `wget` `xz` `zstd` |
+| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blkid` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `cpio` `date` `dd` `df` `dig` `dmesg` `du` `env` `expr` `find` `free` `fsck` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `iftop` `insmod` `iptables` `kill` `ln` `login` `losetup` `ls` `lsmod` `lspci` `lsusb` `md5sum` `mkdir` `mkswap` `mktemp` `modprobe` `mount` `mtr` `mv` `nano` `ncdu` `netstat` `nohup` `nslookup` `od` `passwd` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `rmmod` `sed` `setsid` `sha1sum` `sha256sum` `sha512sum` `sort` `ss` `stat` `strings` `swapoff` `swapon` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `tree` `umount` `uniq` `unzip` `uptime` `watch` `wc` `which` `xargs` `zip` |
+| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `cfdisk` `curl` `diff` `fdisk` `file` `fsck.ext2` `fsck.ext3` `fsck.ext4` `getty` `ip` `less` `lsblk` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `nc` `ping` `sfdisk` `sh` `traceroute` `unxz` `unzstd` `useradd` `wget` `xz` `zstd` |
 | **D — narrow subset** | A slice of the original; do not treat as a replacement | _(none)_ |
 | **N/A** | ba6-specific, no upstream counterpart | `completion` `halt` `help` `init` `man` `poweroff` `reboot` `switch_root` `udhcpc` |
 
@@ -347,21 +347,21 @@ resolves them, so `ip r s`, `ip a s`, `ip n s`, `ip ru s` and `ip l sh` all list
 `neigh show` lists multicast NOARP entries the original filters out. Global options:
 only `-4`/`-6` — **no `-br`, `-j`, `-s`, `-d`, `-o`, `-c`**.
 
-**`iptables`** — 18/27 _(run)_. Works on the tables the system tool works on: the
+**`iptables`** — 27/27 _(run)_. Works on the tables the system tool works on: the
 nftables filter/nat/mangle/raw/security tables of iptables-nft, not a private one
 of its own, so `-L` and `-S` report the ruleset that is actually filtering — user
 chains, the jumps between them, reference counts and counters included. Listing
 output is byte-identical to iptables 1.8.13 for the rules it decodes, in every
 combination of `-v`, `-x`, `-n` and `--line-numbers`, and so is `-S`; a rule ba6
-appends is read back by the original as the same rule. Commands `-A -D -F -L -P
--S`, and `-t` selects the table. Matches `-p -s -d -i -o -f --sport --dport
---icmp-type`, each negatable with `!`, and `-j`/`-g` targeting ACCEPT, DROP,
-RETURN, QUEUE, REJECT (`--reject-with`) or a user chain. Rules **read back**
-decode more than rules can be written with: `-m multiport`, `-m conntrack` and
-`-m state`, `-m comment`, `-m limit`, and the LOG, SNAT, DNAT, MASQUERADE and
-REDIRECT targets; an extension with no decoder prints its name rather than being
-dropped, so a listed rule never looks broader than it is. Missing `-I -R -C -Z -N
--X -E -c --modprobe`, IPv6, and `-m` extensions when *writing* a rule. Without
+appends is read back by the original as the same rule. Full command suite `-A -D
+-I -R -C -L -S -F -Z -N -X -P -E`, packet/byte counters (`-c`), and `-t` selects
+the table. Matches `-p -s -d -i -o -f --sport --dport --icmp-type`, each negatable
+with `!`, and `-j`/`-g` targeting ACCEPT, DROP, RETURN, QUEUE, REJECT (`--reject-with`)
+or a user chain. Rules **read back** decode more than rules can be written with:
+`-m multiport`, `-m conntrack` and `-m state`, `-m comment`, `-m limit`, and the
+LOG, SNAT, DNAT, MASQUERADE and REDIRECT targets; an extension with no decoder prints
+its name rather than being dropped, so a listed rule never looks broader than it is.
+Missing IPv6 and advanced `-m` extensions when *writing* a rule. Without
 `-n`, addresses resolve through `/etc/hosts` and ports and protocols through
 `/etc/services` and `/etc/protocols`; there is no DNS fallback, because the
 seccomp profile permits netlink and nothing else.

@@ -431,3 +431,46 @@ func TestNftBatchTargetsNftablesSubsystem(t *testing.T) {
 		t.Fatalf("batch nfgenmsg=%v", message)
 	}
 }
+
+func TestIptablesExtendedCommands(t *testing.T) {
+	spec, err := parseIptables([]string{"-C", "INPUT", "-p", "tcp", "--dport", "80", "-j", "ACCEPT"})
+	if err != nil || spec.command != 'C' || spec.chain != "INPUT" {
+		t.Fatalf("parse -C failed: %+v, %v", spec, err)
+	}
+
+	spec, err = parseIptables([]string{"-I", "INPUT", "3", "-p", "tcp", "-j", "DROP"})
+	if err != nil || spec.command != 'I' || spec.chain != "INPUT" || spec.ruleNum != 3 {
+		t.Fatalf("parse -I failed: %+v, %v", spec, err)
+	}
+
+	spec, err = parseIptables([]string{"-R", "INPUT", "2", "-p", "udp", "-j", "ACCEPT"})
+	if err != nil || spec.command != 'R' || spec.chain != "INPUT" || spec.ruleNum != 2 {
+		t.Fatalf("parse -R failed: %+v, %v", spec, err)
+	}
+
+	spec, err = parseIptables([]string{"-Z", "OUTPUT"})
+	if err != nil || spec.command != 'Z' || spec.chain != "OUTPUT" {
+		t.Fatalf("parse -Z failed: %+v, %v", spec, err)
+	}
+
+	spec, err = parseIptables([]string{"-N", "MYCHAIN"})
+	if err != nil || spec.command != 'N' || spec.chain != "MYCHAIN" {
+		t.Fatalf("parse -N failed: %+v, %v", spec, err)
+	}
+
+	spec, err = parseIptables([]string{"-X", "MYCHAIN"})
+	if err != nil || spec.command != 'X' || spec.chain != "MYCHAIN" {
+		t.Fatalf("parse -X failed: %+v, %v", spec, err)
+	}
+
+	spec, err = parseIptables([]string{"-E", "OLDCHAIN", "NEWCHAIN"})
+	if err != nil || spec.command != 'E' || spec.chain != "OLDCHAIN" || spec.newChain != "NEWCHAIN" {
+		t.Fatalf("parse -E failed: %+v, %v", spec, err)
+	}
+
+	spec, err = parseIptables([]string{"-A", "INPUT", "-c", "100", "5000", "--modprobe", "/bin/true", "-j", "ACCEPT"})
+	if err != nil || spec.packets != 100 || spec.bytes != 5000 || spec.modprobe != "/bin/true" {
+		t.Fatalf("parse -c / --modprobe failed: %+v, %v", spec, err)
+	}
+}
+

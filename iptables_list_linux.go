@@ -64,6 +64,7 @@ type iptRule struct {
 
 type iptChain struct {
 	name      string
+	handle    uint64
 	base      bool
 	hook      uint32
 	policy    string
@@ -156,6 +157,10 @@ func decodeIptablesChain(message syscall.NetlinkMessage, table string) (*iptChai
 		switch attr.typeID {
 		case nftaChainTable:
 			inTable = netlinkString(attr.value) == table
+		case nftaChainHandle:
+			if len(attr.value) >= 8 {
+				chain.handle = binary.BigEndian.Uint64(attr.value)
+			}
 		case nftaChainName:
 			chain.name = netlinkString(attr.value)
 		case nftaChainHook:
