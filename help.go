@@ -648,8 +648,63 @@ SPACE, b, ENTER, y, d, u, g, G, and N% move; / and ? search, n and N repeat;
 quits. A count typed before a command repeats it. Nothing in this pager runs
 another program, so the editor, shell, and pipe commands are absent, and it
 does not follow a growing file.`,
-	"nano": `Usage: nano [FILE]
-Edit text in a small full-screen terminal editor. ^S saves and ^X exits.`,
+	"nano": `Usage: nano [OPTIONS] [+LINE[,COLUMN]] [FILE]
+Small full-screen terminal editor. Shortcut keys: ^O writes out, ^X exits,
+^F searches, ^\ replaces, ^K cuts, ^U pastes, ^_ jumps to line, ^C shows position.
+
+Options:
+  -v, --view              open in view (read-only) mode
+  -l, --linenumbers       display line counts on the left margin
+  -T, --tabsize=NUM       width of one tab stop in columns (default: 8)
+  -E, --tabstospaces      transform entered tabs to spaces
+  -i, --autoindent        indent newly created lines matching the current line
+  -k, --cutfromcursor     snip text from cursor to end of current line
+  -c, --constantshow      continuously show line/col position on screen
+  -t, --saveonexit        write changes automatically upon exit without prompt
+  -x, --nohelp            do not display bottom help shortcut lines
+  -B, --backup            preserve a backup copy before writing
+  -C, --backupdir=DIR     directory where saved backup files are stored
+  -z, --listsyntaxes      display recognized highlight syntax rules and quit
+  -R, --restricted        prevent editing or writing to external files
+  -A, --smarthome         home key jumps to first non-space character
+  -D, --boldtext          use bold styling for interface banners
+  -F, --newbuffer         load additional files in distinct editing buffers
+  -G, --locking           use file locks when opening buffers
+  -H, --historylog        record search and replacement history strings
+  -I, --ignorercfiles     skip reading external configuration rc files
+  -J, --guidestripe=NUM   draw a vertical guide bar at the specified column
+  -K, --rawsequences      interpret escape keystrokes directly
+  -L, --nonewlines        do not add an automatic trailing line feed
+  -M, --trimblanks        trim whitespace at the tail of wrapped lines
+  -N, --noconvert         do not convert files between DOS and Unix formats
+  -O, --bookstyle         treat leading spaces as part of paragraph blocks
+  -P, --positionlog       remember previous cursor positions across sessions
+  -Q, --quotestr=REGEX    pattern identifying email-style quoted paragraphs
+  -S, --softwrap          render excessively long lines visually wrapped
+  -U, --quickblank        clear status messages after single keystrokes
+  -W, --wordbounds        use punctuation characters as word boundaries
+  -X, --wordchars=STR     custom set of characters considered word parts
+  -Y, --syntax=STR        name of syntax definition to apply
+  -Z, --zap               let backspace or delete wipe selected selections
+  -a, --atblanks          soft-wrap lines strictly at blank spaces
+  -b, --breaklonglines    hard-wrap extended lines automatically
+  -d, --rebinddelete      treat backspace as delete keycode
+  -e, --emptyline         leave empty row directly below the header banner
+  -f, --rcfile=FILE       load specific configuration rc file
+  -g, --showcursor        keep hardware terminal cursor visible in browser
+  -j, --jumpyscrolling    scroll viewport by chunks instead of single rows
+  -m, --mouse             enable terminal mouse event tracking
+  -n, --noread            treat file argument as new without disk reading
+  -o, --operatingdir=DIR  restrict file operations within designated path
+  -p, --preserve          preserve exact XON and XOFF signal bindings
+  -q, --indicator         show visual scrollbar indicator along the edge
+  -r, --fill=COL          wrap lines at designated column width
+  -s, --speller=PROG      invoke external spell checking command
+  -u, --unix              save files with Unix newline endings by default
+  -w, --nowrap            disable automatic hard line wrapping
+  -y, --afterends         move cursor past word endings on jumps
+      --zero              hide title banner and status bars completely
+      --solosidescroll    scroll horizontal views on individual lines`,
 	"nc": `Usage: nc [-u] [-w SECONDS] HOST PORT
        nc -l [-u] [-p PORT] [PORT]
 Copy data over a TCP or UDP connection.`,

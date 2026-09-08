@@ -134,3 +134,181 @@ func TestNanoSaveWritesFile(t *testing.T) {
 		t.Fatal("save should clear the dirty flag")
 	}
 }
+
+func TestNanoOptionsParsing(t *testing.T) {
+	args := []string{
+		"-v", "-l", "-E", "-i", "-k", "-c", "-t", "-B",
+		"-T", "4",
+		"--backupdir=/tmp/backup",
+		"--guidestripe=80",
+		"--quotestr=^> *",
+		"--wordchars=abc",
+		"--syntax=go",
+		"--rcfile=/etc/nanorc",
+		"--operatingdir=/home",
+		"--fill=72",
+		"--speller=aspell",
+		"--zero",
+		"--solosidescroll",
+		"+15,5",
+		"myfile.txt",
+	}
+	opts, err := parseNanoOptions(args)
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+	if !opts.viewMode || !opts.lineNumbers || !opts.tabToSpaces || !opts.autoIndent ||
+		!opts.cutFromCursor || !opts.constantShow || !opts.saveOnExit || !opts.backup {
+		t.Errorf("boolean flags not set properly: %+v", opts)
+	}
+	if opts.tabSize != 4 {
+		t.Errorf("tabSize = %d, want 4", opts.tabSize)
+	}
+	if opts.backupDir != "/tmp/backup" {
+		t.Errorf("backupDir = %s, want /tmp/backup", opts.backupDir)
+	}
+	if opts.guideStripe != 80 {
+		t.Errorf("guideStripe = %d, want 80", opts.guideStripe)
+	}
+	if opts.quoteStr != "^> *" {
+		t.Errorf("quoteStr = %s, want ^> *", opts.quoteStr)
+	}
+	if opts.wordChars != "abc" || opts.syntax != "go" || opts.rcFile != "/etc/nanorc" ||
+		opts.operatingDir != "/home" || opts.fill != 72 || opts.speller != "aspell" {
+		t.Errorf("string/int options parsed incorrectly: %+v", opts)
+	}
+	if !opts.zero || !opts.soloSideScroll {
+		t.Errorf("zero/soloSideScroll not set: %+v", opts)
+	}
+	if opts.startLine != 15 || opts.startCol != 5 {
+		t.Errorf("start pos = (%d,%d), want (15,5)", opts.startLine, opts.startCol)
+	}
+	if opts.filename != "myfile.txt" {
+		t.Errorf("filename = %s, want myfile.txt", opts.filename)
+	}
+
+	// Test short option clustering
+	clustered, err := parseNanoOptions([]string{"-vlEkic", "file2.txt"})
+	if err != nil {
+		t.Fatalf("unexpected parse error on cluster: %v", err)
+	}
+	if !clustered.viewMode || !clustered.lineNumbers || !clustered.tabToSpaces ||
+		!clustered.autoIndent || !clustered.cutFromCursor || !clustered.constantShow {
+		t.Errorf("clustered flags not set: %+v", clustered)
+	}
+
+	// Test error cases
+	if _, err := parseNanoOptions([]string{"--tabsize"}); err == nil {
+		t.Error("expected error for missing tabsize argument")
+	}
+	if _, err := parseNanoOptions([]string{"-T", "invalid"}); err == nil {
+		t.Error("expected error for invalid tabsize")
+	}
+	if _, err := parseNanoOptions([]string{"--guidestripe"}); err == nil {
+		t.Error("expected error for missing guidestripe argument")
+	}
+	if _, err := parseNanoOptions([]string{"-unknownflag"}); err == nil {
+		t.Error("expected error for unknown flag")
+	}
+	if _, err := parseNanoOptions([]string{"file1.txt", "file2.txt"}); err == nil {
+		t.Error("expected error for too many operands")
+	}
+}
+
+func TestNanoViewMode(t *testing.T) {
+	e := newMiniEditorWithOptions(nanoOptions{viewMode: true})
+	e.lines = [][]byte{[]byte("read only text")}
+	e.handleKey('x') // printable key should be ignored
+	if string(e.lines[0]) != "read only text" {
+		t.Fatalf("viewMode allowed editing: %s", string(e.lines[0]))
+	}
+	if e.message != "Key is invalid in view mode" {
+		t.Fatalf("expected view mode message, got %s", e.message)
+	}
+	e.handleKey(127) // backspace should be ignored
+	if string(e.lines[0]) != "read only text" {
+		t.Fatalf("viewMode allowed backspace: %s", string(e.lines[0]))
+	}
+}
+
+func TestNanoTabToSpaces(t *testing.T) {
+	e := newMiniEditorWithOptions(nanoOptions{tabToSpaces: true, tabSize: 4})
+	e.lines = [][]byte{[]byte("")}
+	e.handleKey('\t')
+	if got := string(e.lines[0]); got != "    " {
+		t.Fatalf("tabToSpaces inserted %q, want 4 spaces", got)
+	}
+}
+
+func TestNanoAutoIndent(t *testing.T) {
+	e := newMiniEditorWithOptions(nanoOptions{autoIndent: true})
+	e.lines = [][]byte{[]byte("    indented line")}
+	e.col = len(e.lines[0])
+	e.handleKey('\n')
+	if len(e.lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d", len(e.lines))
+	}
+	if got := string(e.lines[1]); got != "    " {
+		t.Fatalf("expected 4 leading spaces preserved, got %q", got)
+	}
+	if e.col != 4 {
+		t.Fatalf("expected cursor col 4, got %d", e.col)
+	}
+}
+
+func TestNanoCutFromCursor(t *testing.T) {
+	e := newMiniEditorWithOptions(nanoOptions{cutFromCursor: true})
+	e.lines = [][]byte{[]byte("hello world")}
+	e.col = 5
+	e.cutLine()
+	if got := string(e.lines[0]); got != "hello" {
+		t.Fatalf("expected line trimmed to 'hello', got %q", got)
+	}
+	if got := string(e.cutBuffer); got != " world" {
+		t.Fatalf("expected cutBuffer ' world', got %q", got)
+	}
+}
+
+func TestNanoBackup(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "target.txt")
+	if err := os.WriteFile(filePath, []byte("version 1\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+
+	backupDir := filepath.Join(dir, "backups")
+	e := newMiniEditorWithOptions(nanoOptions{
+		filename:  filePath,
+		backup:    true,
+		backupDir: backupDir,
+	})
+	e.lines = [][]byte{[]byte("version 2")}
+	if err := e.save(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Check new content
+	newData, err := os.ReadFile(filePath)
+	if err != nil || string(newData) != "version 2\n" {
+		t.Fatalf("target file content = %q, want 'version 2\\n'", string(newData))
+	}
+
+	// Check backup file
+	backupFile := filepath.Join(backupDir, "target.txt~")
+	backupData, err := os.ReadFile(backupFile)
+	if err != nil || string(backupData) != "version 1\n" {
+		t.Fatalf("backup content = %q, want 'version 1\\n'", string(backupData))
+	}
+}
+
+func TestNanoListSyntaxes(t *testing.T) {
+	code := cmdNano([]string{"-z"})
+	if code != 0 {
+		t.Fatalf("cmdNano(-z) returned %d, want 0", code)
+	}
+	code = cmdNano([]string{"--listsyntaxes"})
+	if code != 0 {
+		t.Fatalf("cmdNano(--listsyntaxes) returned %d, want 0", code)
+	}
+}
+

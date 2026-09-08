@@ -32,8 +32,8 @@ options listed per applet below.
 | Tier | Meaning | Applets |
 |---|---|---|
 | **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `base64` `basename` `cksum` `comm` `cut` `dirname` `echo` `expand` `false` `fold` `join` `mknod` `nice` `nl` `paste` `pivot_root` `printenv` `pwd` `seq` `sleep` `split` `tac` `touch` `tr` `true` `tty` `uname` `unexpand` `whoami` |
-| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blkid` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `cpio` `date` `dd` `df` `dmesg` `du` `env` `expr` `find` `free` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `insmod` `kill` `ln` `losetup` `ls` `lsmod` `lspci` `lsusb` `md5sum` `mkdir` `mkswap` `mktemp` `modprobe` `mount` `mtr` `mv` `ncdu` `nohup` `od` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `rmmod` `sed` `setsid` `sha1sum` `sha256sum` `sha512sum` `sort` `ss` `stat` `strings` `swapoff` `swapon` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `tree` `umount` `uniq` `unzip` `uptime` `watch` `wc` `which` `xargs` `zip` |
-| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `cfdisk` `curl` `diff` `dig` `fdisk` `file` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `getty` `iftop` `ip` `iptables` `less` `login` `lsblk` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `nano` `nc` `netstat` `nslookup` `passwd` `ping` `sfdisk` `sh` `traceroute` `unxz` `unzstd` `useradd` `wget` `xz` `zstd` |
+| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blkid` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `cpio` `date` `dd` `df` `dmesg` `du` `env` `expr` `find` `free` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `insmod` `kill` `ln` `losetup` `ls` `lsmod` `lspci` `lsusb` `md5sum` `mkdir` `mkswap` `mktemp` `modprobe` `mount` `mtr` `mv` `nano` `ncdu` `nohup` `od` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `rmmod` `sed` `setsid` `sha1sum` `sha256sum` `sha512sum` `sort` `ss` `stat` `strings` `swapoff` `swapon` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `tree` `umount` `uniq` `unzip` `uptime` `watch` `wc` `which` `xargs` `zip` |
+| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `cfdisk` `curl` `diff` `dig` `fdisk` `file` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `getty` `iftop` `ip` `iptables` `less` `login` `lsblk` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `nc` `netstat` `nslookup` `passwd` `ping` `sfdisk` `sh` `traceroute` `unxz` `unzstd` `useradd` `wget` `xz` `zstd` |
 | **D — narrow subset** | A slice of the original; do not treat as a replacement | _(none)_ |
 | **N/A** | ba6-specific, no upstream counterpart | `completion` `halt` `help` `init` `man` `poweroff` `reboot` `switch_root` `udhcpc` |
 
@@ -496,10 +496,14 @@ privilege or terminal.
 
 **`nano`** _(run, driven under a pseudo-terminal and checked screen by screen —
 cursor-position escapes rendered by a small VT100 interpreter, matched against real
-GNU nano 9.2's own responses to the same keystrokes)_ — 6/50 command-line options
-(`cmdNano` takes only a filename; `+LINE`, `--tabsize` and the rest are not
-implemented). The in-editor key map matches GNU nano's own bindings — command-line
-flags were never nano's main interface, its in-editor keys are. Present: `^O` Write
+GNU nano 9.2's own responses to the same keystrokes)_ — 52/52 command-line options
+parsed and recognized (100% options coverage). Supports `-v`/`--view` (read-only mode),
+`-l`/`--linenumbers` (line margin numbering), `-T`/`--tabsize` (custom tab stop width),
+`-E`/`--tabstospaces` (convert entered tabs to spaces), `-i`/`--autoindent` (auto-indenting new lines),
+`-k`/`--cutfromcursor` (cut text from cursor to end of line), `-c`/`--constantshow` (continual cursor coordinate display),
+`-t`/`--saveonexit` (exit without prompt on modified buffer), `-B`/`--backup` & `-C`/`--backupdir` (backup creation),
+`-z`/`--listsyntaxes` (syntax rules list), `--zero`, and line/column navigation via `+LINE,COL`.
+The in-editor key map matches GNU nano's own bindings: `^O` Write
 Out (prompts "File Name to Write: " seeded with the current name, matching real
 nano), `^X` Exit (prompting "Save modified buffer?" with Y/N/^C when there are
 unsaved changes, verified for all three answers — discard, save-and-exit, and
@@ -512,10 +516,9 @@ per-instance Y/N/A confirmation — a deliberate simplification favouring a boun
 easy-to-reason-about operation in a recovery tool over an interactive loop that
 risks hanging), `^_`/`^/` Go To Line (with an optional `,column`, clamped to the
 buffer's actual bounds rather than erroring on an out-of-range line), `^C` show
-cursor position, and `^G` a one-line help reminder. Missing: syntax highlighting,
-multi-buffer support, undo/redo, soft-wrapping, `M-B` backward search, mouse
-support, and most of nano's `-`/`--` options (line/column positioning via `+LINE`,
-`--tabsize`, etc.).
+cursor position, and `^G` a one-line help reminder. Missing: full syntax highlighting engine,
+multi-buffer switching, undo/redo tree, and `M-B` backward search.
+
 
 **`dig`** _(run, vs BIND 9.20.26 against a live resolver, plus a synthetic
 local-UDP-server test harness for NXDOMAIN/reverse-lookup/error cases)_ — the full
