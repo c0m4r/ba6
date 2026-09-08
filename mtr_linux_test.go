@@ -7,6 +7,8 @@ package main
 
 import (
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -217,7 +219,7 @@ func TestMtrEchoSequenceMatching(t *testing.T) {
 // TestMtrICMPProbeLoopback exercises the unprivileged ICMP datagram path end to
 // end; environments that forbid those sockets fall back to UDP at runtime.
 func TestMtrICMPProbeLoopback(t *testing.T) {
-	prober, err := newMtrICMPProber(net.ParseIP("127.0.0.1").To4(), 4, 16)
+	prober, err := newMtrICMPProber(net.ParseIP("127.0.0.1").To4(), 4, mtrOptions{packetSize: 24})
 	if err != nil {
 		t.Skipf("no unprivileged ICMP socket: %v", err)
 	}
@@ -241,3 +243,108 @@ func TestMtrProberFallsBackToUDP(t *testing.T) {
 		t.Fatalf("-u selected %T", prober)
 	}
 }
+
+func TestMtrBatchFormatsAndOptions(t *testing.T) {
+	// Test JSON output
+	session := mtrTestSession(mtrOptions{json: true, cycles: 1})
+	var jsonBuf strings.Builder
+	if err := writeMtrJSON(&jsonBuf, session); err != nil {
+		t.Fatal(err)
+	}
+	outJSON := jsonBuf.String()
+	if !strings.Contains(outJSON, `"report":`) || !strings.Contains(outJSON, `"hubs":`) || !strings.Contains(outJSON, `"Loss%":`) {
+		t.Errorf("writeMtrJSON unexpected output:\n%s", outJSON)
+	}
+
+	// Test CSV output
+	var csvBuf strings.Builder
+	if err := writeMtrCSV(&csvBuf, session); err != nil {
+		t.Fatal(err)
+	}
+	outCSV := csvBuf.String()
+	if !strings.HasPrefix(outCSV, "Mtr_Version,Start_Time,Status,Host,Hop,Ip,Loss%,Snt, ,Last,Avg,Best,Wrst,StDev,") {
+		t.Errorf("writeMtrCSV unexpected header:\n%s", outCSV)
+	}
+	if !strings.Contains(outCSV, "MTR.0.96,") {
+		t.Errorf("writeMtrCSV missing MTR.0.96 version:\n%s", outCSV)
+	}
+
+	// Test XML output
+	var xmlBuf strings.Builder
+	if err := writeMtrXML(&xmlBuf, session); err != nil {
+		t.Fatal(err)
+	}
+	outXML := xmlBuf.String()
+	if !strings.Contains(outXML, `<?xml version="1.0"`) || !strings.Contains(outXML, `<MTR `) || !strings.Contains(outXML, `<HUB `) {
+		t.Errorf("writeMtrXML unexpected output:\n%s", outXML)
+	}
+
+	// Test Raw output
+	var rawBuf strings.Builder
+	if err := writeMtrRaw(&rawBuf, session); err != nil {
+		t.Fatal(err)
+	}
+	outRaw := rawBuf.String()
+	if !strings.Contains(outRaw, "h 0 192.168.55.1") || !strings.Contains(outRaw, "p 0") {
+		t.Errorf("writeMtrRaw unexpected output:\n%s", outRaw)
+	}
+
+	// Test Split output
+	var splitBuf strings.Builder
+	if err := writeMtrSplit(&splitBuf, session); err != nil {
+		t.Fatal(err)
+	}
+	outSplit := splitBuf.String()
+	if !strings.Contains(outSplit, "1 192.168.55.1") {
+		t.Errorf("writeMtrSplit unexpected output:\n%s", outSplit)
+	}
+
+	// Test Custom Order (-o)
+	sessionOrder := mtrTestSession(mtrOptions{report: true, order: "LD SN"})
+	var orderBuf strings.Builder
+	if err := writeMtrReport(&orderBuf, sessionOrder); err != nil {
+		t.Fatal(err)
+	}
+	outOrder := orderBuf.String()
+	if !strings.Contains(outOrder, "Loss%  Drop") || !strings.Contains(outOrder, "Snt  Last") {
+		t.Errorf("writeMtrReport custom order header mismatch:\n%s", outOrder)
+	}
+
+	// Test AS Lookup (-z)
+	sessionAS := mtrTestSession(mtrOptions{report: true, aslookup: true})
+	var asBuf strings.Builder
+	if err := writeMtrReport(&asBuf, sessionAS); err != nil {
+		t.Fatal(err)
+	}
+	outAS := asBuf.String()
+	if !strings.Contains(outAS, "AS???") {
+		t.Errorf("writeMtrReport AS lookup missing AS???:\n%s", outAS)
+	}
+
+	// Test -F / --filename
+	tmpFile := filepath.Join(t.TempDir(), "hosts.txt")
+	if err := os.WriteFile(tmpFile, []byte("# comment\n\n127.0.0.1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opts, host, err := parseMtrOptions([]string{"-F", tmpFile})
+	if err != nil || host != "127.0.0.1" {
+		t.Fatalf("parseMtrOptions -F = (%v, %q, %v)", opts, host, err)
+	}
+
+	// Test new options parsing
+	opts, _, err = parseMtrOptions([]string{
+		"-B", "0xff", "-Q", "16", "-M", "42", "-I", "eth0", "-a", "192.168.1.1",
+		"-U", "10", "-E", "5", "-P", "8080", "-L", "12345", "--displaymode", "1",
+		"-y", "0", "-j", "wp.pl",
+	})
+	if err != nil {
+		t.Fatalf("parseMtrOptions with extended options failed: %v", err)
+	}
+	if opts.bitpattern != 0xff || opts.tos != 16 || opts.mark != 42 || opts.iface != "eth0" ||
+		opts.srcAddr != "192.168.1.1" || opts.maxUnknown != 10 || opts.maxDisplayPath != 5 ||
+		opts.port != 8080 || opts.localPort != 12345 || opts.displayMode != 1 ||
+		!opts.aslookup || !opts.json {
+		t.Fatalf("unexpected parsed options: %+v", opts)
+	}
+}
+

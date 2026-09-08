@@ -169,19 +169,42 @@ each one. On a terminal the display refreshes continuously like the original
 curses interface; redirected output and -r print a one-shot report instead.
 
 Options:
+  -F, --filename FILE     read target hostnames from FILE
   -r, --report            print a report instead of the live display
   -w, --report-wide       report without truncating host names (implies -r)
+  -j, --json              emit report formatted as JSON
+  -x, --xml               emit report formatted as XML
+  -C, --csv               emit report formatted as CSV
+  -l, --raw               emit raw probe telemetry events
+  -p, --split             emit space-delimited split cycle metrics
+  -t, --curses            force interactive terminal display
   -c, --report-cycles N   stop after N cycles (report 10, live unlimited)
   -i, --interval SECONDS  delay between cycles (default 1)
   -Z, --timeout SECONDS   time to wait for a reply (default 1)
+  -G, --gracetime SECONDS wait time between probe transmissions
   -m, --max-ttl N         highest hop to probe (default 30)
   -f, --first-ttl N       first hop to probe (default 1)
+  -U, --max-unknown N     consecutive unanswered hops before stopping
+  -E, --max-display-path N maximum path count to display
   -s, --psize N           probe payload bytes (default 56)
+  -B, --bitpattern N      fill payload with byte pattern
+  -Q, --tos N             set IP type-of-service header byte
+  -M, --mark MARK         set packet socket mark
+  -I, --interface NAME    route probes via network device NAME
+  -a, --address ADDR      bind outgoing socket to source ADDR
+  -P, --port PORT         target port number for probes
+  -L, --localport PORT    originating source port number
+  -o, --order FIELDS      customize statistics column order (e.g. "LSD NBAWV")
+  -z, --aslookup          display autonomous system numbers
+  -y, --ipinfo N          display IP prefix or AS information
+  -e, --mpls              decode MPLS headers from ICMP extensions
   -n, --no-dns            show addresses instead of names
   -b, --show-ips          show names together with addresses
   -u, --udp               probe with UDP instead of ICMP echo
-  -I, --icmp              fail rather than fall back to UDP probes
+  -T, --tcp               probe with TCP packets
+  -S, --sctp              probe with SCTP packets
   -4, -6                  force IPv4 or IPv6
+  --displaymode MODE      select initial screen layout mode
   --help                  show this help
 
 Probes are ICMP echo requests as in the original, because the high UDP ports

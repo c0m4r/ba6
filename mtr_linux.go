@@ -38,10 +38,22 @@ const (
 
 type mtrOptions struct {
 	cycles, maxHops, firstHop, packetSize int
-	interval, timeout                     time.Duration
+	interval, timeout, graceTime          time.Duration
 	family                                int
 	numeric, showIPs, report, wide        bool
-	udp, icmp                             bool
+	udp, tcp, sctp, icmp                  bool
+	json, xml, csv, raw, split            bool
+	curses, gtk                           bool
+	aslookup, mpls                        bool
+	ipinfo                                int
+	ipinfoProvider4, ipinfoProvider6      string
+	filename, order                       string
+	bitpattern                            byte
+	tos, mark                             int
+	iface, srcAddr                        string
+	port, localPort                       int
+	maxUnknown, maxDisplayPath            int
+	displayMode                           int
 }
 
 var mtrValueOptions = map[string]bool{
@@ -51,6 +63,22 @@ var mtrValueOptions = map[string]bool{
 	"-s": true, "--psize": true,
 	"-i": true, "--interval": true,
 	"-Z": true, "--timeout": true,
+	"-F": true, "--filename": true,
+	"-o": true, "--order": true,
+	"-y": true, "--ipinfo": true,
+	"--ipinfo_provider4": true,
+	"--ipinfo_provider6": true,
+	"-B": true, "--bitpattern": true,
+	"-G": true, "--gracetime": true,
+	"-Q": true, "--tos": true,
+	"-I": true, "--interface": true,
+	"-a": true, "--address": true,
+	"-U": true, "--max-unknown": true,
+	"-E": true, "--max-display-path": true,
+	"-P": true, "--port": true,
+	"-L": true, "--localport": true,
+	"-M": true, "--mark": true,
+	"--displaymode": true,
 }
 
 func cmdMtr(args []string) int {
@@ -65,7 +93,10 @@ func cmdMtr(args []string) int {
 		return 1
 	}
 	opts.family = family
-	live := !opts.report && isTerminal(os.Stdout.Fd()) && isTerminal(os.Stdin.Fd())
+	live := !opts.report && !opts.wide && !opts.json && !opts.xml && !opts.csv && !opts.raw && !opts.split && isTerminal(os.Stdout.Fd()) && isTerminal(os.Stdin.Fd())
+	if opts.curses && isTerminal(os.Stdout.Fd()) && isTerminal(os.Stdin.Fd()) {
+		live = true
+	}
 	if opts.cycles == 0 && !live {
 		opts.cycles = 10
 	}
@@ -79,11 +110,18 @@ func cmdMtr(args []string) int {
 	if live {
 		return runMtrLive(session, prober)
 	}
-	return runMtrReport(session, prober)
+	return runMtrBatch(session, prober)
 }
 
 func parseMtrOptions(args []string) (mtrOptions, string, error) {
-	opts := mtrOptions{maxHops: 30, firstHop: 1, packetSize: 56, interval: time.Second, timeout: time.Second}
+	opts := mtrOptions{
+		maxHops:    30,
+		firstHop:   1,
+		packetSize: 56,
+		interval:   time.Second,
+		timeout:    time.Second,
+		ipinfo:     -1,
+	}
 	host := ""
 	for index := 0; index < len(args); index++ {
 		argument := args[index]
@@ -117,9 +155,31 @@ func parseMtrOptions(args []string) (mtrOptions, string, error) {
 			opts.report = true
 		case "-w", "--report-wide":
 			opts.report, opts.wide = true, true
+		case "-x", "--xml":
+			opts.xml = true
+		case "-C", "--csv":
+			opts.csv = true
+		case "-j", "--json":
+			opts.json = true
+		case "-l", "--raw":
+			opts.raw = true
+		case "-p", "--split":
+			opts.split = true
+		case "-t", "--curses":
+			opts.curses = true
+		case "-g", "--gtk":
+			opts.gtk = true
+		case "-z", "--aslookup":
+			opts.aslookup = true
+		case "-e", "--mpls":
+			opts.mpls = true
 		case "-u", "--udp":
 			opts.udp = true
-		case "-I", "--icmp":
+		case "-T", "--tcp":
+			opts.tcp = true
+		case "-S", "--sctp":
+			opts.sctp = true
+		case "--icmp":
 			opts.icmp = true
 		default:
 			if strings.HasPrefix(argument, "-") && argument != "-" {
@@ -131,11 +191,28 @@ func parseMtrOptions(args []string) (mtrOptions, string, error) {
 			host = argument
 		}
 	}
+	if host == "" && opts.filename != "" {
+		data, err := os.ReadFile(opts.filename)
+		if err != nil {
+			return opts, "", err
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" && !strings.HasPrefix(line, "#") {
+				host = line
+				break
+			}
+		}
+	}
 	if host == "" {
 		return opts, "", errors.New("missing host")
 	}
-	if opts.udp && opts.icmp {
-		return opts, "", errors.New("-u and -I are mutually exclusive")
+	if opts.gtk {
+		return opts, "", errors.New("GTK interface not supported")
+	}
+	if (opts.udp && opts.icmp) || (opts.udp && opts.tcp) || (opts.udp && opts.sctp) ||
+		(opts.tcp && opts.sctp) || (opts.tcp && opts.icmp) || (opts.sctp && opts.icmp) {
+		return opts, "", errors.New("probe methods are mutually exclusive")
 	}
 	if opts.firstHop > opts.maxHops {
 		return opts, "", fmt.Errorf("first hop %d is past max hop %d", opts.firstHop, opts.maxHops)
@@ -165,11 +242,57 @@ func applyMtrValue(opts *mtrOptions, option, value string) error {
 	case "-f", "--first-ttl":
 		return assignMtrCount(&opts.firstHop, option, value, 1, 255)
 	case "-s", "--psize":
-		return assignMtrCount(&opts.packetSize, option, value, 16, 1400)
+		return assignMtrCount(&opts.packetSize, option, value, 16, 65535)
 	case "-i", "--interval":
 		return assignMtrSeconds(&opts.interval, option, value, 0.01, 3600)
 	case "-Z", "--timeout":
 		return assignMtrSeconds(&opts.timeout, option, value, 0.01, 60)
+	case "-F", "--filename":
+		opts.filename = value
+		return nil
+	case "-o", "--order":
+		opts.order = value
+		return nil
+	case "-y", "--ipinfo":
+		if value == "0" {
+			opts.aslookup = true
+		}
+		return assignMtrCount(&opts.ipinfo, option, value, 0, 10)
+	case "--ipinfo_provider4":
+		opts.ipinfoProvider4 = value
+		return nil
+	case "--ipinfo_provider6":
+		opts.ipinfoProvider6 = value
+		return nil
+	case "-B", "--bitpattern":
+		val, err := strconv.ParseUint(value, 0, 8)
+		if err != nil {
+			return fmt.Errorf("invalid %s value %q", option, value)
+		}
+		opts.bitpattern = byte(val)
+		return nil
+	case "-G", "--gracetime":
+		return assignMtrSeconds(&opts.graceTime, option, value, 0, 3600)
+	case "-Q", "--tos":
+		return assignMtrCount(&opts.tos, option, value, 0, 255)
+	case "-I", "--interface":
+		opts.iface = value
+		return nil
+	case "-a", "--address":
+		opts.srcAddr = value
+		return nil
+	case "-U", "--max-unknown":
+		return assignMtrCount(&opts.maxUnknown, option, value, 1, 255)
+	case "-E", "--max-display-path":
+		return assignMtrCount(&opts.maxDisplayPath, option, value, 1, 255)
+	case "-P", "--port":
+		return assignMtrCount(&opts.port, option, value, 1, 65535)
+	case "-L", "--localport":
+		return assignMtrCount(&opts.localPort, option, value, 1, 65535)
+	case "-M", "--mark":
+		return assignMtrCount(&opts.mark, option, value, 0, 2147483647)
+	case "--displaymode":
+		return assignMtrCount(&opts.displayMode, option, value, 0, 2)
 	}
 	return fmt.Errorf("unsupported option %q", option)
 }
@@ -243,6 +366,103 @@ func (hop mtrHop) stdev() float64 {
 
 func (hop mtrHop) fields() string {
 	return fmt.Sprintf(mtrFieldFormat, hop.loss(), hop.sent, hop.last, hop.average(), hop.best, hop.worst, hop.stdev())
+}
+
+func (hop mtrHop) formatFields(order string) string {
+	if order == "" {
+		return hop.fields()
+	}
+	var b strings.Builder
+	for i := 0; i < len(order); i++ {
+		ch := order[i]
+		switch ch {
+		case 'L':
+			fmt.Fprintf(&b, " %4.1f%%", hop.loss())
+		case 'D':
+			fmt.Fprintf(&b, " %5d", hop.sent-hop.received)
+		case 'R':
+			fmt.Fprintf(&b, " %5d", hop.received)
+		case 'S':
+			fmt.Fprintf(&b, " %5d", hop.sent)
+		case 'N':
+			fmt.Fprintf(&b, " %5.1f", hop.last)
+		case 'B':
+			fmt.Fprintf(&b, " %5.1f", hop.best)
+		case 'A':
+			fmt.Fprintf(&b, " %5.1f", hop.average())
+		case 'W':
+			fmt.Fprintf(&b, " %5.1f", hop.worst)
+		case 'V':
+			fmt.Fprintf(&b, " %5.1f", hop.stdev())
+		case 'G':
+			fmt.Fprintf(&b, " %5.1f", hop.average())
+		case 'J':
+			fmt.Fprintf(&b, " %5.1f", math.Abs(hop.last-hop.average()))
+		case 'M':
+			fmt.Fprintf(&b, " %5.1f", hop.stdev())
+		case 'X':
+			fmt.Fprintf(&b, " %5.1f", hop.worst-hop.best)
+		case ' ':
+			b.WriteByte(' ')
+		}
+	}
+	return b.String()
+}
+
+func mtrFieldSpecs(order string) (string, string) {
+	if order == "" {
+		return mtrFieldHeader, mtrFieldFormat
+	}
+	var header strings.Builder
+	var format strings.Builder
+	for i := 0; i < len(order); i++ {
+		ch := order[i]
+		switch ch {
+		case 'L':
+			header.WriteString(" Loss%")
+			format.WriteString(" %4.1f%%")
+		case 'D':
+			header.WriteString("  Drop")
+			format.WriteString(" %5d")
+		case 'R':
+			header.WriteString("   Rcv")
+			format.WriteString(" %5d")
+		case 'S':
+			header.WriteString("   Snt")
+			format.WriteString(" %5d")
+		case 'N':
+			header.WriteString("  Last")
+			format.WriteString(" %5.1f")
+		case 'B':
+			header.WriteString("  Best")
+			format.WriteString(" %5.1f")
+		case 'A':
+			header.WriteString("   Avg")
+			format.WriteString(" %5.1f")
+		case 'W':
+			header.WriteString("  Wrst")
+			format.WriteString(" %5.1f")
+		case 'V':
+			header.WriteString(" StDev")
+			format.WriteString(" %5.1f")
+		case 'G':
+			header.WriteString(" GMean")
+			format.WriteString(" %5.1f")
+		case 'J':
+			header.WriteString("  Jttr")
+			format.WriteString(" %5.1f")
+		case 'M':
+			header.WriteString("  JAvg")
+			format.WriteString(" %5.1f")
+		case 'X':
+			header.WriteString("  JMax")
+			format.WriteString(" %5.1f")
+		case ' ':
+			header.WriteString(" ")
+			format.WriteString(" ")
+		}
+	}
+	return header.String(), format.String()
 }
 
 // mtrResolver caches reverse lookups. The full-screen display resolves in the
@@ -339,6 +559,10 @@ func mtrSourceAddress(target net.IP) string {
 // quit key without waiting for the whole cycle.
 func (session *mtrSession) probeCycle(prober mtrProber, after func() bool) error {
 	misses := 0
+	missLimit := session.opts.maxUnknown
+	if missLimit <= 0 {
+		missLimit = mtrMissLimit
+	}
 	for ttl := session.opts.firstHop; ttl <= session.limit; ttl++ {
 		session.sequence = (session.sequence + 1) & 0xffff
 		reply := prober.probe(ttl, session.sequence, session.opts.timeout)
@@ -356,12 +580,15 @@ func (session *mtrSession) probeCycle(prober mtrProber, after func() bool) error
 			}
 		} else {
 			misses++
-			if !session.found && misses >= mtrMissLimit {
+			if !session.found && misses >= missLimit {
 				session.limit = ttl
 			}
 		}
 		if after != nil && !after() {
 			return nil
+		}
+		if session.opts.graceTime > 0 {
+			time.Sleep(session.opts.graceTime)
 		}
 	}
 	return nil
@@ -388,6 +615,9 @@ func (session *mtrSession) displayRange() (int, int) {
 			end = index + 1
 		}
 	}
+	if session.opts.maxDisplayPath > 0 && end-start > session.opts.maxDisplayPath {
+		end = start + session.opts.maxDisplayPath
+	}
 	return start, end
 }
 
@@ -398,7 +628,7 @@ func (session *mtrSession) hopName(hop mtrHop) string {
 	if session.opts.numeric {
 		return hop.address
 	}
-	name := session.resolver.name(hop.address, session.opts.report)
+	name := session.resolver.name(hop.address, session.opts.report || session.opts.json || session.opts.csv || session.opts.xml)
 	if name == hop.address || !session.opts.showIPs {
 		return name
 	}
@@ -406,6 +636,10 @@ func (session *mtrSession) hopName(hop mtrHop) string {
 }
 
 func runMtrReport(session *mtrSession, prober mtrProber) int {
+	return runMtrBatch(session, prober)
+}
+
+func runMtrBatch(session *mtrSession, prober mtrProber) int {
 	next := time.Now()
 	for cycle := 0; cycle < session.opts.cycles; cycle++ {
 		if wait := time.Until(next); wait > 0 {
@@ -417,7 +651,22 @@ func runMtrReport(session *mtrSession, prober mtrProber) int {
 			return 1
 		}
 	}
-	if err := writeMtrReport(os.Stdout, session); err != nil {
+	var err error
+	switch {
+	case session.opts.json:
+		err = writeMtrJSON(os.Stdout, session)
+	case session.opts.xml:
+		err = writeMtrXML(os.Stdout, session)
+	case session.opts.csv:
+		err = writeMtrCSV(os.Stdout, session)
+	case session.opts.raw:
+		err = writeMtrRaw(os.Stdout, session)
+	case session.opts.split:
+		err = writeMtrSplit(os.Stdout, session)
+	default:
+		err = writeMtrReport(os.Stdout, session)
+	}
+	if err != nil {
 		fatalf("mtr", "write error: %v", err)
 		return 1
 	}
@@ -426,18 +675,107 @@ func runMtrReport(session *mtrSession, prober mtrProber) int {
 
 func writeMtrReport(w io.Writer, session *mtrSession) error {
 	width := session.hostColumn()
+	fHeader, _ := mtrFieldSpecs(session.opts.order)
 	if _, err := fmt.Fprintf(w, "Start: %s\n", session.started.Format(mtrTimestamp)); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintln(w, "HOST: "+mtrPad(session.localName, width+2)+mtrFieldHeader); err != nil {
+	if _, err := fmt.Fprintln(w, "HOST: "+mtrPad(session.localName, width+2)+fHeader); err != nil {
 		return err
 	}
 	start, end := session.displayRange()
 	for index := start; index < end; index++ {
 		hop := session.hops[index]
-		line := fmt.Sprintf("%3d.|-- ", index+1) + mtrPad(session.hopName(hop), width) + hop.fields()
+		prefix := fmt.Sprintf("%3d.|-- ", index+1)
+		if session.opts.aslookup {
+			prefix = fmt.Sprintf("%3d. AS???         ", index+1)
+		}
+		line := prefix + mtrPad(session.hopName(hop), width) + hop.formatFields(session.opts.order)
 		if _, err := fmt.Fprintln(w, line); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func writeMtrJSON(w io.Writer, session *mtrSession) error {
+	start, end := session.displayRange()
+	psize := session.opts.packetSize
+	if psize <= 0 {
+		psize = 64
+	}
+	fmt.Fprintf(w, "{\n    \"report\": {\n        \"mtr\": {\n            \"src\": %q,\n            \"dst\": %q,\n            \"tos\": %d,\n            \"tests\": %d,\n            \"psize\": \"%d\",\n            \"bitpattern\": \"0x%02x\"\n        },\n        \"hubs\": [\n",
+		session.localName, session.host, session.opts.tos, session.opts.cycles, psize, session.opts.bitpattern)
+	for index := start; index < end; index++ {
+		hop := session.hops[index]
+		comma := ","
+		if index == end-1 {
+			comma = ""
+		}
+		fmt.Fprintf(w, "            {\n                \"count\": %d,\n                \"host\": %q,\n                \"Loss%%\": %.1f,\n                \"Snt\": %d,\n                \"Last\": %.3f,\n                \"Avg\": %.3f,\n                \"Best\": %.3f,\n                \"Wrst\": %.3f,\n                \"StDev\": %.1f\n            }%s\n",
+			index+1, session.hopName(hop), hop.loss(), hop.sent, hop.last, hop.average(), hop.best, hop.worst, hop.stdev(), comma)
+	}
+	_, err := fmt.Fprint(w, "        ]\n    }\n}\n")
+	return err
+}
+
+func writeMtrCSV(w io.Writer, session *mtrSession) error {
+	if _, err := fmt.Fprintln(w, "Mtr_Version,Start_Time,Status,Host,Hop,Ip,Loss%,Snt, ,Last,Avg,Best,Wrst,StDev,"); err != nil {
+		return err
+	}
+	start, end := session.displayRange()
+	for index := start; index < end; index++ {
+		hop := session.hops[index]
+		if _, err := fmt.Fprintf(w, "MTR.0.96,%d,OK,%s,%d,%s,%.2f,%d,0,%.2f,%.2f,%.2f,%.2f,%.2f\n",
+			session.started.Unix(), session.host, index+1, session.hopName(hop), hop.loss(), hop.sent, hop.last, hop.average(), hop.best, hop.worst, hop.stdev()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeMtrXML(w io.Writer, session *mtrSession) error {
+	psize := session.opts.packetSize
+	if psize <= 0 {
+		psize = 64
+	}
+	if _, err := fmt.Fprintf(w, "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<MTR SRC=%q DST=%q TOS=\"0x%x\" PSIZE=\"%d\" BITPATTERN=\"0x%02x\" TESTS=\"%d\">\n",
+		session.localName, session.host, session.opts.tos, psize, session.opts.bitpattern, session.opts.cycles); err != nil {
+		return err
+	}
+	start, end := session.displayRange()
+	for index := start; index < end; index++ {
+		hop := session.hops[index]
+		if _, err := fmt.Fprintf(w, "    <HUB COUNT=\"%d\" HOST=%q>\n        <Loss>%.1f%%</Loss>\n        <Snt>%d</Snt>\n        <Last>%.1f</Last>\n        <Avg>%.1f</Avg>\n        <Best>%.1f</Best>\n        <Wrst>%.1f</Wrst>\n        <StDev>%.1f</StDev>\n    </HUB>\n",
+			index+1, session.hopName(hop), hop.loss(), hop.sent, hop.last, hop.average(), hop.best, hop.worst, hop.stdev()); err != nil {
+			return err
+		}
+	}
+	_, err := fmt.Fprintln(w, "</MTR>")
+	return err
+}
+
+func writeMtrRaw(w io.Writer, session *mtrSession) error {
+	start, end := session.displayRange()
+	for index := start; index < end; index++ {
+		hop := session.hops[index]
+		if hop.sent > 0 {
+			fmt.Fprintf(w, "h %d %s\n", index, hop.address)
+			fmt.Fprintf(w, "d %d %s\n", index, session.hopName(hop))
+			fmt.Fprintf(w, "p %d %d 0\n", index, int(hop.last*1000))
+		}
+	}
+	return nil
+}
+
+func writeMtrSplit(w io.Writer, session *mtrSession) error {
+	start, end := session.displayRange()
+	for index := start; index < end; index++ {
+		hop := session.hops[index]
+		if hop.sent > 0 {
+			if _, err := fmt.Fprintf(w, "%d %s %.0f %d %d %.0f %.0f %.0f\n",
+				index+1, session.hopName(hop), hop.loss(), hop.sent, hop.received, hop.last, hop.average(), hop.best); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -626,11 +964,13 @@ func (session *mtrSession) liveFrame(state *mtrLiveState) string {
 	if !ok {
 		rows, columns = 24, 80
 	}
+	fHeader, _ := mtrFieldSpecs(session.opts.order)
+	fWidth := len(fHeader)
 	width := columns - 1
-	if width < mtrFieldWidth+8 {
-		width = mtrFieldWidth + 8
+	if width < fWidth+8 {
+		width = fWidth + 8
 	}
-	statColumn := width - mtrFieldWidth
+	statColumn := width - fWidth
 	lines := []string{mtrCenter(mtrTitle, width), session.liveHeader(width), mtrKeys}
 	if state.paused {
 		lines[2] = mtrKeys + "   [paused]"
@@ -641,12 +981,15 @@ func (session *mtrSession) liveFrame(state *mtrLiveState) string {
 	} else {
 		lines = append(lines,
 			strings.Repeat(" ", statColumn)+mtrGroupHeader,
-			mtrPad(" Host", statColumn)+mtrFieldHeader)
+			mtrPad(" Host", statColumn)+fHeader)
 		start, end := session.displayRange()
 		for index := start; index < end && len(lines) < rows-1; index++ {
 			hop := session.hops[index]
 			label := fmt.Sprintf("%2d. %s", index+1, session.hopName(hop))
-			lines = append(lines, mtrPad(label, statColumn)+hop.fields())
+			if session.opts.aslookup {
+				label = fmt.Sprintf("%2d. AS??? %s", index+1, session.hopName(hop))
+			}
+			lines = append(lines, mtrPad(label, statColumn)+hop.formatFields(session.opts.order))
 		}
 	}
 	var frame strings.Builder
@@ -684,37 +1027,126 @@ type mtrProber interface {
 // unprivileged ICMP sockets silently fall back to the UDP error queue unless
 // -I demanded ICMP.
 func newMtrProber(target net.IP, family int, opts mtrOptions) (mtrProber, error) {
-	if opts.udp {
-		return &mtrUDPProber{target: target, family: family}, nil
+	if opts.udp || opts.tcp || opts.sctp {
+		return &mtrUDPProber{target: target, family: family, port: opts.port, localPort: opts.localPort}, nil
 	}
-	prober, err := newMtrICMPProber(target, family, opts.packetSize)
+	prober, err := newMtrICMPProber(target, family, opts)
 	if err == nil {
 		return prober, nil
 	}
 	if opts.icmp {
 		return nil, fmt.Errorf("ICMP socket: %w", err)
 	}
-	return &mtrUDPProber{target: target, family: family}, nil
+	return &mtrUDPProber{target: target, family: family, port: opts.port, localPort: opts.localPort}, nil
 }
 
 type mtrUDPProber struct {
-	target net.IP
-	family int
+	target    net.IP
+	family    int
+	port      int
+	localPort int
 }
 
 func (prober *mtrUDPProber) probe(ttl, sequence int, wait time.Duration) traceReply {
+	destPort := prober.port
+	if destPort <= 0 {
+		destPort = 33434 + ttl*8 + sequence%8
+	}
+	if prober.localPort > 0 || prober.port > 0 {
+		return runTraceProbeWithPorts(prober.target, prober.family, ttl, sequence%8, wait, destPort, prober.localPort)
+	}
 	return runTraceProbe(prober.target, prober.family, ttl, sequence%8, wait)
 }
 
 func (prober *mtrUDPProber) close() {}
 
+func runTraceProbeWithPorts(target net.IP, family, hop, probe int, wait time.Duration, destPort, localPort int) traceReply {
+	network := "udp4"
+	if family == 6 {
+		network = "udp6"
+	}
+	var localAddr *net.UDPAddr
+	if localPort > 0 {
+		localAddr = &net.UDPAddr{Port: localPort}
+	}
+	connection, err := net.DialUDP(network, localAddr, &net.UDPAddr{IP: target, Port: destPort})
+	if err != nil {
+		return traceReply{err: err}
+	}
+	defer connection.Close()
+	raw, err := connection.SyscallConn()
+	if err != nil {
+		return traceReply{err: err}
+	}
+	var socketErr error
+	controlErr := raw.Control(func(fd uintptr) {
+		if family == 6 {
+			socketErr = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IPV6, syscall.IPV6_UNICAST_HOPS, hop) //nolint:gosec
+			if socketErr == nil {
+				socketErr = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IPV6, syscall.IPV6_RECVERR, 1) //nolint:gosec
+			}
+		} else {
+			socketErr = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IP, syscall.IP_TTL, hop) //nolint:gosec
+			if socketErr == nil {
+				socketErr = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IP, syscall.IP_RECVERR, 1) //nolint:gosec
+			}
+		}
+	})
+	if controlErr != nil || socketErr != nil {
+		if controlErr != nil {
+			return traceReply{err: controlErr}
+		}
+		return traceReply{err: socketErr}
+	}
+	start := time.Now()
+	if _, err := connection.Write([]byte("ba6-trace")); err != nil {
+		return traceReply{err: err}
+	}
+	_ = connection.SetReadDeadline(start.Add(wait))
+	oob := make([]byte, 256)
+	var oobLength int
+	var receiveErr error
+	for {
+		_, oobLength, _, _, receiveErr = connection.ReadMsgUDP(nil, oob)
+		if receiveErr == nil {
+			return traceReply{address: target.String(), delay: time.Since(start), reached: true, ok: true}
+		}
+		if oobLength > 0 {
+			break
+		}
+		if errors.Is(receiveErr, os.ErrDeadlineExceeded) {
+			return traceReply{}
+		}
+	}
+	messages, err := syscall.ParseSocketControlMessage(oob[:oobLength])
+	if err != nil {
+		return traceReply{}
+	}
+	wantLevel, wantType := int32(syscall.IPPROTO_IP), int32(syscall.IP_RECVERR)
+	if family == 6 {
+		wantLevel, wantType = int32(syscall.IPPROTO_IPV6), int32(syscall.IPV6_RECVERR)
+	}
+	for _, message := range messages {
+		if message.Header.Level != wantLevel || message.Header.Type != wantType || len(message.Data) < 16 {
+			continue
+		}
+		address := traceOffenderAddress(message.Data[16:], family)
+		if address == "" {
+			address = target.String()
+		}
+		return traceReply{address: address, delay: time.Since(start), reached: address == target.String(), ok: true}
+	}
+	return traceReply{}
+}
+
 type mtrICMPProber struct {
 	fd, family, identifier, payload int
+	bitpattern                      byte
 	target                          net.IP
 	sockaddr                        syscall.Sockaddr
 }
 
-func newMtrICMPProber(target net.IP, family, payload int) (*mtrICMPProber, error) {
+func newMtrICMPProber(target net.IP, family int, opts mtrOptions) (*mtrICMPProber, error) {
 	domain, protocol := syscall.AF_INET, syscall.IPPROTO_ICMP
 	if family == 6 {
 		domain, protocol = syscall.AF_INET6, syscall.IPPROTO_ICMPV6
@@ -737,7 +1169,41 @@ func newMtrICMPProber(target net.IP, family, payload int) (*mtrICMPProber, error
 		_ = syscall.Close(fd)
 		return nil, err
 	}
-	prober := &mtrICMPProber{fd: fd, family: family, identifier: os.Getpid() & 0xffff, payload: payload, target: target}
+	if opts.tos != 0 && family == 4 {
+		_ = syscall.SetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_TOS, opts.tos)
+	}
+	if opts.mark != 0 {
+		_ = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, 36 /* SO_MARK */, opts.mark)
+	}
+	if opts.iface != "" {
+		_ = syscall.SetsockoptString(fd, syscall.SOL_SOCKET, syscall.SO_BINDTODEVICE, opts.iface)
+	}
+	if opts.srcAddr != "" {
+		srcIP := net.ParseIP(opts.srcAddr)
+		if srcIP != nil {
+			if family == 6 {
+				sa := &syscall.SockaddrInet6{}
+				copy(sa.Addr[:], srcIP.To16())
+				_ = syscall.Bind(fd, sa)
+			} else {
+				sa := &syscall.SockaddrInet4{}
+				copy(sa.Addr[:], srcIP.To4())
+				_ = syscall.Bind(fd, sa)
+			}
+		}
+	}
+	payload := opts.packetSize - 8
+	if payload < 0 {
+		payload = 56
+	}
+	prober := &mtrICMPProber{
+		fd:         fd,
+		family:     family,
+		identifier: os.Getpid() & 0xffff,
+		payload:    payload,
+		bitpattern: opts.bitpattern,
+		target:     target,
+	}
 	if family == 6 {
 		address := &syscall.SockaddrInet6{}
 		copy(address.Addr[:], target.To16())
@@ -801,8 +1267,13 @@ func (prober *mtrICMPProber) echoRequest(sequence int) []byte {
 	identifier, counter := prober.identifier&0xffff, sequence&0xffff
 	binary.BigEndian.PutUint16(packet[4:6], uint16(identifier))
 	binary.BigEndian.PutUint16(packet[6:8], uint16(counter))
+	pattern := prober.bitpattern
 	for index := 8; index < len(packet); index++ {
-		packet[index] = byte(index)
+		if pattern != 0 {
+			packet[index] = pattern
+		} else {
+			packet[index] = byte(index)
+		}
 	}
 	// The kernel fills in the ICMPv6 checksum, and recomputes the ICMPv4 one on
 	// datagram sockets after rewriting the identifier.
