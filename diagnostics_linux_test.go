@@ -300,3 +300,30 @@ func TestDiagnosticHardeningClassification(t *testing.T) {
 		}
 	}
 }
+
+func TestIftopOptions(t *testing.T) {
+	code := cmdIftop([]string{
+		"-t", "-n", "-N", "-P", "-p", "-b", "-l", "-B",
+		"-m", "10M",
+		"-f", "port 80",
+		"-F", "192.168.1.0/24",
+		"-G", "2001:db8::/64",
+		"-c", "/tmp/iftoprc",
+		"-L", "10",
+		"-o", "2s",
+		"-s", "0.001",
+	})
+	if code != 0 {
+		t.Fatalf("cmdIftop returned %d, want 0", code)
+	}
+
+	for _, missingArg := range []string{"-i", "-s", "-m", "-f", "-F", "-G", "-c", "-L", "-o"} {
+		if code := cmdIftop([]string{missingArg}); code == 0 {
+			t.Errorf("cmdIftop(%s) should have failed without argument", missingArg)
+		}
+	}
+	if code := cmdIftop([]string{"-unknown"}); code == 0 {
+		t.Errorf("cmdIftop(-unknown) should have failed")
+	}
+}
+

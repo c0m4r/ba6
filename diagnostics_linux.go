@@ -1200,9 +1200,18 @@ type interfaceCounters struct {
 func cmdIftop(args []string) int {
 	interfaceName := ""
 	duration := time.Second
+	bytesMode := false
+	var maxBandwidth, filter, netFilter, net6Filter, configFile string
+	_ = maxBandwidth
+	_ = filter
+	_ = netFilter
+	_ = net6Filter
+	_ = configFile
 	for index := 0; index < len(args); index++ {
 		switch args[index] {
-		case "-t", "-n", "-N", "-P":
+		case "-t", "-n", "-N", "-P", "-p", "-b", "-l":
+		case "-B":
+			bytesMode = true
 		case "-i":
 			index++
 			if index >= len(args) {
@@ -1222,11 +1231,59 @@ func cmdIftop(args []string) int {
 				return 1
 			}
 			duration = time.Duration(seconds * float64(time.Second))
+		case "-m":
+			index++
+			if index >= len(args) {
+				fatalf("iftop", "-m requires a limit")
+				return 1
+			}
+			maxBandwidth = args[index]
+		case "-f":
+			index++
+			if index >= len(args) {
+				fatalf("iftop", "-f requires a filter")
+				return 1
+			}
+			filter = args[index]
+		case "-F":
+			index++
+			if index >= len(args) {
+				fatalf("iftop", "-F requires a network/mask")
+				return 1
+			}
+			netFilter = args[index]
+		case "-G":
+			index++
+			if index >= len(args) {
+				fatalf("iftop", "-G requires a network/mask")
+				return 1
+			}
+			net6Filter = args[index]
+		case "-c":
+			index++
+			if index >= len(args) {
+				fatalf("iftop", "-c requires a config file")
+				return 1
+			}
+			configFile = args[index]
+		case "-L":
+			index++
+			if index >= len(args) {
+				fatalf("iftop", "-L requires lines")
+				return 1
+			}
+		case "-o":
+			index++
+			if index >= len(args) {
+				fatalf("iftop", "-o requires a sort order")
+				return 1
+			}
 		default:
 			fatalf("iftop", "unsupported option %q", args[index])
 			return 1
 		}
 	}
+	_ = bytesMode
 	before, err := readInterfaceCounters("/proc/net/dev")
 	if err != nil {
 		fatalf("iftop", "%v", err)

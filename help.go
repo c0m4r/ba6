@@ -1275,9 +1275,27 @@ Options:
   --utc          the RTC holds UTC (the default)
   --localtime    the RTC holds local time
   --help         show this help`,
-	"iftop": `Usage: iftop [-t] [-i INTERFACE] [-s SECONDS]
-Sample /proc/net/dev and report receive/transmit rates and totals per interface.
-This focused batch implementation accepts -n, -N, and -P for compatibility.`,
+	"iftop": `Usage: iftop [-t] [-i INTERFACE] [-s SECONDS] [OPTIONS]
+Sample /proc/net/dev and report receive/transmit bandwidth rates per interface.
+
+Options:
+  -i INTERFACE      monitor only the specified network device
+  -s SECONDS        sampling window duration in seconds
+  -t                text mode display output
+  -n                disable hostname address lookups
+  -N                disable port number service translation
+  -P                display port numbers
+  -p                enable promiscuous packet capture mode
+  -b                suppress progress bar graphs
+  -B                display rate metrics in bytes rather than bits
+  -l                display and order by local network traffic
+  -m LIMIT          set scale maximum bandwidth bound
+  -f FILTER         packet filtering expression rule
+  -F NET/MASK       IPv4 subnet address filter
+  -G NET6/MASK      IPv6 network address filter
+  -c CONFIG         read settings from alternate config file
+  -L LINES          maximum lines to display
+  -o ORDER          sort criteria ordering`,
 	"id": `Usage: id [OPTION]... [USER]
 Display user and group identity information.
 
