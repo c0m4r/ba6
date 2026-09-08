@@ -500,3 +500,36 @@ func TestMkswapCreatesSwapFile(t *testing.T) {
 		t.Fatalf("mkswap -F created %s without a size", missing)
 	}
 }
+
+func TestFsckOptions(t *testing.T) {
+	status, stdout, stderr := captureApplet(t, cmdFsck, []string{"-N", "-t", "ext4", "/dev/sda1"}, "")
+	if status != 0 || !strings.Contains(stdout, "[/sbin/fsck.ext4 (1) -- /dev/sda1]") {
+		t.Fatalf("fsck -N status=%d stdout=%q stderr=%q", status, stdout, stderr)
+	}
+
+	status, stdout, stderr = captureApplet(t, cmdFsck, []string{"-l", "-s", "-T", "-P", "-r", "-C", "-N", "/dev/sda1"}, "")
+	if status != 0 || !strings.Contains(stdout, "/dev/sda1") {
+		t.Fatalf("fsck flags status=%d stdout=%q stderr=%q", status, stdout, stderr)
+	}
+
+	status, stdout, _ = captureApplet(t, cmdFsck, []string{"-A", "-R", "-N"}, "")
+	if status != 0 {
+		t.Fatalf("fsck -A -R -N status=%d stdout=%q", status, stdout)
+	}
+
+	status, _, _ = captureApplet(t, cmdFsck, []string{"-A", "-R", "-M"}, "")
+	if status != 0 {
+		t.Fatalf("fsck -A -R -M status=%d", status)
+	}
+
+	status, _, _ = captureApplet(t, cmdFsck, []string{"-t"}, "")
+	if status == 0 {
+		t.Fatal("fsck -t without argument should fail")
+	}
+
+	status, _, _ = captureApplet(t, cmdFsck, []string{"-t", "btrfs", "/dev/sda1"}, "")
+	if status == 0 {
+		t.Fatal("fsck -t btrfs should fail")
+	}
+}
+

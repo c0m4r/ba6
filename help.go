@@ -74,10 +74,23 @@ from standard input with start=, size=, type=, and bootable fields. Units are
 512-byte sectors; K, M, and G suffixes are accepted. All ranges and overlaps
 are validated before the single-sector write. GPT and extended partitions are
 intentionally unsupported.`,
-	"fsck": `Usage: fsck [-t ext2|ext3|ext4] [-nfpav] DEVICE...
+	"fsck": `Usage: fsck [OPTIONS] [-t FSTYPE] DEVICE...
 Validate ext-family superblock geometry, feature flags, group metadata, the
 root inode, and root directory structure. This checker is strictly read-only;
-it reports damage with fsck status bit 4 and never attempts repair.`,
+it reports damage with fsck status bit 4 and never attempts repair.
+
+Options:
+  -A             walk /etc/fstab and check listed filesystems
+  -C             display graphical completion and progress meters
+  -l             lock the device with exclusive flock
+  -M             skip checking mounted filesystems
+  -N             perform dry run showing what commands would execute
+  -P             scan root filesystem concurrently with other devices
+  -r             interactive repair mode and statistics reporting
+  -R             omit root filesystem when checking via -A
+  -s             serialize filesystem checking sequentially
+  -t TYPE        explicit filesystem driver type (ext2/ext3/ext4)
+  -T             suppress startup title banner display`,
 	"fsck.ext2": `Usage: fsck.ext2 [-nfpav] DEVICE...
 Read-only structural validation for ext2, ext3, and ext4 filesystems.`,
 	"fsck.ext3": `Usage: fsck.ext3 [-nfpav] DEVICE...

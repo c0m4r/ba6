@@ -32,8 +32,8 @@ options listed per applet below.
 | Tier | Meaning | Applets |
 |---|---|---|
 | **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `base64` `basename` `cksum` `comm` `cut` `dirname` `echo` `expand` `false` `fold` `join` `mknod` `nice` `nl` `paste` `pivot_root` `printenv` `pwd` `seq` `sleep` `split` `tac` `touch` `tr` `true` `tty` `uname` `unexpand` `whoami` |
-| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blkid` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `cpio` `date` `dd` `df` `dig` `dmesg` `du` `env` `expr` `find` `free` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `iftop` `insmod` `kill` `ln` `login` `losetup` `ls` `lsmod` `lspci` `lsusb` `md5sum` `mkdir` `mkswap` `mktemp` `modprobe` `mount` `mtr` `mv` `nano` `ncdu` `netstat` `nohup` `nslookup` `od` `passwd` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `rmmod` `sed` `setsid` `sha1sum` `sha256sum` `sha512sum` `sort` `ss` `stat` `strings` `swapoff` `swapon` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `tree` `umount` `uniq` `unzip` `uptime` `watch` `wc` `which` `xargs` `zip` |
-| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `cfdisk` `curl` `diff` `fdisk` `file` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `getty` `ip` `iptables` `less` `lsblk` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `nc` `ping` `sfdisk` `sh` `traceroute` `unxz` `unzstd` `useradd` `wget` `xz` `zstd` |
+| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blkid` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `cpio` `date` `dd` `df` `dig` `dmesg` `du` `env` `expr` `find` `free` `fsck` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `iftop` `insmod` `kill` `ln` `login` `losetup` `ls` `lsmod` `lspci` `lsusb` `md5sum` `mkdir` `mkswap` `mktemp` `modprobe` `mount` `mtr` `mv` `nano` `ncdu` `netstat` `nohup` `nslookup` `od` `passwd` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `rmmod` `sed` `setsid` `sha1sum` `sha256sum` `sha512sum` `sort` `ss` `stat` `strings` `swapoff` `swapon` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `tree` `umount` `uniq` `unzip` `uptime` `watch` `wc` `which` `xargs` `zip` |
+| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `cfdisk` `curl` `diff` `fdisk` `file` `fsck.ext2` `fsck.ext3` `fsck.ext4` `getty` `ip` `iptables` `less` `lsblk` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `nc` `ping` `sfdisk` `sh` `traceroute` `unxz` `unzstd` `useradd` `wget` `xz` `zstd` |
 | **D — narrow subset** | A slice of the original; do not treat as a replacement | _(none)_ |
 | **N/A** | ba6-specific, no upstream counterpart | `completion` `halt` `help` `init` `man` `poweroff` `reboot` `switch_root` `udhcpc` |
 
@@ -420,6 +420,13 @@ real `fdisk -l` and `sfdisk --dump`. The *printed* layout differs —
 ba6's `fdisk -l` has no column alignment and omits the `Disk model`, `Units`,
 `Sector size` and `Disklabel type` lines; ba6's `sfdisk --dump` omits `label-id`,
 `device` and `sector-size` and pads columns differently.
+
+**`fsck`** — 11/11 options recognized (100% options coverage). The front-end dispatcher
+supports `-A` (`/etc/fstab` walk with pass-number filtering), `-R` (skip root filesystem
+under `-A`), `-M` (skip mounted filesystems via `/proc/mounts`), `-N` (dry-run mode
+reporting invocations), `-l` (device locking), `-s` (serialization), `-T` (title suppression),
+`-P` (parallel root scanning with `-A`), `-r` (statistics reporting), `-C` (progress bars),
+and `-t` (filesystem type selection).
 
 **`mkfs.*` / `fsck.*`** — **by design** each formatter writes one fixed profile and
 each checker is read-only; that is stated in the help text and is a deliberate safety

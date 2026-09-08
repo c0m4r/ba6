@@ -1249,25 +1249,154 @@ func writeExt2Dirent(target []byte, inode uint32, recordLength int, name string)
 }
 
 func cmdFsck(args []string) int {
+	args = expandShortOptions(args, "tC")
 	filesystem := ""
+	checkAll := false
+	skipRoot := false
+	noTitle := false
+	noMounted := false
+	dryRun := false
+	parallelRoot := false
+	serialize := false
+	lockDevice := false
+	reportStats := false
+	showProgress := false
+	_ = noTitle
+	_ = parallelRoot
+	_ = serialize
+	_ = lockDevice
+	_ = reportStats
+	_ = showProgress
+
 	forward := make([]string, 0, len(args))
 	for index := 0; index < len(args); index++ {
-		if args[index] == "-t" || args[index] == "--type" {
+		arg := args[index]
+		switch {
+		case arg == "-t" || arg == "--type":
 			index++
 			if index >= len(args) {
 				fatalf("fsck", "-t requires a filesystem type")
 				return 8
 			}
 			filesystem = strings.ToLower(args[index])
-		} else {
-			forward = append(forward, args[index])
+		case arg == "-A":
+			checkAll = true
+		case arg == "-R":
+			skipRoot = true
+		case arg == "-T":
+			noTitle = true
+		case arg == "-M":
+			noMounted = true
+		case arg == "-N":
+			dryRun = true
+		case arg == "-P":
+			parallelRoot = true
+		case arg == "-s":
+			serialize = true
+		case arg == "-l":
+			lockDevice = true
+		case arg == "-r":
+			reportStats = true
+		case arg == "-C" || strings.HasPrefix(arg, "-C"):
+			showProgress = true
+		default:
+			forward = append(forward, arg)
 		}
 	}
 	if filesystem != "" && filesystem != "ext2" && filesystem != "ext3" && filesystem != "ext4" {
 		fatalf("fsck", "unsupported filesystem type %q (supported: ext2/ext3/ext4 validation)", filesystem)
 		return 8
 	}
+
+	if checkAll {
+		fstabDevices := parseFstabDevices(skipRoot, noMounted)
+		if len(fstabDevices) == 0 && len(forward) == 0 {
+			return 0
+		}
+		forward = append(forward, fstabDevices...)
+	}
+
+	if noMounted && !checkAll {
+		var filtered []string
+		mounted := readMountedDevices()
+		for _, dev := range forward {
+			if !strings.HasPrefix(dev, "-") && mounted[dev] {
+				continue
+			}
+			filtered = append(filtered, dev)
+		}
+		if len(filtered) == 0 && len(forward) > 0 {
+			return 0
+		}
+		forward = filtered
+	}
+
+	if dryRun {
+		for _, dev := range forward {
+			if strings.HasPrefix(dev, "-") {
+				continue
+			}
+			fstype := filesystem
+			if fstype == "" {
+				fstype = "ext4"
+			}
+			fmt.Fprintf(os.Stdout, "[/sbin/fsck.%s (1) -- %s]\n", fstype, dev)
+		}
+		return 0
+	}
+
 	return fsckExt("fsck", forward, filesystem)
+}
+
+func readMountedDevices() map[string]bool {
+	mounted := make(map[string]bool)
+	mdata, err := os.ReadFile("/proc/mounts")
+	if err != nil {
+		return mounted
+	}
+	for _, line := range strings.Split(string(mdata), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 {
+			mounted[fields[0]] = true
+			mounted[fields[1]] = true
+		}
+	}
+	return mounted
+}
+
+func parseFstabDevices(skipRoot, noMounted bool) []string {
+	data, err := os.ReadFile("/etc/fstab")
+	if err != nil {
+		return nil
+	}
+	var mounted map[string]bool
+	if noMounted {
+		mounted = readMountedDevices()
+	}
+	var devices []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		device := fields[0]
+		mountPoint := fields[1]
+		if skipRoot && (mountPoint == "/" || device == "rootfs") {
+			continue
+		}
+		if noMounted && (mounted[device] || mounted[mountPoint]) {
+			continue
+		}
+		if len(fields) >= 6 && fields[5] == "0" {
+			continue
+		}
+		devices = append(devices, device)
+	}
+	return devices
 }
 
 // Each fsck.extN name is its own entry point so that diagnostics are attributed
