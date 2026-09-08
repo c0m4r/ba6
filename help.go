@@ -61,11 +61,28 @@ conventional 128-entry, 128-byte-entry layout. DOS support is limited to four
 primary partitions. Extended/logical MBR partitions, SGI, and SUN labels are
 unsupported. ba6 sfdisk only replays DOS dumps; a GPT dump is for inspection or
 compatible external tooling.`,
-	"fdisk": `Usage: fdisk -l [DEVICE]...
-List DOS/MBR or GPT partition tables without modifying them. With no DEVICE,
-inspect whole block devices found through /sys/class/block. GPT header and
-entry-array checksums and all partition bounds are validated. Interactive
-partition editing is intentionally unsupported.`,
+	"fdisk": `Usage: fdisk [-l] [-x] [-s DEVICE] [-b SIZE] [DEVICE]...
+Inspect partition tables on block devices or disk images.
+
+Options:
+  -l, --list               Display partition layout for devices
+  -x, --list-details       Include extra partition details in output
+  -s, --getsz              Print capacity in 512-byte sectors and exit
+      --bytes              Report raw byte count instead of human friendly units
+  -b, --sector-size SIZE   Override logical sector dimension in bytes
+  -B, --protect-boot       Preserve initial boot sector bytes
+  -c, --compatibility MODE Select dos or nondos compatibility mode
+  -L, --color WHEN         Control output colorization
+      --lock MODE          Control device lock protocol
+  -n, --noauto-pt          Do not synthesize partition table on blank media
+  -o, --output COLS        Specify columns to include in listing
+  -t, --type TYPE          Filter or match specific partition table format
+  -u, --units UNIT         Select display units (sectors or cylinders)
+  -C, --cylinders NUM      Set cylinder count for disk geometry
+  -H, --heads NUM          Set head count for disk geometry
+  -S, --sectors NUM        Set sectors per track for disk geometry
+  -w, --wipe WHEN          Wipe signatures from disk
+  -W, --wipe-partitions WHEN Wipe signatures from individual partitions`,
 	"sfdisk": `Usage: sfdisk [--force] DEVICE
        sfdisk --dump DEVICE
        sfdisk --list DEVICE

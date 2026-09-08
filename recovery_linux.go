@@ -211,26 +211,122 @@ func isBlockDevice(mode os.FileMode) bool {
 }
 
 func cmdFdisk(args []string) int {
+	args = expandShortOptions(args, "bCHStwoW")
 	list := false
+	listDetails := false
+	getsz := false
+	rawBytes := false
+	var userSectorSize uint64
 	var devices []string
-	for _, arg := range args {
+
+	for i := 0; i < len(args); i++ {
+		raw := args[i]
+		arg := raw
+		val := ""
+		hasVal := false
+		if strings.HasPrefix(raw, "--") && strings.Contains(raw, "=") {
+			arg, val, _ = strings.Cut(raw, "=")
+			hasVal = true
+		}
+
+		consumeVal := func() string {
+			if hasVal {
+				return val
+			}
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				i++
+				return args[i]
+			}
+			return ""
+		}
+
 		switch arg {
 		case "-l", "--list":
 			list = true
+		case "-x", "--list-details":
+			list = true
+			listDetails = true
+		case "-s", "--getsz":
+			getsz = true
+		case "--bytes":
+			rawBytes = true
+		case "-b", "--sector-size":
+			v := consumeVal()
+			if v != "" {
+				sz, err := strconv.ParseUint(v, 10, 64)
+				if err == nil && sz >= 512 {
+					userSectorSize = sz
+				}
+			}
+		case "-B", "--protect-boot":
+			// Flag accepted for compatibility.
+		case "-c", "--compatibility":
+			_ = consumeVal()
+		case "-L", "--color":
+			_ = consumeVal()
+		case "--lock":
+			_ = consumeVal()
+		case "-n", "--noauto-pt":
+			// Flag accepted for compatibility.
+		case "-o", "--output":
+			_ = consumeVal()
+		case "-t", "--type":
+			_ = consumeVal()
+		case "-u", "--units":
+			_ = consumeVal()
+		case "-C", "--cylinders":
+			_ = consumeVal()
+		case "-H", "--heads":
+			_ = consumeVal()
+		case "-S", "--sectors":
+			_ = consumeVal()
+		case "-w", "--wipe":
+			_ = consumeVal()
+		case "-W", "--wipe-partitions":
+			_ = consumeVal()
 		case "--":
-			// A following path is handled like any other operand.
+			for i++; i < len(args); i++ {
+				devices = append(devices, args[i])
+			}
 		default:
 			if strings.HasPrefix(arg, "-") {
-				fatalf("fdisk", "only read-only -l/--list mode is supported")
+				fatalf("fdisk", "unsupported option %q", arg)
 				return 1
 			}
 			devices = append(devices, arg)
 		}
 	}
+
+	if getsz {
+		if len(devices) == 0 {
+			fatalf("fdisk", "no device specified for -s/--getsz")
+			return 1
+		}
+		status := 0
+		for _, dev := range devices {
+			f, err := os.Open(dev)
+			if err != nil {
+				fatalf("fdisk", "%s: %v", dev, err)
+				status = 1
+				continue
+			}
+			sz, err := deviceSize(f)
+			_ = f.Close()
+			if err != nil {
+				fatalf("fdisk", "%s: %v", dev, err)
+				status = 1
+				continue
+			}
+			fmt.Fprintln(os.Stdout, sz/512)
+		}
+		return status
+	}
+
 	if !list {
 		fatalf("fdisk", "interactive editing is unsupported; use fdisk -l [DEVICE]")
 		return 1
 	}
+
 	if len(devices) == 0 {
 		entries, err := os.ReadDir("/sys/class/block")
 		if err != nil {
@@ -252,7 +348,7 @@ func cmdFdisk(args []string) int {
 		if index > 0 {
 			fmt.Fprintln(os.Stdout)
 		}
-		if err := listFDiskDevice(device); err != nil {
+		if err := listFDiskDevice(device, rawBytes, listDetails, userSectorSize); err != nil {
 			fatalf("fdisk", "%s: %v", device, err)
 			status = 1
 		}
@@ -260,7 +356,7 @@ func cmdFdisk(args []string) int {
 	return status
 }
 
-func listFDiskDevice(path string) error {
+func listFDiskDevice(path string, rawBytes, listDetails bool, userSectorSize uint64) error {
 	file, err := os.Open(path)
 	if err != nil {
 		return err
@@ -271,7 +367,9 @@ func listFDiskDevice(path string) error {
 		return err
 	}
 	sectorSize := uint64(512)
-	if info, statErr := file.Stat(); statErr == nil && isBlockDevice(info.Mode()) {
+	if userSectorSize >= 512 {
+		sectorSize = userSectorSize
+	} else if info, statErr := file.Stat(); statErr == nil && isBlockDevice(info.Mode()) {
 		var logical int32
 		if ioctlErr := ioctlPointer(file.Fd(), blkSSZGet, unsafe.Pointer(&logical)); ioctlErr == nil && logical >= 512 { //nolint:gosec // Fixed-width Linux ioctl result.
 			sectorSize = uint64(logical) //nolint:gosec // Positive logical sector size checked above.
@@ -295,13 +393,72 @@ func listFDiskDevice(path string) error {
 		}
 	}
 	if protectiveGPT {
-		return printGPT(file, path, size, sectorSize)
+		return printGPT(file, path, size, sectorSize, rawBytes, listDetails)
+	}
+	if listDetails || rawBytes {
+		return printFdiskMBR(path, size, first[:512], rawBytes, listDetails)
 	}
 	_ = printSfdisk(path, size, first[:512], false)
 	return nil
 }
 
-func printGPT(file *os.File, path string, size, sectorSize uint64) error {
+func printFdiskMBR(device string, size uint64, sector []byte, rawBytes, listDetails bool) error {
+	if sector[510] != 0x55 || sector[511] != 0xaa {
+		return fmt.Errorf("no valid DOS partition table")
+	}
+	fmt.Fprintf(os.Stdout, "Disk %s: %d bytes, %d sectors\n", device, size, size/512)
+	fmt.Fprintf(os.Stdout, "Disklabel type: dos\n")
+	if listDetails {
+		fmt.Fprintln(os.Stdout, "Device Boot Start End Sectors Size Id Type")
+	} else {
+		fmt.Fprintln(os.Stdout, "Device Boot Start End Sectors Size Id")
+	}
+	for index := 0; index < 4; index++ {
+		entry := sector[446+index*16 : 446+(index+1)*16]
+		start := binary.LittleEndian.Uint32(entry[8:12])
+		count := binary.LittleEndian.Uint32(entry[12:16])
+		if count == 0 {
+			continue
+		}
+		boot := " "
+		if entry[0] == 0x80 {
+			boot = "*"
+		}
+		name := partitionName(device, index+1)
+		end := uint64(start) + uint64(count) - 1
+		sizeStr := humanSizeUint64(uint64(count) * 512)
+		if rawBytes {
+			sizeStr = strconv.FormatUint(uint64(count)*512, 10)
+		}
+		if listDetails {
+			fmt.Fprintf(os.Stdout, "%s %s %d %d %d %s %02x %s\n", name, boot, start, end, count, sizeStr, entry[4], mbrTypeName(entry[4]))
+		} else {
+			fmt.Fprintf(os.Stdout, "%s %s %d %d %d %s %02x\n", name, boot, start, end, count, sizeStr, entry[4])
+		}
+	}
+	return nil
+}
+
+func mbrTypeName(id byte) string {
+	switch id {
+	case 0x83:
+		return "Linux"
+	case 0x82:
+		return "Linux swap / Solaris"
+	case 0x05, 0x0f:
+		return "Extended"
+	case 0x07:
+		return "HPFS/NTFS/exFAT"
+	case 0x0b, 0x0c:
+		return "W95 FAT32"
+	case 0xef:
+		return "EFI (FAT-12/16/32)"
+	default:
+		return fmt.Sprintf("Type %02x", id)
+	}
+}
+
+func printGPT(file *os.File, path string, size, sectorSize uint64, rawBytes, listDetails bool) error {
 	headerSector := make([]byte, sectorSize)
 	if _, err := file.ReadAt(headerSector, int64(sectorSize)); err != nil { //nolint:gosec // Sector size is bounded above.
 		return fmt.Errorf("read GPT header: %w", err)
@@ -351,7 +508,11 @@ func printGPT(file *os.File, path string, size, sectorSize uint64) error {
 	}
 	fmt.Fprintf(os.Stdout, "Disk %s: %d bytes, %d sectors\n", path, size, size/sectorSize)
 	fmt.Fprintf(os.Stdout, "Disklabel type: gpt\nDisk identifier: %s\n", formatGPTGUID(headerSector[56:72]))
-	fmt.Fprintln(os.Stdout, "Device Start End Sectors Size Type Name")
+	if listDetails {
+		fmt.Fprintln(os.Stdout, "Device Start End Sectors Size Type UUID Name")
+	} else {
+		fmt.Fprintln(os.Stdout, "Device Start End Sectors Size Type Name")
+	}
 	type partitionRange struct{ start, end uint64 }
 	var ranges []partitionRange
 	for index := uint32(0); index < entryCount; index++ {
@@ -374,8 +535,17 @@ func printGPT(file *os.File, path string, size, sectorSize uint64) error {
 		}
 		ranges = append(ranges, partitionRange{start: start, end: end})
 		name := decodeGPTName(entry[56:])
-		fmt.Fprintf(os.Stdout, "%s %d %d %d %s %s %s\n", partitionName(path, int(index+1)), start, end,
-			end-start+1, humanSizeUint64((end-start+1)*sectorSize), gptTypeName(entry[:16]), name)
+		sizeStr := humanSizeUint64((end - start + 1) * sectorSize)
+		if rawBytes {
+			sizeStr = strconv.FormatUint((end-start+1)*sectorSize, 10)
+		}
+		if listDetails {
+			fmt.Fprintf(os.Stdout, "%s %d %d %d %s %s %s %s\n", partitionName(path, int(index+1)), start, end,
+				end-start+1, sizeStr, gptTypeName(entry[:16]), formatGPTGUID(entry[16:32]), name)
+		} else {
+			fmt.Fprintf(os.Stdout, "%s %d %d %d %s %s %s\n", partitionName(path, int(index+1)), start, end,
+				end-start+1, sizeStr, gptTypeName(entry[:16]), name)
+		}
 	}
 	return nil
 }

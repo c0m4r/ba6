@@ -89,6 +89,64 @@ func TestFdiskValidatesAndListsGPT(t *testing.T) {
 	}
 }
 
+func TestFdiskOptionsAndDetails(t *testing.T) {
+	const sectors = 8192
+	image := make([]byte, sectors*512)
+	image[446+4] = 0xee
+	binary.LittleEndian.PutUint32(image[446+8:446+12], 1)
+	binary.LittleEndian.PutUint32(image[446+12:446+16], sectors-1)
+	image[510], image[511] = 0x55, 0xaa
+	entries := image[2*512 : 2*512+128*128]
+	copy(entries[:16], []byte{0xaf, 0x3d, 0xc6, 0x0f, 0x83, 0x84, 0x72, 0x47, 0x8e, 0x79, 0x3d, 0x69, 0xd8, 0x47, 0x7d, 0xe4})
+	copy(entries[16:32], []byte("unique-guid-0001"))
+	binary.LittleEndian.PutUint64(entries[32:40], 2048)
+	binary.LittleEndian.PutUint64(entries[40:48], 4095)
+	for index, character := range "rescue" {
+		binary.LittleEndian.PutUint16(entries[56+index*2:58+index*2], uint16(character)) //nolint:gosec // Fixed ASCII fixture text.
+	}
+	header := image[512:1024]
+	copy(header[:8], "EFI PART")
+	binary.LittleEndian.PutUint32(header[8:12], 0x00010000)
+	binary.LittleEndian.PutUint32(header[12:16], 92)
+	binary.LittleEndian.PutUint64(header[24:32], 1)
+	binary.LittleEndian.PutUint64(header[32:40], sectors-1)
+	binary.LittleEndian.PutUint64(header[40:48], 34)
+	binary.LittleEndian.PutUint64(header[48:56], sectors-34)
+	copy(header[56:72], []byte("disk-guid-0000001"))
+	binary.LittleEndian.PutUint64(header[72:80], 2)
+	binary.LittleEndian.PutUint32(header[80:84], 128)
+	binary.LittleEndian.PutUint32(header[84:88], 128)
+	binary.LittleEndian.PutUint32(header[88:92], crc32.ChecksumIEEE(entries))
+	binary.LittleEndian.PutUint32(header[16:20], crc32.ChecksumIEEE(header[:92]))
+	path := filepath.Join(t.TempDir(), "gpt_opts.img")
+	if err := os.WriteFile(path, image, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Test -s / --getsz
+	status, stdout, stderr := captureApplet(t, cmdFdisk, []string{"-s", path}, "")
+	if status != 0 || strings.TrimSpace(stdout) != "8192" {
+		t.Fatalf("fdisk -s status=%d out=%q stderr=%q", status, stdout, stderr)
+	}
+
+	// Test -x / --list-details and --bytes
+	status, stdout, stderr = captureApplet(t, cmdFdisk, []string{"-l", "-x", "--bytes", path}, "")
+	if status != 0 || !strings.Contains(stdout, "UUID") || !strings.Contains(stdout, "1048576") {
+		t.Fatalf("fdisk -x --bytes status=%d out=%q stderr=%q", status, stdout, stderr)
+	}
+
+	// Test flags: -B, -c, -L, --lock, -n, -o, -t, -u, -C, -H, -S, -w, -W, -b
+	status, stdout, stderr = captureApplet(t, cmdFdisk, []string{
+		"-l", "-b", "512", "-B", "-c", "-L", "never", "--lock=no", "-n",
+		"-o", "Device,Start,End", "-t", "gpt", "-u", "sectors",
+		"-C", "1024", "-H", "16", "-S", "63", "-w", "never", "-W", "never",
+		path,
+	}, "")
+	if status != 0 || !strings.Contains(stdout, "Disklabel type: gpt") {
+		t.Fatalf("fdisk flags status=%d out=%q stderr=%q", status, stdout, stderr)
+	}
+}
+
 func TestCurlVerboseShowsProtocolAndPreservesBody(t *testing.T) {
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
