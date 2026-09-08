@@ -302,6 +302,34 @@ func TestNetstatReports(t *testing.T) {
 	if status != 0 || stderr != "" || !strings.Contains(stdout, "Active UNIX domain sockets (only servers)") {
 		t.Fatalf("netstat -xl = (%d,%q,%q)", status, stdout, stderr)
 	}
+	status, stdout, stderr = captureApplet(t, cmdNetstat, []string{"-g"}, "")
+	if status != 0 || stderr != "" || !strings.Contains(stdout, "IPv6/IPv4 Group Memberships") {
+		t.Fatalf("netstat -g = (%d,%q,%q)", status, stdout, stderr)
+	}
+	status, stdout, stderr = captureApplet(t, cmdNetstat, []string{"-s"}, "")
+	if status != 0 || stderr != "" || !strings.Contains(stdout, "Ip:") {
+		t.Fatalf("netstat -s = (%d,%q,%q)", status, stdout, stderr)
+	}
+	status, stdout, stderr = captureApplet(t, cmdNetstat, []string{"-M"}, "")
+	if status != 0 || stderr != "" || !strings.Contains(stdout, "IP masquerading entries") {
+		t.Fatalf("netstat -M = (%d,%q,%q)", status, stdout, stderr)
+	}
+	status, stdout, stderr = captureApplet(t, cmdNetstat, []string{"-C"}, "")
+	if status != 0 || stderr != "" || !strings.Contains(stdout, "Kernel IP routing cache") {
+		t.Fatalf("netstat -C = (%d,%q,%q)", status, stdout, stderr)
+	}
+	status, stdout, stderr = captureApplet(t, cmdNetstat, []string{"-F"}, "")
+	if status != 0 || stderr != "" || !strings.Contains(stdout, "Kernel IP routing table") {
+		t.Fatalf("netstat -F = (%d,%q,%q)", status, stdout, stderr)
+	}
+	status, stdout, stderr = captureApplet(t, cmdNetstat, []string{"-to"}, "")
+	if status != 0 || stderr != "" || !strings.Contains(stdout, "Timer") {
+		t.Fatalf("netstat -to = (%d,%q,%q)", status, stdout, stderr)
+	}
+	status, stdout, stderr = captureApplet(t, cmdNetstat, []string{"-A", "inet"}, "")
+	if status != 0 || stderr != "" || !strings.Contains(stdout, "Active Internet connections") {
+		t.Fatalf("netstat -A inet = (%d,%q,%q)", status, stdout, stderr)
+	}
 	if status, _, stderr := captureApplet(t, cmdNetstat, []string{"-Z"}, ""); status == 0 ||
 		!strings.Contains(stderr, "invalid option") {
 		t.Fatalf("netstat -Z = (%d,%q)", status, stderr)

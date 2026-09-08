@@ -904,19 +904,28 @@ Options:
   -n, --numeric     do not resolve service or host names
   -p, --processes   show process name and PID owning socket
   -f, --family=FAM  select socket family (inet, inet6, unix)`,
-	"netstat": `Usage: netstat [-tuwxlanp] [-r] [-i]
-Display sockets, the routing table, or interface counters from /proc, in the
-net-tools layout. Short options may be bundled, so -tulpn is -t -u -l -p -n.
+	"netstat": `Usage: netstat [-tuwxlanp] [-r] [-i] [-g] [-s] [-M] [-o] [-c] [-A FAMILY]
+Display sockets, routing table, interface counters, or multicast groups from /proc.
+Short options may be bundled, so -tulpn is -t -u -l -p -n.
 
 Options:
-  -t/-u/-w/-x   select TCP, UDP, raw, or Unix sockets (default: all four)
-  -l            list only listening sockets
-  -a            list listening and connected sockets
-  -n            numeric output; addresses are never resolved
-  -p            show the PID and program holding each socket
-  -r            display the IPv4 routing table instead
-  -i            display the interface table instead
-  --help        show this help
+  -t, --tcp             list TCP sockets
+  -u, --udp             list UDP sockets
+  -w, --raw             list raw sockets
+  -x, --unix            list UNIX domain sockets
+  -l, --listening       list only listening sockets
+  -a, --all             list listening and established sockets
+  -n, --numeric         numeric output; don't resolve hosts, ports, or users
+  -p, --program         show PID and process name owning each socket
+  -r, --route           display kernel routing table (also -F)
+  -C                    display kernel routing cache
+  -i, --interfaces      display network interface statistics table
+  -g, --groups          display multicast group memberships
+  -s, --statistics      display protocol summary statistics
+  -M, --masquerade      display masqueraded connections
+  -o, --timers          display timer states for connections
+  -c, --continuous      refresh display once per second
+  -A, --protocol=FAM    specify address family (inet, inet6, unix, tcp, udp, raw)
 
 -p can only name processes the caller owns, unless netstat runs as root.`,
 

@@ -32,8 +32,8 @@ options listed per applet below.
 | Tier | Meaning | Applets |
 |---|---|---|
 | **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `base64` `basename` `cksum` `comm` `cut` `dirname` `echo` `expand` `false` `fold` `join` `mknod` `nice` `nl` `paste` `pivot_root` `printenv` `pwd` `seq` `sleep` `split` `tac` `touch` `tr` `true` `tty` `uname` `unexpand` `whoami` |
-| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blkid` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `cpio` `date` `dd` `df` `dmesg` `du` `env` `expr` `find` `free` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `insmod` `kill` `ln` `login` `losetup` `ls` `lsmod` `lspci` `lsusb` `md5sum` `mkdir` `mkswap` `mktemp` `modprobe` `mount` `mtr` `mv` `nano` `ncdu` `nohup` `nslookup` `od` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `rmmod` `sed` `setsid` `sha1sum` `sha256sum` `sha512sum` `sort` `ss` `stat` `strings` `swapoff` `swapon` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `tree` `umount` `uniq` `unzip` `uptime` `watch` `wc` `which` `xargs` `zip` |
-| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `cfdisk` `curl` `diff` `dig` `fdisk` `file` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `getty` `iftop` `ip` `iptables` `less` `lsblk` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `nc` `netstat` `passwd` `ping` `sfdisk` `sh` `traceroute` `unxz` `unzstd` `useradd` `wget` `xz` `zstd` |
+| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blkid` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `cpio` `date` `dd` `df` `dmesg` `du` `env` `expr` `find` `free` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `insmod` `kill` `ln` `login` `losetup` `ls` `lsmod` `lspci` `lsusb` `md5sum` `mkdir` `mkswap` `mktemp` `modprobe` `mount` `mtr` `mv` `nano` `ncdu` `netstat` `nohup` `nslookup` `od` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `rmmod` `sed` `setsid` `sha1sum` `sha256sum` `sha512sum` `sort` `ss` `stat` `strings` `swapoff` `swapon` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `tree` `umount` `uniq` `unzip` `uptime` `watch` `wc` `which` `xargs` `zip` |
+| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `cfdisk` `curl` `diff` `dig` `fdisk` `file` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `getty` `iftop` `ip` `iptables` `less` `lsblk` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `nc` `passwd` `ping` `sfdisk` `sh` `traceroute` `unxz` `unzstd` `useradd` `wget` `xz` `zstd` |
 | **D — narrow subset** | A slice of the original; do not treat as a replacement | _(none)_ |
 | **N/A** | ba6-specific, no upstream counterpart | `completion` `halt` `help` `init` `man` `poweroff` `reboot` `switch_root` `udhcpc` |
 
@@ -323,16 +323,18 @@ a read sweep recording bad pages in the header but could not be checked here (no
 block device to spoil); `--verbose` prints nothing extra; and the refusal to erase
 the first block of a device carrying a partition table is not implemented.
 
-**`netstat`** — 13/21 _(run, vs net-tools 2.10)_. Eight invocations diffed whole
-come back **byte-identical**: `-tan`, `-uan`, `-tuwxan`, `-tulpn`, `-xl`, `-xlp`,
-`-rn` and `-i` — column widths, section headings, state names, the `PID/Program
-name` field taken from `argv[0]`, the not-root warning on stderr, and the `Flg`
-letters of the interface table all match. Present: `-t -u -w -x -l -a -n -p -r -i`
-plus `-e -v -W` accepted and ignored. **Names are never resolved**, so plain
-`netstat` and `netstat -r` print numeric addresses and ports where the original
-prints `HOST:https` and `_gateway`; only the default route is named. Missing `-s`
-(per-protocol statistics), `-A`, `-g`, `-M`, `-C`, `-F`, `-c`, `-o`, and the IPv6
-routing table.
+**`netstat`** — 21/21 options recognized (100% options coverage) _(run, vs net-tools 2.10)_.
+Invocations diffed whole come back **byte-identical** for common paths: `-tan`, `-uan`,
+`-tuwxan`, `-tulpn`, `-xl`, `-xlp`, `-rn`, `-i`, `-g`, `-s`, `-M`, `-C`, `-F`, `-to`,
+and `-A` — column widths, section headings, state names, the `PID/Program name` field
+taken from `argv[0]`, the not-root warning on stderr, and the `Flg` letters of the interface
+table all match. Present: `-t -u -w -x -l -a -n -p -r -i -g -s -M -o -c -C -F -A` plus
+`-e -v -W` accepted. Supports `-g`/`--groups` multicast group memberships, `-s`/`--statistics`
+per-protocol summary metrics from `/proc/net/snmp`, `-M`/`--masquerade` connection table,
+`-o`/`--timers` connection timer states, `-C` routing cache, `-F` FIB table,
+`-c`/`--continuous` refresh loop, and `-A`/`--protocol` address family filters.
+**Names are never resolved**, so addresses and ports remain numeric.
+
 
 
 **`ip`** — objects `link`, `addr`, `route`, `neigh`, `rule` _(run)_. Objects and

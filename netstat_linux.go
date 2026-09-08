@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // netstatOptions is one net-tools netstat(8) command line. The socket lists,
@@ -23,11 +24,18 @@ type netstatOptions struct {
 	numeric             bool
 	programs            bool
 	route, interfaces   bool
+	groups              bool
+	statistics          bool
+	masquerade          bool
+	timers              bool
+	continuous          bool
+	protocol            string
 }
 
 func cmdNetstat(args []string) int {
 	var options netstatOptions
-	for _, arg := range args {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
 		switch {
 		case arg == "--tcp":
 			options.tcp = true
@@ -43,13 +51,53 @@ func cmdNetstat(args []string) int {
 			options.all = true
 		case arg == "--numeric", arg == "--numeric-hosts", arg == "--numeric-ports", arg == "--numeric-users":
 			options.numeric = true
-		case arg == "--programs":
+		case arg == "--programs", arg == "--program":
 			options.programs = true
 		case arg == "--route":
 			options.route = true
 		case arg == "--interfaces":
 			options.interfaces = true
-		case arg == "--extend", arg == "--verbose", arg == "--wide", arg == "--inet":
+		case arg == "--groups":
+			options.groups = true
+		case arg == "--statistics":
+			options.statistics = true
+		case arg == "--masquerade":
+			options.masquerade = true
+		case arg == "--timers":
+			options.timers = true
+		case arg == "--continuous":
+			options.continuous = true
+		case arg == "-A" || arg == "--protocol" || strings.HasPrefix(arg, "--protocol="):
+			v := ""
+			if strings.HasPrefix(arg, "--protocol=") {
+				v = strings.TrimPrefix(arg, "--protocol=")
+			} else if i+1 < len(args) {
+				i++
+				v = args[i]
+			}
+			options.protocol = v
+			for _, proto := range strings.Split(v, ",") {
+				switch proto {
+				case "inet", "ip":
+					options.tcp, options.udp, options.raw = true, true, true
+				case "inet6", "ip6":
+					options.tcp, options.udp, options.raw = true, true, true
+				case "unix":
+					options.unix = true
+				case "tcp":
+					options.tcp = true
+				case "udp":
+					options.udp = true
+				case "raw":
+					options.raw = true
+				}
+			}
+		case arg == "-F":
+			options.route = true
+		case arg == "-C":
+			return writeRoutingCache(options.numeric)
+		case arg == "--extend", arg == "--verbose", arg == "--wide", arg == "--inet",
+			arg == "--inet6", arg == "--ipx", arg == "--ax25", arg == "--netrom", arg == "--ddp", arg == "--bluetooth":
 			// Accepted for compatibility: this netstat never truncates
 			// addresses and has no extra columns to add.
 		case len(arg) > 1 && arg[0] == '-':
@@ -76,6 +124,25 @@ func cmdNetstat(args []string) int {
 					options.route = true
 				case 'i':
 					options.interfaces = true
+				case 'g':
+					options.groups = true
+				case 's':
+					options.statistics = true
+				case 'M':
+					options.masquerade = true
+				case 'o':
+					options.timers = true
+				case 'c':
+					options.continuous = true
+				case 'F':
+					options.route = true
+				case 'C':
+					return writeRoutingCache(options.numeric)
+				case 'A':
+					if i+1 < len(args) {
+						i++
+						options.protocol = args[i]
+					}
 				case 'e', 'v', 'W':
 				default:
 					fatalf("netstat", "invalid option -- '%c'", flag)
@@ -87,13 +154,116 @@ func cmdNetstat(args []string) int {
 			return 1
 		}
 	}
-	if options.route {
-		return writeRoutingTable(options.numeric)
+
+	for {
+		var code int
+		switch {
+		case options.statistics:
+			code = writeStatistics()
+		case options.groups:
+			code = writeGroups()
+		case options.masquerade:
+			code = writeMasquerade()
+		case options.route:
+			code = writeRoutingTable(options.numeric)
+		case options.interfaces:
+			code = writeInterfaceTable()
+		default:
+			code = writeSocketReport(options)
+		}
+		if !options.continuous || code != 0 {
+			return code
+		}
+		time.Sleep(time.Second)
 	}
-	if options.interfaces {
-		return writeInterfaceTable()
+}
+
+func writeRoutingCache(_ bool) int {
+	fmt.Println("Kernel IP routing cache")
+	fmt.Printf("%-15s %-15s %-15s %-5s %-6s %-3s %-4s %s\n",
+		"Source", "Destination", "Gateway", "Flags", "Metric", "Ref", "Use", "Iface")
+	return 0
+}
+
+func writeGroups() int {
+	fmt.Println("IPv6/IPv4 Group Memberships")
+	fmt.Printf("%-15s %-6s %s\n", "Interface", "RefCnt", "Group")
+	fmt.Println("--------------- ------ ---------------------")
+	if data, err := os.ReadFile("/proc/net/igmp"); err == nil {
+		currentIface := ""
+		for _, line := range strings.Split(string(data), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 && strings.HasSuffix(fields[1], ":") {
+				currentIface = strings.TrimSuffix(fields[1], ":")
+				continue
+			}
+			if len(fields) >= 2 && currentIface != "" {
+				groupHex := fields[0]
+				refCnt := fields[1]
+				ip, _, ok := parseProcSocketAddress(groupHex + ":0")
+				groupName := groupHex
+				if ok {
+					groupName = ip.String()
+					if groupName == "224.0.0.1" {
+						groupName = "all-systems.mcast.net"
+					} else if groupName == "224.0.0.251" {
+						groupName = "mdns.mcast.net"
+					}
+				}
+				fmt.Printf("%-15s %-6s %s\n", currentIface, refCnt, groupName)
+			}
+		}
 	}
-	return writeSocketReport(options)
+	if data, err := os.ReadFile("/proc/net/igmp6"); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 3 {
+				iface := fields[1]
+				groupHex := fields[2]
+				refCnt := "1"
+				if len(fields) >= 4 {
+					refCnt = fields[3]
+				}
+				groupName := groupHex
+				if ip, _, ok := parseProcSocketAddress(groupHex + ":0"); ok {
+					groupName = ip.String()
+				}
+				fmt.Printf("%-15s %-6s %s\n", iface, refCnt, groupName)
+			}
+		}
+	}
+	return 0
+}
+
+func writeStatistics() int {
+	if data, err := os.ReadFile("/proc/net/snmp"); err == nil {
+		lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+		for i := 0; i+1 < len(lines); i += 2 {
+			hdrFields := strings.Fields(lines[i])
+			valFields := strings.Fields(lines[i+1])
+			if len(hdrFields) > 0 && len(valFields) == len(hdrFields) {
+				proto := hdrFields[0]
+				fmt.Println(proto)
+				for j := 1; j < len(hdrFields); j++ {
+					fmt.Printf("    %s: %s\n", hdrFields[j], valFields[j])
+				}
+			}
+		}
+	}
+	return 0
+}
+
+func writeMasquerade() int {
+	fmt.Println("IP masquerading entries")
+	fmt.Printf("%-4s %-15s %-15s %s\n", "prot", "expire", "source", "destination")
+	if data, err := os.ReadFile("/proc/net/ip_masquerade"); err == nil {
+		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+			if strings.TrimSpace(line) != "" {
+				fmt.Println(line)
+			}
+		}
+	}
+	return 0
 }
 
 func writeSocketReport(options netstatOptions) int {
@@ -107,6 +277,9 @@ func writeSocketReport(options netstatOptions) int {
 	if options.tcp || options.udp || options.raw {
 		fmt.Printf("Active Internet connections (%s)\n", netstatScope(options))
 		fmt.Print("Proto Recv-Q Send-Q Local Address           Foreign Address         State      ")
+		if options.timers {
+			fmt.Print(" Timer                  ")
+		}
 		if options.programs {
 			fmt.Print(" PID/Program name    ")
 		}
@@ -172,6 +345,21 @@ func writeInternetSockets(protocol, path string, options netstatOptions, owners 
 		}
 		fmt.Printf("%-6s%6d %6d %-23s %-23s %-11s", protocol, receiveQueue, sendQueue,
 			netstatAddress(fields[1]), netstatAddress(fields[2]), state)
+		if options.timers {
+			timerStr := "off (0.00/0/0)"
+			if len(fields) > 5 {
+				tr, _, _ := strings.Cut(fields[5], ":")
+				switch tr {
+				case "01":
+					timerStr = "on (0.00/0/0)"
+				case "02":
+					timerStr = "keepalive (0.00/0/0)"
+				case "03":
+					timerStr = "timewait (0.00/0/0)"
+				}
+			}
+			fmt.Printf(" %-22s ", timerStr)
+		}
 		if options.programs {
 			fmt.Printf(" %-19.19s ", program)
 		}
