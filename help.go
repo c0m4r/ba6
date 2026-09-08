@@ -994,8 +994,22 @@ Options:
   --verbose print a notice as each piece opens
   -t SEP    use SEP as the record separator
   --help    show this help`,
-	"sh": `Usage: sh [-c COMMAND | FILE]
-Run a small shell supporting quoting, expansion, pipelines, redirection, and basic builtins.`,
+	"sh": `Usage: sh [OPTION]... [SCRIPT [ARGUMENT]...]
+Execute POSIX command language scripts or interactive sessions.
+
+  -c STRING       evaluate instructions from supplied string
+  -s              read instruction stream via standard input
+  -i              launch interactive prompt session
+  -e              abort execution upon non-zero command termination
+  -n              validate syntax without evaluating commands
+  -u              treat unresolved variable queries as fatal
+  -v              echo source lines prior to execution
+  -x              print executed commands prefixed with trace marker
+  -a              automatically export modified variables
+  -b              immediate notification of background state changes
+  -C              prevent redirection from clobbering existing destinations
+  -f              deactivate filename path expansion
+  -m              enable job control monitoring`,
 	"ss": `Usage: ss [-atuxlnp46sHQ] [-f FAMILY]
 Display socket statistics and connection tables from kernel netlink and /proc.
 Short options may be bundled.

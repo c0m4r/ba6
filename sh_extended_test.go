@@ -3,7 +3,65 @@
 
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestShellInvocationOptions(t *testing.T) {
+	// -e: exit immediately on error
+	status, out, _ := captureApplet(t, cmdSh, []string{"-e", "-c", "false; echo reached"}, "")
+	if status == 0 || strings.Contains(out, "reached") {
+		t.Fatalf("sh -e did not abort on failure: status=%d out=%q", status, out)
+	}
+
+	// -n: read and validate but do not execute
+	status, out, _ = captureApplet(t, cmdSh, []string{"-n", "-c", "echo executed"}, "")
+	if status != 0 || out != "" {
+		t.Fatalf("sh -n executed command: status=%d out=%q", status, out)
+	}
+
+	// -x: xtrace prints command to stderr
+	status, out, stderr := captureApplet(t, cmdSh, []string{"-x", "-c", "echo hello_xtrace"}, "")
+	if status != 0 || !strings.Contains(stderr, "+ echo hello_xtrace") {
+		t.Fatalf("sh -x trace missing: status=%d stderr=%q out=%q", status, stderr, out)
+	}
+
+	// -v: verbose echoes command to stderr
+	status, out, stderr = captureApplet(t, cmdSh, []string{"-v", "-c", "echo hello_verbose"}, "")
+	if status != 0 || !strings.Contains(stderr, "echo hello_verbose") {
+		t.Fatalf("sh -v verbose output missing: status=%d stderr=%q out=%q", status, stderr, out)
+	}
+
+	// -u: error when expanding unset variable
+	status, _, stderr = captureApplet(t, cmdSh, []string{"-u", "-c", "echo $BA6_UNSET_VARIABLE_XYZ"}, "")
+	if status == 0 || !strings.Contains(stderr, "parameter not set") {
+		t.Fatalf("sh -u should fail on unset variable: status=%d stderr=%q", status, stderr)
+	}
+
+	// -a: allexport exports newly assigned variables
+	status, out, _ = captureApplet(t, cmdSh, []string{"-a", "-c", "BA6_SH_TEST_EXPORT=worked; printenv BA6_SH_TEST_EXPORT"}, "")
+	if status != 0 || !strings.Contains(out, "worked") {
+		t.Fatalf("sh -a failed to export variable: status=%d out=%q", status, out)
+	}
+
+	// -s: read commands from stdin with positional parameters
+	status, out, _ = captureApplet(t, cmdSh, []string{"-s", "foo", "bar"}, "echo $1 $2\n")
+	if status != 0 || out != "foo bar\n" {
+		t.Fatalf("sh -s stdin positional params failed: status=%d out=%q", status, out)
+	}
+
+	// -C: noclobber prevents overwriting existing file
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "noclobber.txt")
+	_ = os.WriteFile(testFile, []byte("orig\n"), 0o644)
+	status, _, stderr = captureApplet(t, cmdSh, []string{"-C", "-c", "echo overwrite > " + testFile}, "")
+	if status == 0 {
+		t.Fatalf("sh -C should reject overwriting existing file: status=%d stderr=%q", status, stderr)
+	}
+}
 
 func TestShellControlFlow(t *testing.T) {
 	cases := []struct {

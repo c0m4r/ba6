@@ -580,40 +580,145 @@ func splitXargsInput(data string) ([]string, error) {
 	return items, nil
 }
 
+type shellOptions struct {
+	allExport bool // -a
+	notify    bool // -b
+	noClobber bool // -C
+	errExit   bool // -e
+	noGlob    bool // -f
+	interact  bool // -i
+	monitor   bool // -m
+	noExec    bool // -n
+	noUnset   bool // -u
+	verbose   bool // -v
+	xTrace    bool // -x
+	cmdString bool // -c
+	stdin     bool // -s
+}
+
+var currentShellOpts shellOptions
+
 func cmdSh(args []string) int {
-	interactive := false
+	var opts shellOptions
 	var source, name string
 	scriptArgs := []string{}
-	if len(args) > 0 && args[0] == "-c" {
-		if len(args) < 2 {
-			fatalf("sh", "-c requires a command")
-			return 2
+	interactive := false
+	fromStdin := false
+
+	pos := 0
+	for pos < len(args) {
+		arg := args[pos]
+		if arg == "--" {
+			pos++
+			break
 		}
-		source = args[1]
-		name = "-c"
-		scriptArgs = args[2:]
-	} else if len(args) > 0 {
-		data, err := os.ReadFile(args[0])
+		if arg == "-" || !strings.HasPrefix(arg, "-") {
+			break
+		}
+		if arg == "-i." {
+			opts.interact = true
+			interactive = true
+			pos++
+			continue
+		}
+		hasC := false
+		for j := 1; j < len(arg); j++ {
+			switch arg[j] {
+			case 'a':
+				opts.allExport = true
+			case 'b':
+				opts.notify = true
+			case 'C':
+				opts.noClobber = true
+			case 'e':
+				opts.errExit = true
+			case 'f':
+				opts.noGlob = true
+			case 'i':
+				opts.interact = true
+				interactive = true
+			case 'm':
+				opts.monitor = true
+			case 'n':
+				opts.noExec = true
+			case 'u':
+				opts.noUnset = true
+			case 'v':
+				opts.verbose = true
+			case 'x':
+				opts.xTrace = true
+			case 's':
+				opts.stdin = true
+				fromStdin = true
+			case 'c':
+				hasC = true
+				opts.cmdString = true
+			default:
+				fatalf("sh", "invalid option -- '%c'", arg[j])
+				return 2
+			}
+			if hasC {
+				break
+			}
+		}
+		pos++
+		if hasC {
+			if pos >= len(args) {
+				fatalf("sh", "-c requires a command")
+				return 2
+			}
+			source = args[pos]
+			pos++
+			if pos < len(args) {
+				name = args[pos]
+				pos++
+				scriptArgs = args[pos:]
+			} else {
+				name = "-c"
+			}
+			break
+		}
+	}
+
+	currentShellOpts = opts
+
+	if opts.cmdString {
+		// source and name were configured in the -c block above
+	} else if fromStdin {
+		name = "sh"
+		if pos < len(args) {
+			scriptArgs = args[pos:]
+		}
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return 1
+		}
+		source = string(data)
+	} else if pos < len(args) {
+		name = args[pos]
+		scriptArgs = args[pos+1:]
+		data, err := os.ReadFile(name)
 		if err != nil {
 			fatalf("sh", "%v", err)
 			return 127
 		}
 		source = string(data)
-		name = args[0]
-		scriptArgs = args[1:]
 	} else {
-		if info, e := os.Stdin.Stat(); e == nil && info.Mode()&os.ModeCharDevice != 0 {
-			interactive = true
-			name = "sh"
-		} else {
+		if !interactive {
+			if info, e := os.Stdin.Stat(); e == nil && info.Mode()&os.ModeCharDevice != 0 {
+				interactive = true
+			}
+		}
+		name = "sh"
+		if !interactive {
 			data, err := io.ReadAll(os.Stdin)
 			if err != nil {
 				return 1
 			}
 			source = string(data)
-			name = "sh"
 		}
 	}
+
 	// Positional parameters are shell variables, not environment entries: a
 	// child process must not inherit $0 and $1 from its caller.
 	shellVariables = map[string]string{}
@@ -624,6 +729,9 @@ func cmdSh(args []string) int {
 	}
 	if interactive {
 		return runInteractiveShell()
+	}
+	if opts.verbose && source != "" {
+		fmt.Fprint(os.Stderr, source)
 	}
 	return runShellSource(source)
 }
@@ -878,11 +986,17 @@ func runShellStatements(statements []shellStatement) (int, bool) {
 		if stmt.guard == "&&" && status != 0 || stmt.guard == "||" && status == 0 {
 			continue
 		}
+		if currentShellOpts.noExec {
+			continue
+		}
 		var exit bool
 		status, exit = runShellStatement(stmt)
 		shellStatus = status
 		if exit || shellBreaking || shellContinuing {
 			return status, exit
+		}
+		if currentShellOpts.errExit && status != 0 && stmt.guard == "" {
+			return status, true
 		}
 	}
 	return status, false
@@ -974,6 +1088,10 @@ func runShellPipeline(tokens []shellToken) (int, bool) {
 	// > f" print "hi > f" and create no file.
 	if len(parts) == 1 {
 		command, err := shellCommand(parts[0])
+		if shellExpansionError {
+			shellExpansionError = false
+			return 1, true
+		}
 		if err != nil {
 			fatalf("sh", "%v", err)
 			return 2, false
@@ -987,6 +1105,9 @@ func runShellPipeline(tokens []shellToken) (int, bool) {
 			return 0, false
 		}
 		if len(command.argv) > 0 && isShellBuiltin(command.argv[0]) {
+			if currentShellOpts.xTrace {
+				fmt.Fprintf(os.Stderr, "+ %s\n", strings.Join(command.argv, " "))
+			}
 			restore, redirectErr := redirectStandardFiles(command.input, command.output, command.appendMode)
 			if redirectErr != nil {
 				fatalf("sh", "%v", redirectErr)
@@ -1001,11 +1122,18 @@ func runShellPipeline(tokens []shellToken) (int, bool) {
 	var previous io.ReadCloser
 	for index, part := range parts {
 		command, err := shellCommand(part)
+		if shellExpansionError {
+			shellExpansionError = false
+			return 1, true
+		}
 		if err != nil || len(command.argv) == 0 {
 			fatalf("sh", "invalid command")
 			return 2, false
 		}
 		argv, input, output, appendMode := command.argv, command.input, command.output, command.appendMode
+		if currentShellOpts.xTrace {
+			fmt.Fprintf(os.Stderr, "+ %s\n", strings.Join(argv, " "))
+		}
 		cmd := exec.Command(argv[0], argv[1:]...) //nolint:gosec // G204: command execution is the shell's explicit purpose.
 		cmd.Stderr = os.Stderr
 		// Assignments written in front of a command belong to that command
@@ -1040,9 +1168,12 @@ func runShellPipeline(tokens []shellToken) (int, bool) {
 			flag := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
 			if appendMode {
 				flag = os.O_CREATE | os.O_WRONLY | os.O_APPEND
+			} else if currentShellOpts.noClobber {
+				flag = os.O_CREATE | os.O_WRONLY | os.O_EXCL
 			}
 			file, e := os.OpenFile(output, flag, 0o666) //nolint:gosec // G302: shell redirection follows the process umask.
 			if e != nil {
+				fatalf("sh", "%v", e)
 				return 1, false
 			}
 			defer file.Close()
@@ -1162,6 +1293,8 @@ func redirectStandardFiles(input, output string, appendMode bool) (func(), error
 		flag := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
 		if appendMode {
 			flag = os.O_CREATE | os.O_WRONLY | os.O_APPEND
+		} else if currentShellOpts.noClobber {
+			flag = os.O_CREATE | os.O_WRONLY | os.O_EXCL
 		}
 		file, err := os.OpenFile(output, flag, 0o666) //nolint:gosec // G302: shell redirection follows the process umask.
 		if err != nil {
@@ -1441,6 +1574,7 @@ var shellVariables = map[string]string{}
 // shellStatus is the exit status of the most recent command, which is what $?
 // expands to.
 var shellStatus int
+var shellExpansionError bool
 
 // shellVariable resolves a name for expansion: the special parameters first,
 // then the script's own variables, then the environment.
@@ -1454,6 +1588,14 @@ func shellVariable(name string) string {
 	if value, ok := shellVariables[name]; ok {
 		return value
 	}
+	if currentShellOpts.noUnset {
+		if _, exported := os.LookupEnv(name); !exported {
+			fatalf("sh", "%s: parameter not set", name)
+			shellStatus = 1
+			shellExpansionError = true
+			return ""
+		}
+	}
 	return os.Getenv(name)
 }
 
@@ -1461,9 +1603,10 @@ func shellVariable(name string) string {
 // place in the environment so child processes see the new value; anything else
 // stays a shell variable, invisible to them.
 func setShellVariable(name, value string) {
-	if _, exported := os.LookupEnv(name); exported {
+	if currentShellOpts.allExport {
 		_ = os.Setenv(name, value)
-		return
+	} else if _, exported := os.LookupEnv(name); exported {
+		_ = os.Setenv(name, value)
 	}
 	shellVariables[name] = value
 }
