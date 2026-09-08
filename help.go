@@ -206,12 +206,24 @@ Create the ext3 profile with 256-byte inodes and extent-mapped files, which is
 the feature set that identifies a filesystem as ext4. Supported sizes are
 8 MiB through 128 MiB. BLOCKS is expressed in 1 KiB units. -F is required for
 regular files. Mounted devices and active swap are rejected unless forced.`,
-	"mkfs.xfs": `Usage: mkfs.xfs [-f] [-L LABEL] DEVICE [BLOCKS]
-Create a version 5 XFS with 4 KiB blocks, 512-byte inodes, four allocation
-groups, and a 64 MiB internal log left clean by an unmount record. Reverse
-mapping, reflink, the free inode btree, and sparse inodes are all off.
-Supported sizes are 320 MiB through 4 TiB and labels are at most 12 bytes.
-BLOCKS is expressed in 1 KiB units. -f is required for regular files.`,
+	"mkfs.xfs": `Usage: mkfs.xfs [OPTION]... DEVICE [BLOCKS]
+Format target block device or image with an XFS filesystem.
+
+  -b OPTS         block size parameters (e.g. size=4096)
+  -c OPTS         configuration file overrides
+  -d OPTS         data section controls (e.g. agcount=4, size=SZ)
+  -f              override existing signatures and regular file safeguards
+  -i OPTS         inode table dimensions and allocation options
+  -l OPTS         transaction log specifications (e.g. internal=1)
+  -m OPTS         metadata attributes and feature flags
+  -n OPTS         directory naming structure options
+  -p FILE         read directory hierarchy prototype from file
+  -q              suppress informational layout banners
+  -r OPTS         realtime extent and volume parameters
+  -s OPTS         sector dimension settings
+  -L LABEL        assign volume identifier string
+  -N              dry-run mode without modifying target storage
+  -K              bypass trim discards during formatting`,
 	"mkfs.btrfs": `Usage: mkfs.btrfs [-f] [-L LABEL] DEVICE [BLOCKS]
 Create a single-device btrfs with 16 KiB nodes, 4 KiB sectors, and unmirrored
 system, metadata, and data block groups. Checksums are CRC32C and the free

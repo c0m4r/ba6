@@ -32,8 +32,8 @@ options listed per applet below.
 | Tier | Meaning | Applets |
 |---|---|---|
 | **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `base64` `basename` `cksum` `comm` `cut` `dirname` `echo` `expand` `false` `fold` `join` `mknod` `nice` `nl` `paste` `pivot_root` `printenv` `pwd` `seq` `sleep` `split` `tac` `touch` `tr` `true` `tty` `uname` `unexpand` `whoami` |
-| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blkid` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `cpio` `date` `dd` `df` `dig` `dmesg` `du` `env` `expr` `find` `free` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `iftop` `insmod` `iptables` `kill` `ln` `login` `losetup` `ls` `lsmod` `lspci` `lsusb` `md5sum` `mkdir` `mkswap` `mktemp` `modprobe` `mount` `mtr` `mv` `nano` `ncdu` `netstat` `nohup` `nslookup` `od` `passwd` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `rmmod` `sed` `setsid` `sh` `sha1sum` `sha256sum` `sha512sum` `sort` `ss` `stat` `strings` `swapoff` `swapon` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `tree` `umount` `uniq` `unzip` `uptime` `watch` `wc` `which` `xargs` `zip` |
-| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `cfdisk` `curl` `diff` `fdisk` `file` `getty` `ip` `less` `lsblk` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `mkfs.xfs` `nc` `ping` `sfdisk` `traceroute` `unxz` `unzstd` `useradd` `wget` `xz` `zstd` |
+| **B — near-complete** | Common paths match; a handful of real gaps | `[` `blkid` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `cpio` `date` `dd` `df` `dig` `dmesg` `du` `env` `expr` `find` `free` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `iftop` `insmod` `iptables` `kill` `ln` `login` `losetup` `ls` `lsmod` `lspci` `lsusb` `md5sum` `mkdir` `mkfs.xfs` `mkswap` `mktemp` `modprobe` `mount` `mtr` `mv` `nano` `ncdu` `netstat` `nohup` `nslookup` `od` `passwd` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `rmmod` `sed` `setsid` `sh` `sha1sum` `sha256sum` `sha512sum` `sort` `ss` `stat` `strings` `swapoff` `swapon` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `tree` `umount` `uniq` `unzip` `uptime` `watch` `wc` `which` `xargs` `zip` |
+| **C — partial** | Everyday cases work, well-known flags or output details missing | `adduser` `awk` `cfdisk` `curl` `diff` `fdisk` `file` `getty` `ip` `less` `lsblk` `lsof` `mkfs` `mkfs.btrfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `nc` `ping` `sfdisk` `traceroute` `unxz` `unzstd` `useradd` `wget` `xz` `zstd` |
 | **D — narrow subset** | A slice of the original; do not treat as a replacement | _(none)_ |
 | **N/A** | ba6-specific, no upstream counterpart | `completion` `halt` `help` `init` `man` `poweroff` `reboot` `switch_root` `udhcpc` |
 
@@ -461,6 +461,12 @@ superblock selection (`-b`, `-B`), directory optimization (`-D`), extended tunin
 lists (`-c`, `-k`, `-l`, `-L`), completion indicator (`-C`), journal binding (`-j`), and undo
 archive recording (`-z`). Each applet properly identifies itself under its invoked binary name.
 
+**`mkfs.xfs`** — 15/15 options recognized (100% options coverage).
+Constructs version 5 XFS filesystems with full option parsing: force (`-f`), quiet (`-q`),
+dry-run preview (`-N`), discard suppression (`-K`), volume label (`-L`), block options (`-b`),
+configuration overrides (`-c`), data section geometry (`-d`), inode dimensions (`-i`),
+log parameters (`-l`), metadata options (`-m`), naming options (`-n`), proto files (`-p`),
+realtime parameters (`-r`), and sector size settings (`-s`). Validated with `xfs_repair -n`.
 
 **`login`** — 4/4 options recognized (100% options coverage). Supports `-p` (preserve
 environment), `-f` (bypass authentication for pre-authenticated user), `-H` (suppress

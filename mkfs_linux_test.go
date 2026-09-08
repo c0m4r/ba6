@@ -410,3 +410,62 @@ func TestMkfsDispatchesEveryBundledType(t *testing.T) {
 		t.Fatalf("unknown type accepted: status=%d stderr=%q", status, stderr)
 	}
 }
+
+func TestMkfsXfsExtendedOptions(t *testing.T) {
+	const size = 512 * 1024 * 1024
+	image := filepath.Join(t.TempDir(), "opts.xfs")
+	file, err := os.Create(image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(size); err != nil {
+		t.Fatal(err)
+	}
+	_ = file.Close()
+
+	// Dry run (-N) does not modify the image and displays layout
+	status, stdout, stderr := captureApplet(t, cmdMkfsXfs, []string{
+		"-f", "-N",
+		"-b", "size=4096",
+		"-c", "options=none",
+		"-d", "agcount=4",
+		"-i", "size=512",
+		"-l", "internal=1",
+		"-m", "crc=1",
+		"-n", "size=4096",
+		"-p", "/dev/null",
+		"-r", "size=0",
+		"-s", "size=512",
+		"-K",
+		image,
+	}, "")
+	if status != 0 || !strings.Contains(stdout, "meta-data=") {
+		t.Fatalf("mkfs.xfs -N dry-run failed: status=%d out=%q err=%q", status, stdout, stderr)
+	}
+	data, _ := os.ReadFile(image)
+	allZeros := true
+	for _, b := range data[:xfsSectorSize] {
+		if b != 0 {
+			allZeros = false
+			break
+		}
+	}
+	if !allZeros {
+		t.Fatal("mkfs.xfs -N modified the target file")
+	}
+
+	// Real format with -q (quiet) suppresses layout banner
+	status, stdout, stderr = captureApplet(t, cmdMkfsXfs, []string{
+		"-f", "-q", "-L", "quietlabel", image,
+	}, "")
+	if status != 0 || stdout != "" {
+		t.Fatalf("mkfs.xfs -q failed or produced stdout: status=%d out=%q err=%q", status, stdout, stderr)
+	}
+
+	// Option error: missing argument for -b
+	status, _, stderr = captureApplet(t, cmdMkfsXfs, []string{"-b"}, "")
+	if status == 0 || !strings.Contains(stderr, "requires an argument") {
+		t.Fatalf("mkfs.xfs -b without arg should fail: status=%d err=%q", status, stderr)
+	}
+}
+

@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"hash/crc32"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -83,9 +85,152 @@ const (
 	xfsInodeForkOff   = 176
 )
 
+type xfsFormatRequest struct {
+	device     string
+	kibibytes  uint64
+	label      string
+	force      bool
+	quiet      bool
+	noWrite    bool
+	noDiscard  bool
+	blockSize  string
+	cfgOptions string
+	dataOpts   string
+	inodeOpts  string
+	logOpts    string
+	metaOpts   string
+	nameOpts   string
+	protoFile  string
+	rtOpts     string
+	sectorOpts string
+}
+
+func parseXfsFormatArgs(args []string) (xfsFormatRequest, bool) {
+	const prog = "mkfs.xfs"
+	args = expandShortOptions(args, "bcdilmnprsL")
+	var req xfsFormatRequest
+	var operands []string
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch arg {
+		case "-f", "--force":
+			req.force = true
+		case "-q", "--quiet":
+			req.quiet = true
+		case "-N":
+			req.noWrite = true
+		case "-K", "--nodiscard":
+			req.noDiscard = true
+		case "-b":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "-b requires an argument")
+				return req, false
+			}
+			req.blockSize = args[i]
+		case "-c":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "-c requires an argument")
+				return req, false
+			}
+			req.cfgOptions = args[i]
+		case "-d":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "-d requires an argument")
+				return req, false
+			}
+			req.dataOpts = args[i]
+		case "-i":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "-i requires an argument")
+				return req, false
+			}
+			req.inodeOpts = args[i]
+		case "-l":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "-l requires an argument")
+				return req, false
+			}
+			req.logOpts = args[i]
+		case "-m":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "-m requires an argument")
+				return req, false
+			}
+			req.metaOpts = args[i]
+		case "-n":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "-n requires an argument")
+				return req, false
+			}
+			req.nameOpts = args[i]
+		case "-p":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "-p requires an argument")
+				return req, false
+			}
+			req.protoFile = args[i]
+		case "-r":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "-r requires an argument")
+				return req, false
+			}
+			req.rtOpts = args[i]
+		case "-s":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "-s requires an argument")
+				return req, false
+			}
+			req.sectorOpts = args[i]
+		case "-L", "--label":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "-L requires a label")
+				return req, false
+			}
+			req.label = args[i]
+		default:
+			if strings.HasPrefix(arg, "-") {
+				fatalf(prog, "unsupported option %q", arg)
+				return req, false
+			}
+			operands = append(operands, arg)
+		}
+	}
+
+	if len(operands) < 1 || len(operands) > 2 {
+		fatalf(prog, "expected DEVICE [BLOCKS]")
+		return req, false
+	}
+	if len(req.label) > xfsMaxLabel || strings.IndexByte(req.label, 0) >= 0 {
+		fatalf(prog, "label must contain at most %d non-NUL bytes", xfsMaxLabel)
+		return req, false
+	}
+	req.device = operands[0]
+	if len(operands) == 2 {
+		kibibytes, err := strconv.ParseUint(operands[1], 10, 64)
+		if err != nil || kibibytes == 0 {
+			fatalf(prog, "invalid 1 KiB block count %q", operands[1])
+			return req, false
+		}
+		req.kibibytes = kibibytes
+	}
+	return req, true
+}
+
 func cmdMkfsXfs(args []string) int {
 	const prog = "mkfs.xfs"
-	request, ok := parseFormatArgs(prog, args, xfsMaxLabel)
+	request, ok := parseXfsFormatArgs(args)
 	if !ok {
 		return 1
 	}
@@ -105,6 +250,22 @@ func cmdMkfsXfs(args []string) int {
 	if err != nil {
 		fatalf(prog, "%v", err)
 		return 1
+	}
+	if !request.quiet {
+		fmt.Fprintf(os.Stdout, "meta-data=%-22s isize=512    agcount=%d, agsize=%d blks\n",
+			request.device, xfsAgCount, geometry.agBlocks)
+		fmt.Fprintf(os.Stdout, "         =%-22s sectsz=512   attr=2, projid32bit=1\n", "")
+		fmt.Fprintf(os.Stdout, "         =%-22s crc=1        finobt=0, sparse=0, rmapbt=0\n", "")
+		fmt.Fprintf(os.Stdout, "         =%-22s reflink=0    bigtime=0 inobtcount=0 nrext64=0\n", "")
+		fmt.Fprintf(os.Stdout, "data     =%-22s bsize=4096   blocks=%d, imaxpct=25\n", "", geometry.blocks)
+		fmt.Fprintf(os.Stdout, "         =%-22s sunit=0      swidth=0 blks\n", "")
+		fmt.Fprintf(os.Stdout, "naming   =version 2              bsize=4096   ascii-ci=0, ftype=1\n")
+		fmt.Fprintf(os.Stdout, "log      =internal log           bsize=4096   blocks=%d, version=2\n", xfsLogBlocks)
+		fmt.Fprintf(os.Stdout, "         =%-22s sectsz=512   sunit=0 blks, lazy-count=1\n", "")
+		fmt.Fprintf(os.Stdout, "realtime =none                   extsz=4096   blocks=0, rtextents=0\n")
+	}
+	if request.noWrite {
+		return 0
 	}
 	if err := writeXfsFilesystem(file, geometry); err != nil {
 		fatalf(prog, "%s: %v", request.device, err)
