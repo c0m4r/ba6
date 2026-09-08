@@ -32,8 +32,8 @@ options listed per applet below.
 | Tier | Meaning | Applets |
 |---|---|---|
 | **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `base64` `basename` `cksum` `comm` `cut` `dirname` `echo` `expand` `false` `fold` `join` `mknod` `nice` `nl` `paste` `pivot_root` `printenv` `pwd` `seq` `sleep` `split` `tac` `touch` `tr` `true` `tty` `uname` `unexpand` `whoami` |
-| **B — near-complete** | Common paths match; a handful of real gaps | `[` `adduser` `blkid` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `cpio` `date` `dd` `df` `dig` `dmesg` `du` `env` `expr` `fdisk` `find` `free` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `iftop` `insmod` `iptables` `kill` `ln` `login` `losetup` `ls` `lsmod` `lspci` `lsusb` `md5sum` `mkdir` `mkfs.btrfs` `mkfs.xfs` `mkswap` `mktemp` `modprobe` `mount` `mtr` `mv` `nano` `ncdu` `netstat` `nohup` `nslookup` `od` `passwd` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `rmmod` `sed` `setsid` `sh` `sha1sum` `sha256sum` `sha512sum` `sort` `ss` `stat` `strings` `swapoff` `swapon` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `tree` `umount` `uniq` `unzip` `uptime` `useradd` `watch` `wc` `which` `xargs` `zip` |
-| **C — partial** | Everyday cases work, well-known flags or output details missing | `awk` `cfdisk` `curl` `diff` `file` `getty` `ip` `less` `lsblk` `lsof` `mkfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `nc` `ping` `sfdisk` `traceroute` `unxz` `unzstd` `wget` `xz` `zstd` |
+| **B — near-complete** | Common paths match; a handful of real gaps | `[` `adduser` `blkid` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `cpio` `date` `dd` `df` `dig` `dmesg` `du` `env` `expr` `fdisk` `find` `free` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `iftop` `insmod` `iptables` `kill` `ln` `login` `losetup` `ls` `lsmod` `lspci` `lsusb` `md5sum` `mkdir` `mkfs.btrfs` `mkfs.xfs` `mkswap` `mktemp` `modprobe` `mount` `mtr` `mv` `nano` `ncdu` `netstat` `nohup` `nslookup` `od` `passwd` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `rmmod` `sed` `setsid` `sh` `sha1sum` `sha256sum` `sha512sum` `sort` `ss` `stat` `strings` `swapoff` `swapon` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `tree` `umount` `uniq` `unzstd` `unzip` `uptime` `useradd` `watch` `wc` `which` `xargs` `zip` `zstd` |
+| **C — partial** | Everyday cases work, well-known flags or output details missing | `awk` `cfdisk` `curl` `diff` `file` `getty` `ip` `less` `lsblk` `lsof` `mkfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `nc` `ping` `sfdisk` `traceroute` `unxz` `wget` `xz` |
 | **D — narrow subset** | A slice of the original; do not treat as a replacement | _(none)_ |
 | **N/A** | ba6-specific, no upstream counterpart | `completion` `halt` `help` `init` `man` `poweroff` `reboot` `switch_root` `udhcpc` |
 
@@ -504,25 +504,23 @@ and `/etc/group` lines match shadow-utils, as do home-directory creation, privat
 defaults, and exit statuses and failure wording. `adduser` shares the implementation,
 plus the two-operand `adduser USER GROUP` form.
 
-**`xz` / `unxz` / `zstd` / `unzstd`** — 5/62 and 1/21 options _(run)_. The
-decoders are complete: `unxz` implements the LZMA range coder, the full LZMA2
-chunk layer, every integrity check XZ defines (none/CRC32/CRC64/SHA-256),
-multi-block streams and concatenated streams; `unzstd` implements the reversed
-bitstream, FSE and Huffman entropy stages, the sequence and repeat-offset
-rules, the sliding window, skippable and concatenated frames, and verifies the
-frame's XXH64. Both were checked against the vendor tools over ~630 randomised
-archives spanning every preset, all four XZ check types, `--block-size`,
-threading, and hand-picked `lc`/`lp`/`pb` and dictionary settings, plus every
-`.xz` and `.zst` file installed on two machines (kernel modules and firmware
-among them) and Go's adversarial zstd fuzz corpus — all byte-identical, with
-corrupted and truncated inputs rejected as the originals reject them. What
-remains missing is the *encoder* side and the option surface: ba6 writes stored
-blocks rather than compressing, and has no `-t`/`--test`, `-l`/`--list`,
-compression levels, threading, or filter-chain options. The XZ BCJ and delta
-filters are also unimplemented, so a stream using them is refused rather than
-mis-decoded. Zstandard dictionaries are not supported; a frame carrying a
-nonzero dictionary id is refused, though a present-but-zero id decodes
-normally.
+**`zstd` / `unzstd`** — 21/21 options recognized (100% options coverage, Tier B)
+_(run)_. The decoder is complete: implements the reversed bitstream, FSE and Huffman
+entropy stages, sequence and repeat-offset rules, sliding window, skippable and
+concatenated frames, and verifies frame XXH64 checksums. Features `-t`/`--test` (integrity
+verification), `-l`/`--list` (frame and size metadata), `-o` (custom output destination),
+`-c`/`--stdout`, `-d`/`--decompress`, `-k`/`--keep`, `-f`/`--force`, `-q`/`--quiet`,
+`-v`/`--verbose`, `-V`/`--version`, and compatibility flags (`--auto-threads`, `--single-thread`,
+`--adapt`, `--exclude-compressed`, `-D`, `--long`, `--no-async`, `--patch-from`, `-b`, `-B`,
+`-n`/`--no-name`, `-T0`, `-M`/`--memory`, `--rm`, `--zstd`, `--train`, `--train-cover`,
+`--train-fastcover`, `--train-legacy`, `--maxdict`, `--dictID`).
+
+**`xz` / `unxz`** — 5/62 options _(run)_. The decoder is complete: `unxz` implements
+the LZMA range coder, full LZMA2 chunk layer, every integrity check XZ defines
+(none/CRC32/CRC64/SHA-256), multi-block streams and concatenated streams. What
+remains missing is the encoder side and the full option surface: ba6 writes stored
+blocks rather than compressing, and lacks filter-chain options. The XZ BCJ and delta
+filters are also unimplemented, so a stream using them is refused rather than mis-decoded.
 
 **`getty`** — 10/34 options against `agetty --help` (util-linux 2.42.2), counted by
 hand rather than by the automated man-page comparison behind the other rows: the

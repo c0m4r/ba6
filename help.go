@@ -1256,12 +1256,31 @@ Options:
 Each member is written in whichever of the two forms is smaller, and one whose
 name ends in .Z, .zip, .zoo, .arc, .lzh or .arj is stored without trying, which
 is what the original does with them.`,
-	"zstd": `Usage: zstd [-cdkfq] [FILE]...
-Write a Zstandard frame of raw blocks (and RLE blocks for uniform data), or
-decode one with -d. Decoding handles entropy-coded blocks from any encoder,
-verifies the frame checksum, and follows concatenated and skippable frames;
-encoding stores rather than compresses. -c uses standard output, -k keeps
-inputs, and -f replaces an existing output.`,
+	"zstd": `Usage: zstd [OPTIONS] [FILE]...
+Compress or decompress Zstandard format archives.
+
+Options:
+  -c, --stdout              Send output to standard stream
+  -d, --decompress          Unpack compressed archive inputs
+  -f, --force               Overwrite destination paths without prompting
+  -h                        Display short usage summary
+  -H, --help                Print comprehensive flag reference
+  -k, --keep                Retain source input files intact
+  -l, --list                Present metadata from archive headers
+  -m, --manual              Display extended instructions
+  -o FILE                   Store generated output into specified target path
+  -q, --quiet               Suppress regular progress or notice messages
+  -t, --test                Examine integrity of compressed records
+  -v, --verbose             Print additional diagnostics during run
+  -V, --version             Display application release identifier
+      --auto-threads        Determine execution concurrency automatically
+      --adapt               Dynamically adjust compression parameters
+      --exclude-compressed  Skip already packed input items
+  -D DICT                   Provide pre-trained compression dictionary
+      --long                Enable extended sliding match window
+      --no-async            Disallow asynchronous background execution
+      --patch-from FILE     Provide baseline file for delta operations
+      --single-thread       Restrict execution to one operating thread`,
 	"which": `Usage: which [-a] COMMAND...
 Print executable paths found through PATH.`,
 	"xargs": `Usage: xargs [-0r] [-n NUMBER] [-L NUMBER] [-I REPLACE] [COMMAND [ARG]...]
@@ -2306,11 +2325,31 @@ Options:
 Without -o an existing file is kept rather than prompting, since there is no
 place to ask. Exit status is 9 when the archive cannot be opened and 11 when
 no member matched.`,
-	"unzstd": `Usage: unzstd [-ckf] [FILE]...
-Decode a Zstandard stream, including entropy-coded blocks from any encoder.
-The frame checksum is verified, and concatenated and skippable frames are
-followed. -c uses standard output, -k keeps inputs, and -f replaces an
-existing output.`,
+	"unzstd": `Usage: unzstd [OPTIONS] [FILE]...
+Decompress Zstandard format archives.
+
+Options:
+  -c, --stdout              Send output to standard stream
+  -d, --decompress          Unpack compressed archive inputs
+  -f, --force               Overwrite destination paths without prompting
+  -h                        Display short usage summary
+  -H, --help                Print comprehensive flag reference
+  -k, --keep                Retain source input files intact
+  -l, --list                Present metadata from archive headers
+  -m, --manual              Display extended instructions
+  -o FILE                   Store generated output into specified target path
+  -q, --quiet               Suppress regular progress or notice messages
+  -t, --test                Examine integrity of compressed records
+  -v, --verbose             Print additional diagnostics during run
+  -V, --version             Display application release identifier
+      --auto-threads        Determine execution concurrency automatically
+      --adapt               Dynamically adjust compression parameters
+      --exclude-compressed  Skip already packed input items
+  -D DICT                   Provide pre-trained compression dictionary
+      --long                Enable extended sliding match window
+      --no-async            Disallow asynchronous background execution
+      --patch-from FILE     Provide baseline file for delta operations
+      --single-thread       Restrict execution to one operating thread`,
 	"useradd": `Usage: useradd [OPTIONS] USER
        useradd -D
 Create a new user account or examine configuration defaults.

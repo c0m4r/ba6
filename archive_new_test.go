@@ -189,6 +189,50 @@ func TestUnzstdRejectsMalformedCompressedBlock(t *testing.T) {
 	}
 }
 
+func TestZstdOptionsAndModes(t *testing.T) {
+	// Version
+	status, stdout, _ := captureApplet(t, cmdZstd, []string{"-V"}, "")
+	if status != 0 || !strings.Contains(stdout, "zstd") {
+		t.Fatalf("zstd -V failed: status=%d out=%q", status, stdout)
+	}
+
+	// Compress and test mode
+	dir := t.TempDir()
+	path := filepath.Join(dir, "input.txt")
+	if err := os.WriteFile(path, []byte("hello zstandard\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outZst := filepath.Join(dir, "custom.zst")
+	status, _, stderr := captureApplet(t, cmdZstd, []string{"-o", outZst, "-k", path}, "")
+	if status != 0 {
+		t.Fatalf("zstd -o failed: %s", stderr)
+	}
+
+	// Test mode (-t)
+	status, _, stderr = captureApplet(t, cmdZstd, []string{"-t", outZst}, "")
+	if status != 0 {
+		t.Fatalf("zstd -t failed: %s", stderr)
+	}
+
+	// List mode (-l)
+	status, stdout, _ = captureApplet(t, cmdZstd, []string{"-l", outZst}, "")
+	if status != 0 || !strings.Contains(stdout, "Frames") {
+		t.Fatalf("zstd -l failed: status=%d out=%q", status, stdout)
+	}
+
+	// Unzstd test mode (-t)
+	status, _, stderr = captureApplet(t, cmdUnzstd, []string{"-t", outZst}, "")
+	if status != 0 {
+		t.Fatalf("unzstd -t failed: %s", stderr)
+	}
+
+	// Unzstd with compatibility flags
+	status, stdout, _ = captureApplet(t, cmdUnzstd, []string{"-c", "--auto-threads", "--single-thread", outZst}, "")
+	if status != 0 || stdout != "hello zstandard\n" {
+		t.Fatalf("unzstd -c failed: status=%d out=%q", status, stdout)
+	}
+}
+
 func TestExtraChecksumApplets(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "data")
 	if err := os.WriteFile(path, []byte("abc"), 0o600); err != nil {

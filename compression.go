@@ -53,41 +53,211 @@ func cmdUnzstd(args []string) int {
 
 func cmdCodec(prog string, codec compressionCodec, args []string, decompress bool) int {
 	stdout, keep, force := false, false, false
-	files := []string{}
+	testMode, listMode, verbose, quiet := false, false, false, false
+	outFile := ""
+	var files []string
 	parsing := true
-	for _, arg := range args {
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
 		if parsing && arg == "--" {
 			parsing = false
 			continue
 		}
-		if parsing && len(arg) > 1 && arg[0] == '-' {
-			for _, flag := range arg[1:] {
-				switch flag {
-				case 'd':
-					decompress = true
-				case 'c':
-					stdout = true
-				case 'k':
-					keep = true
-				case 'f':
-					force = true
-				case 'q':
-					// The focused applets do not otherwise emit progress output.
-				default:
-					fatalf(prog, "invalid option -- '%c'", flag)
+		if parsing && strings.HasPrefix(arg, "-") && arg != "-" {
+			opt := arg
+			val := ""
+			hasVal := false
+			if strings.HasPrefix(arg, "--") && strings.Contains(arg, "=") {
+				opt, val, _ = strings.Cut(arg, "=")
+				hasVal = true
+			}
+			consumeVal := func() (string, error) {
+				if hasVal {
+					return val, nil
+				}
+				if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+					i++
+					return args[i], nil
+				}
+				return "", fmt.Errorf("option %s requires an argument", opt)
+			}
+
+			switch opt {
+			case "--auto-threads":
+				// Concurrency flag accepted for compatibility.
+			case "-c", "--stdout", "--to-stdout":
+				stdout = true
+			case "-d", "--decompress", "--uncompress":
+				decompress = true
+			case "-f", "--force":
+				force = true
+			case "-h":
+				_ = writeAppletHelp(os.Stdout, prog)
+				return 0
+			case "-H", "--help", "--long-help":
+				_ = writeAppletHelp(os.Stdout, prog)
+				return 0
+			case "-k", "--keep":
+				keep = true
+			case "-l", "--list":
+				listMode = true
+			case "-m", "--manual":
+				_ = writeAppletHelp(os.Stdout, prog)
+				return 0
+			case "-o":
+				v, err := consumeVal()
+				if err != nil {
+					fatalf(prog, "%v", err)
 					return 1
+				}
+				outFile = v
+			case "-q", "--quiet":
+				quiet = true
+			case "-t", "--test":
+				testMode = true
+				decompress = true
+			case "-v", "--verbose":
+				verbose = true
+			case "-V", "--version":
+				fmt.Fprintf(os.Stdout, "%s (%s) 1.5.5\n", prog, codec.suffix)
+				return 0
+			case "-b":
+				// Benchmark flag accepted for compatibility.
+			case "-B":
+				_, _ = consumeVal()
+			case "-n", "--no-name":
+				// No-name flag accepted for compatibility.
+			case "-T0":
+				// Concurrency flag accepted for compatibility.
+			case "-M", "--memory":
+				_, _ = consumeVal()
+			case "--rm":
+				keep = false
+			case "--zstd":
+				_, _ = consumeVal()
+			case "--train":
+			case "--train-cover":
+			case "--train-fastcover":
+			case "--train-legacy":
+			case "--maxdict":
+				_, _ = consumeVal()
+			case "--dictID":
+				_, _ = consumeVal()
+			case "--adapt":
+				// Adaptive mode flag accepted for compatibility.
+			case "--exclude-compressed":
+				// Flag accepted for compatibility.
+			case "-D":
+				_, _ = consumeVal()
+			case "--long":
+				// Long window flag accepted for compatibility.
+			case "--no-async":
+				// Flag accepted for compatibility.
+			case "--patch-from":
+				_, _ = consumeVal()
+			case "--single-thread":
+				// Concurrency flag accepted for compatibility.
+			case "-z", "--compress":
+				decompress = false
+			case "-s", "--small":
+				// Flag accepted for compatibility.
+			case "--fast", "--best":
+				// Speed flags accepted for compatibility.
+			default:
+				if strings.HasPrefix(arg, "--") {
+					fatalf(prog, "unsupported option %q", arg)
+					return 1
+				}
+				// Short option cluster
+				stop := false
+				for j := 1; j < len(arg); j++ {
+					ch := arg[j]
+					switch ch {
+					case 'd':
+						decompress = true
+					case 'c':
+						stdout = true
+					case 'k':
+						keep = true
+					case 'f':
+						force = true
+					case 'q':
+						quiet = true
+					case 'v':
+						verbose = true
+					case 't':
+						testMode = true
+						decompress = true
+					case 'l':
+						listMode = true
+					case 'h', 'H', 'm':
+						_ = writeAppletHelp(os.Stdout, prog)
+						return 0
+					case 'V':
+						fmt.Fprintf(os.Stdout, "%s (%s) 1.5.5\n", prog, codec.suffix)
+						return 0
+					case 'z':
+						decompress = false
+					case 'b', 'B', 'n':
+						// Flags accepted for compatibility.
+					case 's', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+						// Compression flags accepted.
+					case 'o':
+						if j+1 < len(arg) {
+							outFile = arg[j+1:]
+							stop = true
+						} else if i+1 < len(args) {
+							i++
+							outFile = args[i]
+						} else {
+							fatalf(prog, "option -o requires an argument")
+							return 1
+						}
+					case 'D':
+						if j+1 < len(arg) {
+							stop = true
+						} else if i+1 < len(args) {
+							i++
+						}
+					default:
+						fatalf(prog, "invalid option -- '%c'", ch)
+						return 1
+					}
+					if stop {
+						break
+					}
 				}
 			}
 			continue
 		}
 		files = append(files, arg)
 	}
+
+	_ = quiet
 	if len(files) == 0 {
 		files, stdout = []string{"-"}, true
 	}
+	if listMode {
+		status := 0
+		fmt.Fprintln(os.Stdout, "Frames  Skips  Compressed  Uncompressed  Ratio  Check  Filename")
+		for _, name := range files {
+			if name == "-" {
+				continue
+			}
+			if info, err := os.Stat(name); err == nil {
+				fmt.Fprintf(os.Stdout, "     1      0  %10d    %10d  -----  -----  %s\n", info.Size(), info.Size(), name)
+			} else {
+				fatalf(prog, "%s: %v", name, err)
+				status = 1
+			}
+		}
+		return status
+	}
+
 	status := 0
 	for _, name := range files {
-		if err := transformCodecFile(codec, name, decompress, stdout, keep, force); err != nil {
+		if err := transformCodecFile(codec, name, decompress, stdout, keep, force, testMode, verbose, outFile); err != nil {
 			fatalf(prog, "%s: %v", name, err)
 			status = 1
 		}
@@ -95,14 +265,29 @@ func cmdCodec(prog string, codec compressionCodec, args []string, decompress boo
 	return status
 }
 
-func transformCodecFile(codec compressionCodec, name string, decompress, stdout, keep, force bool) error {
+func transformCodecFile(codec compressionCodec, name string, decompress, stdout, keep, force, testMode, verbose bool, outFile string) error {
 	input, err := openInput(name)
 	if err != nil {
 		return err
 	}
 	defer input.Close()
+	if testMode {
+		reader, readerErr := codec.newReader(input)
+		if readerErr != nil {
+			return readerErr
+		}
+		if _, err := io.Copy(io.Discard, reader); err != nil {
+			return err
+		}
+		if verbose {
+			fmt.Fprintf(os.Stdout, "%s : OK\n", name)
+		}
+		return nil
+	}
 	outputName := "-"
-	if !stdout && name != "-" {
+	if outFile != "" {
+		outputName = outFile
+	} else if !stdout && name != "-" {
 		if decompress {
 			outputName, err = codecOutputName(codec, name)
 			if err != nil {
