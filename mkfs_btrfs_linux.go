@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"hash/crc32"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -103,9 +105,198 @@ var btrfsSuperMirrors = []uint64{btrfsSuperOffset, 64 << 20, 256 << 30}
 
 var btrfsCastagnoli = crc32.MakeTable(crc32.Castagnoli)
 
+type btrfsFormatRequest struct {
+	device          string
+	kibibytes       uint64
+	label           string
+	force           bool
+	quiet           bool
+	verbose         bool
+	noDiscard       bool
+	mixed           bool
+	shrink          bool
+	byteCount       string
+	csum            string
+	dataProfile     string
+	metadataProfile string
+	nodeSize        string
+	sectorSize      string
+	rootDir         string
+	compress        string
+	subvol          string
+	inodeFlags      string
+	reflink         string
+	features        string
+	runtimeFeatures string
+	uuid            string
+	deviceUUID      string
+}
+
+func parseBtrfsFormatArgs(args []string) (btrfsFormatRequest, bool) {
+	const prog = "mkfs.btrfs"
+	args = expandShortOptions(args, "bdmnsLrRuUO")
+	var req btrfsFormatRequest
+	var operands []string
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch arg {
+		case "-f", "--force":
+			req.force = true
+		case "-q", "--quiet":
+			req.quiet = true
+		case "-v", "--verbose":
+			req.verbose = true
+		case "-M", "--mixed":
+			req.mixed = true
+		case "-K", "--nodiscard":
+			req.noDiscard = true
+		case "--shrink":
+			req.shrink = true
+		case "-b", "--byte-count":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "%s requires an argument", arg)
+				return req, false
+			}
+			req.byteCount = args[i]
+		case "--csum", "--checksum":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "%s requires an argument", arg)
+				return req, false
+			}
+			req.csum = args[i]
+		case "-d", "--data":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "%s requires an argument", arg)
+				return req, false
+			}
+			req.dataProfile = args[i]
+		case "-m", "--metadata":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "%s requires an argument", arg)
+				return req, false
+			}
+			req.metadataProfile = args[i]
+		case "-n", "--nodesize":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "%s requires an argument", arg)
+				return req, false
+			}
+			req.nodeSize = args[i]
+		case "-s", "--sectorsize":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "%s requires an argument", arg)
+				return req, false
+			}
+			req.sectorSize = args[i]
+		case "-L", "--label":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "%s requires an argument", arg)
+				return req, false
+			}
+			req.label = args[i]
+		case "-r", "--rootdir":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "%s requires an argument", arg)
+				return req, false
+			}
+			req.rootDir = args[i]
+		case "--compress":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "%s requires an argument", arg)
+				return req, false
+			}
+			req.compress = args[i]
+		case "-u", "--subvol":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "%s requires an argument", arg)
+				return req, false
+			}
+			req.subvol = args[i]
+		case "--inode-flags":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "%s requires an argument", arg)
+				return req, false
+			}
+			req.inodeFlags = args[i]
+		case "--reflink":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "%s requires an argument", arg)
+				return req, false
+			}
+			req.reflink = args[i]
+		case "-O", "--features":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "%s requires an argument", arg)
+				return req, false
+			}
+			req.features = args[i]
+		case "-R", "--runtime-features":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "%s requires an argument", arg)
+				return req, false
+			}
+			req.runtimeFeatures = args[i]
+		case "-U", "--uuid":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "%s requires an argument", arg)
+				return req, false
+			}
+			req.uuid = args[i]
+		case "--device-uuid":
+			i++
+			if i >= len(args) {
+				fatalf(prog, "%s requires an argument", arg)
+				return req, false
+			}
+			req.deviceUUID = args[i]
+		default:
+			if strings.HasPrefix(arg, "-") {
+				fatalf(prog, "unsupported option %q", arg)
+				return req, false
+			}
+			operands = append(operands, arg)
+		}
+	}
+
+	if len(operands) < 1 || len(operands) > 2 {
+		fatalf(prog, "expected DEVICE [BLOCKS]")
+		return req, false
+	}
+	if len(req.label) > btrfsMaxLabel || strings.IndexByte(req.label, 0) >= 0 {
+		fatalf(prog, "label must contain at most %d non-NUL bytes", btrfsMaxLabel)
+		return req, false
+	}
+	req.device = operands[0]
+	if len(operands) == 2 {
+		kibibytes, err := strconv.ParseUint(operands[1], 10, 64)
+		if err != nil || kibibytes == 0 {
+			fatalf(prog, "invalid 1 KiB block count %q", operands[1])
+			return req, false
+		}
+		req.kibibytes = kibibytes
+	}
+	return req, true
+}
+
 func cmdMkfsBtrfs(args []string) int {
 	const prog = "mkfs.btrfs"
-	request, ok := parseFormatArgs(prog, args, btrfsMaxLabel)
+	request, ok := parseBtrfsFormatArgs(args)
 	if !ok {
 		return 1
 	}
@@ -129,6 +320,12 @@ func cmdMkfsBtrfs(args []string) int {
 	if err != nil {
 		fatalf(prog, "%v", err)
 		return 1
+	}
+	if !request.quiet {
+		fmt.Fprintf(os.Stdout, "Label:              %s\n", request.label)
+		fmt.Fprintf(os.Stdout, "Node size:          %d\n", btrfsNodeSize)
+		fmt.Fprintf(os.Stdout, "Sector size:        %d\n", btrfsSectorSize)
+		fmt.Fprintf(os.Stdout, "Filesystem size:    %s\n", humanSizeUint64(layout.total))
 	}
 	if err := writeBtrfsFilesystem(file, layout); err != nil {
 		fatalf(prog, "%s: %v", request.device, err)

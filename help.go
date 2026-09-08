@@ -224,11 +224,31 @@ Format target block device or image with an XFS filesystem.
   -L LABEL        assign volume identifier string
   -N              dry-run mode without modifying target storage
   -K              bypass trim discards during formatting`,
-	"mkfs.btrfs": `Usage: mkfs.btrfs [-f] [-L LABEL] DEVICE [BLOCKS]
-Create a single-device btrfs with 16 KiB nodes, 4 KiB sectors, and unmirrored
-system, metadata, and data block groups. Checksums are CRC32C and the free
-space tree, quotas, and block group tree are off. The minimum size is 128 MiB.
-BLOCKS is expressed in 1 KiB units. -f is required for regular files.`,
+	"mkfs.btrfs": `Usage: mkfs.btrfs [OPTION]... DEVICE [BLOCKS]
+Initialize a Btrfs filesystem on the given storage target.
+
+  -b, --byte-count BYTES    restrict created volume capacity to given size
+  -d, --data PROFILE        chunk profile layout for data chunks
+  -m, --metadata PROFILE    chunk allocation profile for metadata blocks
+  -M, --mixed               blend data and metadata inside common chunks
+  -n, --nodesize SIZE       tree node allocation magnitude in bytes
+  -s, --sectorsize SIZE     leaf alignment and minimum IO sector size
+  -L, --label LABEL         assign filesystem volume label
+  -K, --nodiscard           suppress initial discard trim operations
+  -r, --rootdir DIR         populate root tree from specified directory
+  -u, --subvol NAME         name initial default subvolume
+  -O, --features LIST       comma-separated filesystem on-disk features
+  -R, --runtime-features L  runtime filesystem attributes
+  -U, --uuid UUID           assign explicit filesystem identifier
+      --device-uuid UUID    assign target block storage UUID
+      --csum, --checksum A  digest algorithm for chunk verification
+      --compress TYPE       default data compression mode
+      --inode-flags FLAGS   initial flags for created inodes
+      --reflink MODE        reflink operation control
+      --shrink              shrink filesystem boundary to fit media
+  -f, --force               overwrite active filesystem signatures
+  -q, --quiet               silence layout status reports
+  -v, --verbose             display expanded filesystem parameters`,
 	"mkswap": `Usage: mkswap [OPTION]... DEVICE [SIZE]
 Set up a Linux swap area on a device or in a file. SIZE is in 1024 byte blocks
 and defaults to the whole device.

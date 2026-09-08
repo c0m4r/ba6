@@ -469,3 +469,53 @@ func TestMkfsXfsExtendedOptions(t *testing.T) {
 	}
 }
 
+func TestMkfsBtrfsExtendedOptions(t *testing.T) {
+	const size = 256 * 1024 * 1024
+	image := filepath.Join(t.TempDir(), "opts.btrfs")
+	file, err := os.Create(image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(size); err != nil {
+		t.Fatal(err)
+	}
+	_ = file.Close()
+
+	status, stdout, stderr := captureApplet(t, cmdMkfsBtrfs, []string{
+		"-f", "-v", "-M", "-K", "--shrink",
+		"-b", "268435456",
+		"--csum", "crc32c",
+		"-d", "single",
+		"-m", "single",
+		"-n", "16384",
+		"-s", "4096",
+		"-L", "btrfslabel",
+		"-r", "/dev/null",
+		"--compress", "zlib",
+		"-u", "default",
+		"--inode-flags", "none",
+		"--reflink", "always",
+		"-O", "extref",
+		"-R", "free-space-tree",
+		"-U", "12345678-1234-1234-1234-123456789abc",
+		"--device-uuid", "12345678-1234-1234-1234-123456789def",
+		image,
+	}, "")
+	if status != 0 || !strings.Contains(stdout, "Label:") {
+		t.Fatalf("mkfs.btrfs multi-opt run failed: status=%d out=%q err=%q", status, stdout, stderr)
+	}
+
+	status, stdout, stderr = captureApplet(t, cmdMkfsBtrfs, []string{
+		"-f", "-q", "-L", "quietbtrfs", image,
+	}, "")
+	if status != 0 || stdout != "" {
+		t.Fatalf("mkfs.btrfs -q failed or produced stdout: status=%d out=%q err=%q", status, stdout, stderr)
+	}
+
+	status, _, stderr = captureApplet(t, cmdMkfsBtrfs, []string{"--csum"}, "")
+	if status == 0 || !strings.Contains(stderr, "requires an argument") {
+		t.Fatalf("mkfs.btrfs --csum without arg should fail: status=%d err=%q", status, stderr)
+	}
+}
+
+
