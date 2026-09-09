@@ -7,6 +7,8 @@ package main
 
 import (
 	"encoding/binary"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -88,5 +90,126 @@ func TestParseNestedLinkInfo(t *testing.T) {
 	}
 	if link.kind != "bond" || link.bondMode == nil || *link.bondMode != 1 || link.miimon == nil || *link.miimon != 100 {
 		t.Fatalf("unexpected link details: %+v", link)
+	}
+}
+
+func TestIPGlobalOptionsAndBatch(t *testing.T) {
+	for _, flag := range []string{"-V", "-Version", "--version"} {
+		status, stdout, stderr := captureApplet(t, cmdIP, []string{flag}, "")
+		if status != 0 || !strings.Contains(stdout, "ip utility, ba6") || stderr != "" {
+			t.Fatalf("ip %s: status=%d out=%q err=%q", flag, status, stdout, stderr)
+		}
+	}
+
+	for _, arg := range []string{"-help", "--help", "help"} {
+		status, stdout, stderr := captureApplet(t, cmdIP, []string{arg}, "")
+		if status != 0 || !strings.Contains(stdout, "Usage: ip") || stderr != "" {
+			t.Fatalf("ip %s: status=%d out=%q err=%q", arg, status, stdout, stderr)
+		}
+	}
+
+	optionSets := [][]string{
+		{"-4"},
+		{"-6"},
+		{"-0"},
+		{"-B"},
+		{"-M"},
+		{"-f", "inet"},
+		{"-family=inet6"},
+		{"-family", "bridge"},
+		{"-family", "link"},
+		{"-family", "mpls"},
+		{"-c"},
+		{"-color"},
+		{"-c=never"},
+		{"-color=auto"},
+		{"-s"},
+		{"-stats"},
+		{"-statistics"},
+		{"-d"},
+		{"-details"},
+		{"-l", "5"},
+		{"-loops=3"},
+		{"-o"},
+		{"-oneline"},
+		{"-r"},
+		{"-resolve"},
+		{"-n", "netns0"},
+		{"-netns=netns0"},
+		{"-N"},
+		{"-Numeric"},
+		{"-a"},
+		{"-all"},
+		{"-t"},
+		{"-timestamp"},
+		{"-ts"},
+		{"-tshort"},
+		{"-rc", "1048576"},
+		{"-rcvbuf=1048576"},
+		{"-iec"},
+		{"-br"},
+		{"-brief"},
+		{"-j"},
+		{"-json"},
+		{"-p"},
+		{"-pretty"},
+		{"-echo"},
+		{"-h"},
+		{"-human"},
+		{"-human-readable"},
+	}
+
+	for _, opts := range optionSets {
+		args := append(append([]string(nil), opts...), "link", "show", "up")
+		status, stdout, stderr := captureApplet(t, cmdIP, args, "")
+		if status != 0 || stderr != "" {
+			t.Fatalf("ip %v link show up: status=%d out=%q err=%q", opts, status, stdout, stderr)
+		}
+		if !strings.Contains(stdout, "LOOPBACK") {
+			t.Fatalf("ip %v link show up missing loopback in output: %q", opts, stdout)
+		}
+	}
+
+	status, _, stderr := captureApplet(t, cmdIP, []string{"-unknown-flag"}, "")
+	if status == 0 || !strings.Contains(stderr, "unknown") {
+		t.Fatalf("ip -unknown-flag should fail: status=%d err=%q", status, stderr)
+	}
+
+	for _, opt := range []string{"-f", "-family", "-b", "-batch", "-l", "-loops", "-n", "-netns", "-rc", "-rcvbuf"} {
+		status, _, stderr := captureApplet(t, cmdIP, []string{opt}, "")
+		if status == 0 || !strings.Contains(stderr, "requires an argument") {
+			t.Fatalf("ip %s without argument should fail: status=%d err=%q", opt, status, stderr)
+		}
+	}
+
+	dir := t.TempDir()
+	batchFile := filepath.Join(dir, "batch.txt")
+	err := os.WriteFile(batchFile, []byte("# comment\n\nlink show up\nip link show up\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, stdout, stderr := captureApplet(t, cmdIP, []string{"-b", batchFile}, "")
+	if status != 0 || stderr != "" || !strings.Contains(stdout, "LOOPBACK") {
+		t.Fatalf("ip -b %s: status=%d out=%q err=%q", batchFile, status, stdout, stderr)
+	}
+
+	batchFail := filepath.Join(dir, "batch_fail.txt")
+	err = os.WriteFile(batchFail, []byte("link show dev nonexistent_dev_123\nlink show up\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, _, _ = captureApplet(t, cmdIP, []string{"-force", "-batch", batchFail}, "")
+	if status == 0 {
+		t.Fatal("ip -force -batch should exit non-zero when a command fails")
+	}
+
+	status, _, _ = captureApplet(t, cmdIP, []string{"-batch", batchFail}, "")
+	if status == 0 {
+		t.Fatal("ip -batch should exit non-zero when a command fails")
+	}
+
+	status, _, stderr = captureApplet(t, cmdIP, []string{"-batch", filepath.Join(dir, "missing.txt")}, "")
+	if status == 0 || !strings.Contains(stderr, "cannot open") {
+		t.Fatalf("ip -batch missing file: status=%d err=%q", status, stderr)
 	}
 }

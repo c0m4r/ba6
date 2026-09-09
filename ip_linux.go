@@ -31,31 +31,193 @@ const (
 
 var netlinkSequence atomic.Uint32
 
+func runIPBatch(filename string, force bool) int {
+	var scanner *bufio.Scanner
+	if filename == "-" {
+		scanner = bufio.NewScanner(os.Stdin)
+	} else {
+		f, err := os.Open(filename)
+		if err != nil {
+			fatalf("ip", "cannot open %s: %v", filename, err)
+			return 1
+		}
+		defer f.Close()
+		scanner = bufio.NewScanner(f)
+	}
+	exitCode := 0
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) > 0 && fields[0] == "ip" {
+			fields = fields[1:]
+		}
+		if len(fields) == 0 {
+			continue
+		}
+		if status := cmdIP(fields); status != 0 {
+			exitCode = status
+			if !force {
+				return status
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		fatalf("ip", "read error: %v", err)
+		return 1
+	}
+	return exitCode
+}
+
 func cmdIP(args []string) int {
 	family := syscall.AF_UNSPEC
+	var batchFile string
+	var force bool
 	for len(args) > 0 {
+		arg := args[0]
 		switch {
-		case args[0] == "-4":
+		case arg == "-4":
 			family, args = syscall.AF_INET, args[1:]
-		case args[0] == "-6":
+		case arg == "-6":
 			family, args = syscall.AF_INET6, args[1:]
-		case args[0] == "-c", args[0] == "-color",
-			strings.HasPrefix(args[0], "-c="), strings.HasPrefix(args[0], "-color="):
-			// ba6 never colors its output, but scripts such as the bash
-			// completions call "ip -c=never link show" unconditionally.
+		case arg == "-0":
+			family, args = syscall.AF_PACKET, args[1:]
+		case arg == "-B":
+			family, args = syscall.AF_BRIDGE, args[1:]
+		case arg == "-M":
+			family, args = 28, args[1:]
+		case arg == "-V" || arg == "-Version" || arg == "--version":
+			fmt.Fprintln(os.Stdout, "ip utility, ba6")
+			return 0
+		case arg == "-h" || arg == "-human" || arg == "-human-readable":
 			args = args[1:]
-		case args[0] == "--":
+		case arg == "-help" || arg == "--help":
+			_ = writeAppletHelp(os.Stdout, "ip")
+			return 0
+		case arg == "-f" || arg == "-family":
+			if len(args) < 2 {
+				fatalf("ip", "option %s requires an argument", arg)
+				return 1
+			}
+			fam := args[1]
+			switch fam {
+			case "inet":
+				family = syscall.AF_INET
+			case "inet6":
+				family = syscall.AF_INET6
+			case "bridge":
+				family = syscall.AF_BRIDGE
+			case "link":
+				family = syscall.AF_PACKET
+			case "mpls":
+				family = 28
+			}
+			args = args[2:]
+		case strings.HasPrefix(arg, "-family="):
+			fam := strings.TrimPrefix(arg, "-family=")
+			switch fam {
+			case "inet":
+				family = syscall.AF_INET
+			case "inet6":
+				family = syscall.AF_INET6
+			case "bridge":
+				family = syscall.AF_BRIDGE
+			case "link":
+				family = syscall.AF_PACKET
+			case "mpls":
+				family = 28
+			}
+			args = args[1:]
+		case arg == "-c" || arg == "-color" || strings.HasPrefix(arg, "-c=") || strings.HasPrefix(arg, "-color="):
+			args = args[1:]
+		case arg == "-b" || arg == "-batch":
+			if len(args) < 2 {
+				fatalf("ip", "option %s requires an argument", arg)
+				return 1
+			}
+			batchFile = args[1]
+			args = args[2:]
+		case strings.HasPrefix(arg, "-batch="):
+			batchFile = strings.TrimPrefix(arg, "-batch=")
+			args = args[1:]
+		case arg == "-force":
+			force = true
+			args = args[1:]
+		case arg == "-s" || arg == "-stats" || arg == "-statistics":
+			args = args[1:]
+		case arg == "-d" || arg == "-details":
+			args = args[1:]
+		case arg == "-l" || arg == "-loops":
+			if len(args) < 2 {
+				fatalf("ip", "option %s requires an argument", arg)
+				return 1
+			}
+			args = args[2:]
+		case strings.HasPrefix(arg, "-loops="):
+			args = args[1:]
+		case arg == "-o" || arg == "-oneline":
+			args = args[1:]
+		case arg == "-r" || arg == "-resolve":
+			args = args[1:]
+		case arg == "-n" || arg == "-netns":
+			if len(args) < 2 {
+				fatalf("ip", "option %s requires an argument", arg)
+				return 1
+			}
+			args = args[2:]
+		case strings.HasPrefix(arg, "-netns="):
+			args = args[1:]
+		case arg == "-N" || arg == "-Numeric":
+			args = args[1:]
+		case arg == "-a" || arg == "-all":
+			args = args[1:]
+		case arg == "-t" || arg == "-timestamp":
+			args = args[1:]
+		case arg == "-ts" || arg == "-tshort":
+			args = args[1:]
+		case arg == "-rc" || arg == "-rcvbuf":
+			if len(args) < 2 {
+				fatalf("ip", "option %s requires an argument", arg)
+				return 1
+			}
+			args = args[2:]
+		case strings.HasPrefix(arg, "-rcvbuf="):
+			args = args[1:]
+		case arg == "-iec":
+			args = args[1:]
+		case arg == "-br" || arg == "-brief":
+			args = args[1:]
+		case arg == "-j" || arg == "-json":
+			args = args[1:]
+		case arg == "-p" || arg == "-pretty":
+			args = args[1:]
+		case arg == "-echo":
+			args = args[1:]
+		case arg == "--":
 			args = args[1:]
 			goto object
 		default:
+			if strings.HasPrefix(arg, "-") {
+				fatalf("ip", "Option %q is unknown, try \"ip -help\".", arg)
+				return 1
+			}
 			goto object
 		}
 	}
 
 object:
+	if batchFile != "" {
+		return runIPBatch(batchFile, force)
+	}
 	if len(args) == 0 {
 		fatalf("ip", "missing object (expected addr, link, neigh, route, or rule)")
 		return 1
+	}
+	if args[0] == "help" {
+		_ = writeAppletHelp(os.Stdout, "ip")
+		return 0
 	}
 	var err error
 	// The objects are tested in the order ip(8) lists them, because an

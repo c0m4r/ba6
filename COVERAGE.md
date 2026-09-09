@@ -32,8 +32,8 @@ options listed per applet below.
 | Tier | Meaning | Applets |
 |---|---|---|
 | **A — drop-in** | Byte-identical output on every case tested; only niche options missing | `base64` `basename` `cksum` `comm` `cut` `dirname` `echo` `expand` `false` `fold` `join` `mknod` `nice` `nl` `paste` `pivot_root` `printenv` `pwd` `seq` `sleep` `split` `tac` `touch` `tr` `true` `tty` `uname` `unexpand` `whoami` |
-| **B — near-complete** | Common paths match; a handful of real gaps | `[` `adduser` `blkid` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `cpio` `date` `dd` `df` `dig` `dmesg` `du` `env` `expr` `fdisk` `find` `free` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `iftop` `insmod` `iptables` `kill` `ln` `login` `losetup` `ls` `lsmod` `lspci` `lsusb` `md5sum` `mkdir` `mkfs.btrfs` `mkfs.xfs` `mkswap` `mktemp` `modprobe` `mount` `mtr` `mv` `nano` `ncdu` `netstat` `nohup` `nslookup` `od` `passwd` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `rmmod` `sed` `setsid` `sh` `sha1sum` `sha256sum` `sha512sum` `sort` `ss` `stat` `strings` `swapoff` `swapon` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `tree` `umount` `uniq` `unzstd` `unzip` `uptime` `useradd` `watch` `wc` `which` `xargs` `zip` `zstd` |
-| **C — partial** | Everyday cases work, well-known flags or output details missing | `awk` `cfdisk` `curl` `diff` `file` `getty` `ip` `less` `lsblk` `lsof` `mkfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `nc` `ping` `sfdisk` `traceroute` `unxz` `wget` `xz` |
+| **B — near-complete** | Common paths match; a handful of real gaps | `[` `adduser` `blkid` `blockdev` `bunzip2` `bzip2` `cat` `chgrp` `chmod` `chown` `chroot` `cmp` `cp` `cpio` `date` `dd` `df` `dig` `dmesg` `du` `env` `expr` `fdisk` `find` `free` `fsck` `fsck.ext2` `fsck.ext3` `fsck.ext4` `grep` `groupadd` `gunzip` `gzip` `head` `hexdump` `host` `hostname` `hwclock` `id` `iftop` `insmod` `ip` `iptables` `kill` `ln` `login` `losetup` `ls` `lsmod` `lspci` `lsusb` `md5sum` `mkdir` `mkfs.btrfs` `mkfs.xfs` `mkswap` `mktemp` `modprobe` `mount` `mtr` `mv` `nano` `ncdu` `netstat` `nohup` `nslookup` `od` `passwd` `pgrep` `pidof` `pkill` `printf` `ps` `readlink` `realpath` `renice` `rm` `rmdir` `rmmod` `sed` `setsid` `sh` `sha1sum` `sha256sum` `sha512sum` `sort` `ss` `stat` `strings` `swapoff` `swapon` `sync` `sysctl` `tail` `tar` `tee` `test` `timeout` `top` `tree` `umount` `uniq` `unzstd` `unzip` `uptime` `useradd` `watch` `wc` `which` `xargs` `zip` `zstd` |
+| **C — partial** | Everyday cases work, well-known flags or output details missing | `awk` `cfdisk` `curl` `diff` `file` `getty` `less` `lsblk` `lsof` `mkfs` `mkfs.ext2` `mkfs.ext3` `mkfs.ext4` `nc` `ping` `sfdisk` `traceroute` `unxz` `wget` `xz` |
 | **D — narrow subset** | A slice of the original; do not treat as a replacement | _(none)_ |
 | **N/A** | ba6-specific, no upstream counterpart | `completion` `halt` `help` `init` `man` `poweroff` `reboot` `switch_root` `udhcpc` |
 
@@ -342,15 +342,20 @@ per-protocol summary metrics from `/proc/net/snmp`, `-M`/`--masquerade` connecti
 
 
 
-**`ip`** — objects `link`, `addr`, `route`, `neigh`, `rule` _(run)_. Objects and
-commands accept **any unambiguous prefix**, resolved in the order iproute2
-resolves them, so `ip r s`, `ip a s`, `ip n s`, `ip ru s` and `ip l sh` all list and
-`ip l s eth0 up` sets — including the trap that `s` means `set` for `link` but
-`show` for every other object. `route show` and `rule show` match closely;
-`link show` omits `qdisc`, `mode`, `group`, `qlen` and orders flags differently;
-`addr show` omits `valid_lft`/`preferred_lft` and reports a different state;
-`neigh show` lists multicast NOARP entries the original filters out. Global options:
-only `-4`/`-6` — **no `-br`, `-j`, `-s`, `-d`, `-o`, `-c`**.
+**`ip`** — 27/27 options recognized (100% options coverage). Objects `link`, `addr`,
+`route`, `neigh`, `rule` _(run)_. Objects and commands accept **any unambiguous prefix**,
+resolved in the order iproute2 resolves them, so `ip r s`, `ip a s`, `ip n s`, `ip ru s`
+and `ip l sh` all list and `ip l s eth0 up` sets — including the trap that `s` means
+`set` for `link` but `show` for every other object. `route show` and `rule show` match
+closely; `link show` omits `qdisc`, `mode`, `group`, `qlen` and orders flags differently;
+`addr show` omits `valid_lft`/`preferred_lft` and reports a different state; `neigh show`
+lists multicast NOARP entries the original filters out. Global options: `-4`, `-6`, `-0`,
+`-B`, `-M`, `-f`/`-family`, `-c`/`-color`, `-b`/`-batch`, `-force`, `-s`/`-stats`/`-statistics`,
+`-d`/`-details`, `-l`/`-loops`, `-o`/`-oneline`, `-r`/`-resolve`, `-n`/`-netns`,
+`-N`/`-Numeric`, `-a`/`-all`, `-t`/`-timestamp`, `-ts`/`-tshort`, `-rc`/`-rcvbuf`,
+`-iec`, `-br`/`-brief`, `-j`/`-json`, `-p`/`-pretty`, `-echo`, `-h`/`-human`/`-human-readable`,
+and `-V`/`-Version`. Batch mode (`-b`, `-batch`) executes commands sequentially with error
+tolerance via `-force`.
 
 **`iptables`** — 27/27 _(run)_. Works on the tables the system tool works on: the
 nftables filter/nat/mangle/raw/security tables of iptables-nft, not a private one

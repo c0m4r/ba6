@@ -2390,8 +2390,32 @@ the order ip(8) lists them: "ip r s" is "ip route show" and "ip l s eth0 up" is
 "ip link set eth0 up". Use "ip l sh" for a link listing.
 
 Options:
-  -4, -6        restrict the output to IPv4 or IPv6
-  -c[=WHEN]     accepted for compatibility; output is never colored
+  -4, -6                      Restrict the output to IPv4 or IPv6
+  -0                          Operate on link network family
+  -B                          Operate on bridge network family
+  -M                          Operate on mpls protocol family
+  -f, -family FAMILY          Target protocol family (inet, inet6, bridge, link, mpls)
+  -c, -color                  Control colorization in reports
+  -b, -batch FILE             Execute batch commands loaded from file
+  -force                      Continue batch execution past errors
+  -s, -stats, -statistics     Display interface throughput metrics
+  -d, -details                Emit comprehensive element metadata
+  -l, -loops COUNT            Maximum iterations for state monitoring
+  -o, -oneline                Format output records onto single text line
+  -r, -resolve                Translate network numbers via DNS lookups
+  -n, -netns NETNS            Switch network namespace before execution
+  -N, -Numeric                Display raw numbers for protocol identifiers
+  -a, -all                    Apply command against all available devices
+  -t, -timestamp              Prepend current time prefix to records
+  -ts, -tshort                Prepend abbreviated time representation
+  -rc, -rcvbuf SIZE           Netlink socket buffer capacity
+  -iec                        Display transmission rates using IEC units
+  -br, -brief                 Compact tabular record summaries
+  -j, -json                   Emit output formatted as JSON objects
+  -p, -pretty                 Pretty print JSON payload
+  -echo                       Echo applied configuration requests
+  -h, -human, -human-readable Output statistics with human readable values
+  -V, -Version                Display version of the ip utility
 
 Objects and commands:
   ip link [show] [dev IFACE] [up]
